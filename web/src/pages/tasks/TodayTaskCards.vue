@@ -48,7 +48,13 @@
                 <PlayCircleOutlined /> {{ card.task.execution_status === 'paused' ? '恢复任务' : '开始任务' }}
               </a-button>
               <a-button v-if="canCompleteTask(card.task)" v-operation="'complete'" size="small" class="workspace-action-button workspace-action-button-success" @click="emit('complete', card.task)">确认完成</a-button>
-              <a-button v-if="card.task.execution_status === 'running'" v-operation="'complete'" size="small" @click="emit('pause', card.task)">
+              <a-button
+                v-if="card.task.execution_status === 'running'"
+                v-operation="'complete'"
+                size="small"
+                class="workspace-action-button workspace-action-button-warning"
+                @click="emit('pause', card.task)"
+              >
                 <PauseCircleOutlined /> 暂停
               </a-button>
               <a-tooltip :title="card.nightRunDisabledReason">

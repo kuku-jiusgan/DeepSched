@@ -163,7 +163,10 @@ import {
 
 const router = useRouter()
 const route = useRoute()
-const isSiderCollapsed = ref(localStorage.getItem('siderCollapsed') === 'true')
+const mobileSiderMedia = window.matchMedia('(max-width: 768px)')
+const isSiderCollapsed = ref(
+  mobileSiderMedia.matches || localStorage.getItem('siderCollapsed') === 'true',
+)
 const isSiderTooltipOpen = ref(false)
 const canShowSiderTooltip = ref(true)
 const notificationOpen = ref(false)
@@ -367,6 +370,12 @@ function toggleSider() {
   localStorage.setItem('siderCollapsed', String(isSiderCollapsed.value))
 }
 
+function syncSiderWithViewport(event: MediaQueryListEvent) {
+  isSiderCollapsed.value = event.matches
+    ? true
+    : localStorage.getItem('siderCollapsed') === 'true'
+}
+
 function showSiderTooltip() {
   if (canShowSiderTooltip.value) isSiderTooltipOpen.value = true
 }
@@ -508,6 +517,7 @@ function notificationTypeColor(type: string) {
 }
 
 onMounted(() => {
+  mobileSiderMedia.addEventListener('change', syncSiderWithViewport)
   markActivity()
   ACTIVITY_EVENTS.forEach(eventName => window.addEventListener(eventName, markActivity, { passive: true }))
   document.addEventListener('visibilitychange', checkIdleOnVisibilityChange)
@@ -517,6 +527,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  mobileSiderMedia.removeEventListener('change', syncSiderWithViewport)
   if (notificationTimer) window.clearInterval(notificationTimer)
   if (initialNotificationTimer) window.clearTimeout(initialNotificationTimer)
   if (sessionKeepAliveTimer) window.clearInterval(sessionKeepAliveTimer)

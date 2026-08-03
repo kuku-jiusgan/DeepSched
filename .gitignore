@@ -12,6 +12,8 @@ tokens.json
 node_modules/
 dist/
 .vite/
+web/test-results/
+web/playwright-report/
 
 # IDE
 .idea/
