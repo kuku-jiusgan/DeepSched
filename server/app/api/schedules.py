@@ -9,7 +9,8 @@ from app.schemas.schemas import (
     TimeSlotOut, TimeSlotUpdate, TaskStatusUpdate,
     ScheduleGenerateRequest, InsertOrderRequest, InsertOrderPreview, InsertOrderResult,
     RescheduleRequest, TaskDelayRequest, TaskDelayResponse,
-    NightRunRequest, TaskActionResponse, TaskCompleteRequest, TaskCompleteResponse
+    NightRunRequest, TaskActionResponse, TaskCompleteRequest, TaskCompleteResponse,
+    TaskPauseRequest, TaskSwitchCandidateOut,
 )
 from app.services.scheduler import SchedulerService
 from app.services.schedule_delay_service import (
@@ -38,6 +39,7 @@ from app.services.task_execution_service import (
 from app.services.workspace_service import get_workspace_tasks
 from app.services.audit_log_service import record_audit_log
 from app.services.workspace_command_service import complete_workspace_task, interrupt_workspace_task
+from app.services.task_pause_service import list_switch_candidates, pause_and_switch_task
 from app.api.transactions import execute_transaction
 from app.schemas.workspace_schemas import WorkspaceTaskOut
 from app.domain.task_schedule import (
@@ -94,9 +96,34 @@ def update_timeslot(
 def start_task(
     slot_id: int,
     db: Session = Depends(get_db),
+    user=Depends(require_slot_operator),
+):
+    return execute_transaction(db, lambda: start_task_execution(db, slot_id, user.id))
+
+
+@router.get(
+    "/timeslots/{slot_id}/switch-candidates",
+    response_model=List[TaskSwitchCandidateOut],
+)
+def switch_candidates(
+    slot_id: int,
+    db: Session = Depends(get_db),
     _user=Depends(require_slot_operator),
 ):
-    return execute_transaction(db, lambda: start_task_execution(db, slot_id))
+    return list_switch_candidates(db, slot_id)
+
+
+@router.post("/timeslots/{slot_id}/pause", response_model=TaskActionResponse)
+def pause_task(
+    slot_id: int,
+    data: TaskPauseRequest,
+    db: Session = Depends(get_db),
+    user=Depends(require_slot_operator),
+):
+    return execute_transaction(
+        db,
+        lambda: pause_and_switch_task(db, slot_id, data.reason, user, data.target_slot_id),
+    )
 
 @router.post("/timeslots/{slot_id}/complete", response_model=TaskCompleteResponse)
 def complete_task(

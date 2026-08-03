@@ -7,8 +7,8 @@ from app.services.user_role_service import has_any_role
 
 
 WORKSPACE_ALL_TASK_ROLES = {"系统管理员"}
-WORKSPACE_TASK_STATUSES = {"pending", "running", "blocked", "scheduled", "done", "interrupted"}
-WORKSPACE_SLOT_STATUSES = {"scheduled", "running", "interrupted", "blocked", "completed"}
+WORKSPACE_TASK_STATUSES = {"pending", "running", "paused", "blocked", "scheduled", "done", "interrupted"}
+WORKSPACE_SLOT_STATUSES = {"scheduled", "running", "paused", "interrupted", "blocked", "completed"}
 
 
 def list_workspace_tasks(db, user) -> list[Task]:
@@ -23,6 +23,7 @@ def list_workspace_tasks(db, user) -> list[Task]:
             joinedload(Task.project),
             joinedload(Task.assignee),
             selectinload(Task.time_slots).joinedload(TimeSlot.instrument),
+            selectinload(Task.execution_segments),
         )
     )
     query = filter_workspace_tasks_by_user(query, user)

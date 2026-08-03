@@ -109,6 +109,7 @@ class Task(Base):
     predecessors = relationship("TaskDependency", foreign_keys="TaskDependency.task_id", back_populates="task", cascade="all, delete-orphan")
     capability_requirements = relationship("TaskCapabilityRequirement", back_populates="task", cascade="all, delete-orphan")
     time_slots = relationship("TimeSlot", back_populates="task", cascade="all, delete-orphan")
+    execution_segments = relationship("TaskExecutionSegment", back_populates="task", cascade="all, delete-orphan")
 
 class TaskDependency(Base):
     __tablename__ = "task_dependency"
@@ -202,6 +203,25 @@ class TimeSlot(Base):
 
     task = relationship("Task", back_populates="time_slots")
     instrument = relationship("Instrument", back_populates="time_slots")
+
+
+class TaskExecutionSegment(Base):
+    __tablename__ = "task_execution_segment"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(Integer, ForeignKey("task.id"), nullable=False)
+    slot_id = Column(Integer, ForeignKey("time_slot.id"), nullable=False)
+    instrument_id = Column(Integer, ForeignKey("instrument.id"))
+    operator_id = Column(Integer, ForeignKey("user.id"))
+    started_at = Column(DateTime, nullable=False)
+    ended_at = Column(DateTime)
+    end_reason = Column(String(20))
+    pause_reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+
+    task = relationship("Task", back_populates="execution_segments")
+    slot = relationship("TimeSlot")
+    instrument = relationship("Instrument")
+    operator = relationship("User")
 
 class AuditLog(Base):
     __tablename__ = "audit_log"

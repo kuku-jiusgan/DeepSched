@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -27,6 +27,7 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         self.db.close()
 
     def _scheduled_project(self, code: str, priority: int, task_id: int):
+        future_start = datetime.now() + timedelta(days=7)
         project = Project(
             code=code,
             name=f"项目{code}",
@@ -49,8 +50,8 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         self.db.add(TimeSlot(
             task_id=task.id,
             instrument_id=1,
-            plan_start=datetime(2026, 8, 3, 8, 30),
-            plan_end=datetime(2026, 8, 3, 12, 30),
+            plan_start=future_start,
+            plan_end=future_start + timedelta(hours=4),
             tier="confirmed",
             status="scheduled",
         ))

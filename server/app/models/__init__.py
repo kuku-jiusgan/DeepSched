@@ -3,6 +3,6 @@
     ScheduleRule,
     Project, Milestone, Task, TaskDependency, TaskCapabilityRequirement,
     Instrument, InstrumentCapability, MaintenanceWindow, InstrumentFault,
-    TimeSlot, AuditLog, Notification, TaskTypeConfig, AlertRule, PushChannelConfig,
+    TimeSlot, TaskExecutionSegment, AuditLog, Notification, TaskTypeConfig, AlertRule, PushChannelConfig,
     AuthSession, WeComOAuthState, LoginFailure, WorkerLease, RolePermission
 )

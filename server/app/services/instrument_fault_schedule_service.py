@@ -6,7 +6,7 @@ from app.models import Instrument, InstrumentFault, Task, TimeSlot
 from app.services.push_notification_service import push_by_rule
 
 
-ACTIVE_SLOT_STATUSES = ["scheduled", "running", "blocked", "interrupted"]
+ACTIVE_SLOT_STATUSES = ["scheduled", "running", "paused", "blocked", "interrupted"]
 
 
 class InstrumentFaultScheduleConflict(Exception):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.models import Task, TimeSlot
 
 
-ACTIVE_SLOT_STATUSES = {"scheduled", "running", "blocked", "interrupted"}
+ACTIVE_SLOT_STATUSES = {"scheduled", "running", "paused", "blocked", "interrupted"}
 COMPLETED_TASK_STATUSES = {"done", "completed"}
 
 

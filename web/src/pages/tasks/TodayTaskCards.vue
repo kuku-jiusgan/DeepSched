@@ -45,9 +45,12 @@
                 class="workspace-action-button workspace-action-button-primary"
                 @click="emit('start', card.task)"
               >
-                开始任务
+                <PlayCircleOutlined /> {{ card.task.execution_status === 'paused' ? '恢复任务' : '开始任务' }}
               </a-button>
               <a-button v-if="canCompleteTask(card.task)" v-operation="'complete'" size="small" class="workspace-action-button workspace-action-button-success" @click="emit('complete', card.task)">确认完成</a-button>
+              <a-button v-if="card.task.execution_status === 'running'" v-operation="'complete'" size="small" @click="emit('pause', card.task)">
+                <PauseCircleOutlined /> 暂停
+              </a-button>
               <a-tooltip :title="card.nightRunDisabledReason">
                 <span v-operation="'night_run'">
                   <a-button size="small" class="workspace-action-button workspace-action-button-primary" :loading="card.isNightRunLoading" :disabled="!card.canNightRun" @click="openAutoSequence(card)">夜间运行</a-button>
@@ -150,6 +153,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { PauseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons-vue'
 import { getScheduleRules, recordNightRun, reportTaskDelay } from '@/services/api'
 import type { WorkspaceTask } from '@/domains/tasks/workspaceTask'
 import { actionableSlotId } from '@/domains/tasks/workspaceTask'
@@ -218,6 +222,7 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   start: [task: WorkspaceTask]
   complete: [task: WorkspaceTask]
+  pause: [task: WorkspaceTask]
   refreshed: []
 }>()
 

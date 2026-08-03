@@ -284,7 +284,7 @@ function getStatusLabel(status: string) {
     running: '运行中',
     completed: '已完成',
     blocked: '阻塞',
-    interrupted: '已中断',
+    paused: '已暂停', interrupted: '已中断',
   }
   return labels[status] || status
 }

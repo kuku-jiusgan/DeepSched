@@ -9,7 +9,7 @@ from app.models import TimeSlot
 from app.services.scheduler_helpers import datetime_to_units
 
 
-FIXED_SLOT_STATUSES = ["scheduled", "running", "completed", "blocked", "interrupted"]
+FIXED_SLOT_STATUSES = ["scheduled", "running", "completed", "paused", "blocked", "interrupted"]
 
 
 def _fixed_slot_range(slot: TimeSlot) -> tuple[datetime, datetime]:

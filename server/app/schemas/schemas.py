@@ -280,6 +280,22 @@ class TaskStatusUpdate(BaseModel):
 
 class TaskActionResponse(BaseModel):
     status: str
+    message: Optional[str] = None
+
+class TaskPauseRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    target_slot_id: Optional[int] = None
+
+class TaskSwitchCandidateOut(BaseModel):
+    slot_id: int
+    task_id: int
+    task_name: str
+    project_code: str
+    project_name: str
+    assignee_name: Optional[str] = None
+    plan_start: datetime
+    plan_end: datetime
+    is_paused: bool = False
 
 # ---- Schedule ----
 class ScheduleGenerateRequest(BaseModel):

@@ -381,7 +381,7 @@ def _gate_out(db, gate: Task, user: User) -> ApprovalGateOut:
         risk_status = "upcoming"
     project_slots = [
         slot for task in project.tasks for slot in task.time_slots
-        if slot.status in {"scheduled", "running", "blocked", "interrupted", "completed"}
+        if slot.status in {"scheduled", "running", "paused", "blocked", "interrupted", "completed"}
     ]
     expected_completion = max((slot.plan_end for slot in project_slots), default=None)
     return ApprovalGateOut(

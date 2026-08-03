@@ -2,7 +2,7 @@ from app.models import Project, Task
 
 
 COMPLETED_TASK_STATUSES = {"done", "completed"}
-STARTED_TASK_STATUSES = {"running", "done", "completed", "interrupted"}
+STARTED_TASK_STATUSES = {"running", "paused", "done", "completed", "interrupted"}
 
 
 def calculate_project_status(project: Project) -> str:

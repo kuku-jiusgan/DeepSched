@@ -271,7 +271,7 @@ def _ensure_leaf_tasks(tasks: list[Task], label: str) -> None:
 def _task_has_schedule(db, task_id: int) -> bool:
     return db.query(TimeSlot.id).filter(
         TimeSlot.task_id == task_id,
-        TimeSlot.status.in_(["scheduled", "running", "completed", "blocked", "interrupted"]),
+        TimeSlot.status.in_(["scheduled", "running", "completed", "paused", "blocked", "interrupted"]),
     ).first() is not None
 
 

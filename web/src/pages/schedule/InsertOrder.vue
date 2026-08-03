@@ -263,7 +263,7 @@ function statusLabel(status: string) {
     waiting_external: '等待方案签批',
     waiting_approval: '等待签批结果',
     running: '进行中',
-    interrupted: '已中断',
+    paused: '已暂停', interrupted: '已中断',
     done: '已完成',
     completed: '已完成',
   }

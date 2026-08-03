@@ -37,7 +37,7 @@ def get_workspace_tasks(db, user, now: datetime | None = None) -> list[Workspace
 def _workspace_task_out(task, segments, delay_by_slot, now: datetime) -> WorkspaceTaskOut:
     planned_start, planned_end = planned_task_window(segments)
     actual_start, actual_end = actual_task_window(segments)
-    actual_duration_hours = _actual_duration_hours(segments)
+    actual_duration_hours = _actual_duration_hours(task, segments)
     actionable = select_actionable_segment(segments, now)
     delay_detail = _task_delay_detail(task, actionable, segments, delay_by_slot)
 
@@ -61,7 +61,17 @@ def _workspace_task_out(task, segments, delay_by_slot, now: datetime) -> Workspa
     )
 
 
-def _actual_duration_hours(segments) -> float | None:
+def _actual_duration_hours(task, segments) -> float | None:
+    execution_segments = [
+        segment for segment in task.execution_segments
+        if segment.ended_at is not None
+    ]
+    if execution_segments:
+        total_seconds = sum(
+            (segment.ended_at - segment.started_at).total_seconds()
+            for segment in execution_segments
+        )
+        return round(total_seconds / 3600, 2)
     completed_segments = [
         segment for segment in segments
         if segment.actual_start is not None and segment.actual_end is not None

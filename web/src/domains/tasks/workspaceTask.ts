@@ -159,7 +159,7 @@ export function isDuePendingTask(task: WorkspaceTask, now: Dayjs = dayjs()) {
 }
 
 export function isWorkspaceActiveTask(task: WorkspaceTask, now: Dayjs = dayjs()) {
-  return ['running', 'blocked', 'interrupted'].includes(task.execution_status) || isDuePendingTask(task, now)
+  return ['running', 'paused', 'blocked', 'interrupted'].includes(task.execution_status) || isDuePendingTask(task, now)
 }
 
 export function isWorkspacePendingTask(task: WorkspaceTask, now: Dayjs = dayjs()) {

@@ -10,7 +10,7 @@ class ScheduleConflictError(Exception):
     pass
 
 
-ACTIVE_SLOT_STATUSES = ["scheduled", "running", "completed", "blocked", "interrupted"]
+ACTIVE_SLOT_STATUSES = ["scheduled", "running", "completed", "paused", "blocked", "interrupted"]
 
 
 def find_instrument_conflicts(db, schedule_run_id: str | None = None) -> list[dict]:

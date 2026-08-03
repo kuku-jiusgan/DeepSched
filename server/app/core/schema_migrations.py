@@ -205,7 +205,7 @@ def ensure_runtime_schema(engine) -> None:
                 "WHERE status = 'active' "
                 "AND NOT EXISTS ("
                 "SELECT 1 FROM task WHERE task.project_id = project.id "
-                "AND task.status IN ('running', 'done', 'completed', 'interrupted')"
+                "AND task.status IN ('running', 'paused', 'done', 'completed', 'interrupted')"
                 ") "
                 "AND NOT EXISTS ("
                 "SELECT 1 FROM time_slot JOIN task ON task.id = time_slot.task_id "

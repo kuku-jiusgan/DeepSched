@@ -153,7 +153,7 @@ interface RescheduleFailureDetail {
 const tierLabels: Record<string, string> = { frozen: '冻结', confirmed: '确认', forecast: '预测' }
 const statusLabels: Record<string, string> = {
   completed: '已完成', running: '运行中', scheduled: '已排程',
-  interrupted: '已中断', blocked: '已阻塞', pending: '待处理',
+  paused: '已暂停', interrupted: '已中断', blocked: '已阻塞', pending: '待处理',
 }
 
 const slotColumns = [

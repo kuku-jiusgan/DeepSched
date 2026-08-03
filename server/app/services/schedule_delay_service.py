@@ -29,8 +29,8 @@ class ScheduleDelayInvalidError(DomainValidationError):
     pass
 
 
-ACTIVE_SLOT_STATUSES = ["scheduled", "running", "blocked", "interrupted"]
-ACTIVE_TASK_STATUSES = ["pending", "scheduled", "running", "blocked", "interrupted"]
+ACTIVE_SLOT_STATUSES = ["scheduled", "running", "paused", "blocked", "interrupted"]
+ACTIVE_TASK_STATUSES = ["pending", "scheduled", "running", "paused", "blocked", "interrupted"]
 
 
 def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operator_name: str = "system") -> dict:

@@ -360,7 +360,7 @@ def _project_completions(db, project_ids: set[int]) -> dict[int, datetime]:
     slots = db.query(TimeSlot).join(Task).filter(
         Task.project_id.in_(project_ids),
         TimeSlot.status.in_([
-            "scheduled", "running", "blocked", "interrupted", "completed",
+            "scheduled", "running", "paused", "blocked", "interrupted", "completed",
         ]),
     ).all()
     completions: dict[int, datetime] = {}
@@ -453,7 +453,7 @@ def _downstream_ids(db, seed_ids: set[int], project_task_ids: set[int]) -> set[i
 
 def _plan_fingerprint(db, project: Project, tasks: list[Task]) -> str:
     unique_tasks = _unique_tasks(tasks)
-    slots = db.query(TimeSlot).filter(TimeSlot.status.in_(["scheduled", "running", "completed", "blocked", "interrupted"])).order_by(TimeSlot.id).all()
+    slots = db.query(TimeSlot).filter(TimeSlot.status.in_(["scheduled", "running", "completed", "paused", "blocked", "interrupted"])).order_by(TimeSlot.id).all()
     payload = {
         "project": [
             project.id,

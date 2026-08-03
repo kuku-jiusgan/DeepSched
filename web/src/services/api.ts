@@ -263,6 +263,31 @@ export const completeTask = (
 export const interruptTask = (slotId: number): Promise<{ status: string }> =>
   api.post(`/schedules/timeslots/${slotId}/interrupt`).then(r => r.data);
 
+export interface TaskSwitchCandidate {
+  slot_id: number
+  task_id: number
+  task_name: string
+  project_code: string
+  project_name: string
+  assignee_name: string | null
+  plan_start: string
+  plan_end: string
+  is_paused: boolean
+}
+
+export const getTaskSwitchCandidates = (slotId: number): Promise<TaskSwitchCandidate[]> =>
+  api.get<TaskSwitchCandidate[]>(`/schedules/timeslots/${slotId}/switch-candidates`).then(r => r.data)
+
+export const pauseTask = (
+  slotId: number,
+  reason: string,
+  targetSlotId?: number,
+): Promise<{ status: string; message?: string }> =>
+  api.post(`/schedules/timeslots/${slotId}/pause`, {
+    reason,
+    target_slot_id: targetSlotId,
+  }).then(r => r.data)
+
 export interface NightRunRequest {
   duration_hours: number
   earliest_start?: string

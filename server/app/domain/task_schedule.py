@@ -47,7 +47,7 @@ def select_actionable_segment(segments: Iterable[SegmentT], now: datetime) -> Se
     current_or_future = next(
         (
             item for item in items
-            if item.status in {"scheduled", "blocked", "interrupted"}
+            if item.status in {"scheduled", "blocked", "paused", "interrupted"}
             and item.plan_end
             and item.plan_end >= now
         ),

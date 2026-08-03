@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.models import Task, TimeSlot
+from app.models import Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_status_service import mark_instrument_running
 from app.services.instrument_occupancy_service import current_occupying_slot
 from app.services.task_delay_status_service import mark_task_delayed
@@ -10,8 +10,8 @@ from app.domain.errors import DomainConflictError, DomainNotFoundError
 
 
 COMPLETED_TASK_STATUSES = {"done", "completed"}
-STARTABLE_SLOT_STATUSES = {"scheduled", "blocked"}
-RUNNING_CONTINUATION_STATUSES = {"scheduled", "running", "blocked"}
+STARTABLE_SLOT_STATUSES = {"scheduled", "blocked", "paused", "interrupted"}
+RUNNING_CONTINUATION_STATUSES = {"scheduled", "running", "blocked", "paused", "interrupted"}
 
 
 class TaskExecutionNotFoundError(DomainNotFoundError):
@@ -22,7 +22,7 @@ class TaskExecutionInvalidError(DomainConflictError):
     pass
 
 
-def start_task_execution(db, slot_id: int) -> dict[str, str]:
+def start_task_execution(db, slot_id: int, operator_id: int | None = None) -> dict[str, str]:
     slot = db.query(TimeSlot).filter(TimeSlot.id == slot_id).first()
     if not slot:
         raise TaskExecutionNotFoundError("时间槽不存在")
@@ -41,7 +41,15 @@ def start_task_execution(db, slot_id: int) -> dict[str, str]:
         running_slot.status = "running"
         if running_slot.id == slot.id:
             running_slot.actual_start = started_at
+            running_slot.actual_end = None
         mark_instrument_running(db, running_slot.instrument_id)
+    db.add(TaskExecutionSegment(
+        task_id=task.id,
+        slot_id=slot.id,
+        instrument_id=slot.instrument_id,
+        operator_id=operator_id,
+        started_at=started_at,
+    ))
     return {"status": "ok"}
 
 
@@ -54,6 +62,13 @@ def ensure_predecessors_completed(task: Task) -> None:
     if incomplete:
         names = "、".join(incomplete[:3])
         raise TaskExecutionInvalidError(f"前置任务【{names}】尚未完成，不能操作【{task.name}】")
+
+
+def predecessors_completed(task: Task) -> bool:
+    return all(
+        not _incomplete_leaf_task_names(dependency.predecessor)
+        for dependency in task.predecessors
+    )
 
 
 def _incomplete_leaf_task_names(task: Task) -> list[str]:

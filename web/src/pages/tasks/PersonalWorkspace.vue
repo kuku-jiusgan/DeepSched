@@ -29,6 +29,7 @@
         :tasks="tasks"
         @start="handleStart"
         @complete="handleComplete"
+        @pause="handlePause"
         @refreshed="fetchData"
       >
         <template #additional-group>
@@ -125,6 +126,11 @@
         </a-button>
       </div>
     </a-modal>
+    <PauseTaskModal
+      v-model:open="pauseModalOpen"
+      :task="pauseTaskRecord"
+      @completed="fetchData"
+    />
   </div>
 </template>
 
@@ -145,6 +151,7 @@ import {
 } from '@/domains/tasks/workspaceTask'
 import TodayTaskCards from './TodayTaskCards.vue'
 import ApprovalConfirmationGroup from './ApprovalConfirmationGroup.vue'
+import PauseTaskModal from './PauseTaskModal.vue'
 import './workspaceActionButtons.css'
 import dayjs from 'dayjs'
 
@@ -158,6 +165,8 @@ const actingId = ref<number | null>(null)
 const releaseConfirmOpen = ref(false)
 const releaseSubmitting = ref(false)
 const releaseConfirmTask = ref<WorkspaceTask | null>(null)
+const pauseModalOpen = ref(false)
+const pauseTaskRecord = ref<WorkspaceTask | null>(null)
 let isFetching = false
 
 const EARLY_RELEASE_THRESHOLD_MINUTES = 30
@@ -202,7 +211,7 @@ async function loadTaskTypes() {
 }
 
 function statusColor(s: string) {
-  const m: Record<string, string> = { pending: '#94a3b8', scheduled: '#2563eb', running: '#16a34a', completed: '#7c3aed', done: '#7c3aed', blocked: '#dc2626', interrupted: '#ea580c' }
+  const m: Record<string, string> = { pending: '#94a3b8', scheduled: '#2563eb', running: '#16a34a', paused: '#d97706', completed: '#7c3aed', done: '#7c3aed', blocked: '#dc2626', interrupted: '#ea580c' }
   return m[s] || '#94a3b8'
 }
 
@@ -213,7 +222,7 @@ function taskTypeColor(code: string | null) {
   return m[code] || '#94a3b8'
 }
 function statusLabel(s: string) {
-  const m: Record<string, string> = { pending: '待处理', scheduled: '待执行', running: '运行中', completed: '已完成', done: '已完成', blocked: '已延期', interrupted: '已中断' }
+  const m: Record<string, string> = { pending: '待处理', scheduled: '待执行', running: '运行中', paused: '已暂停', completed: '已完成', done: '已完成', blocked: '已延期', interrupted: '已中断' }
   return m[s] || s
 }
 
@@ -300,6 +309,11 @@ async function handleStart(record: WorkspaceTask) {
     fetchData()
   } catch (error: unknown) { message.error(errorDetail(error, '开始任务失败')) }
   finally { actingId.value = null }
+}
+
+function handlePause(record: WorkspaceTask) {
+  pauseTaskRecord.value = record
+  pauseModalOpen.value = true
 }
 
 const releaseConfirmContent = computed(() => {

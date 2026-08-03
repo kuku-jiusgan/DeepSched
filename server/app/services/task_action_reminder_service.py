@@ -18,7 +18,7 @@ REMINDER_LEASE_SECONDS = 45
 REMINDER_LEASE_NAME = "task-action-reminders"
 START_REMINDER_TYPE = "task_start_delay"
 END_REMINDER_TYPE = "task_end_delay"
-ACTIVE_SLOT_STATUSES = {"scheduled", "running", "blocked", "interrupted", "completed"}
+ACTIVE_SLOT_STATUSES = {"scheduled", "running", "paused", "blocked", "interrupted", "completed"}
 
 _stop_event = threading.Event()
 _worker_thread: threading.Thread | None = None

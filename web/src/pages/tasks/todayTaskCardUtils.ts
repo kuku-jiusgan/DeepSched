@@ -42,7 +42,7 @@ export function currentUserName() {
 
 export function isTodayTask(task: WorkspaceTask, now: dayjs.Dayjs = dayjs()) {
   if (isTaskClosed(task)) return false
-  if (task.execution_status === 'running') return true
+  if (['running', 'paused'].includes(task.execution_status)) return true
   return isTaskDue(task, now)
 }
 
@@ -55,8 +55,8 @@ export function isWorkspaceExceptionConfirmTask(task: WorkspaceTask, now: dayjs.
 }
 
 export function canStartTask(task: WorkspaceTask) {
-  return ['pending', 'scheduled', 'blocked'].includes(task.execution_status)
-    && !task.actual_window.start
+  return ['pending', 'scheduled', 'blocked', 'paused'].includes(task.execution_status)
+    && (!task.actual_window.start || task.execution_status === 'paused')
     && Boolean(actionableSlotId(task))
 }
 
@@ -143,7 +143,7 @@ export function isHalfHourDuration(value: unknown) {
 export function statusLabel(status: string) {
   const labels: Record<string, string> = {
     pending: '待处理', scheduled: '待执行', running: '运行中', completed: '已完成',
-    done: '已完成', blocked: '已延期', interrupted: '已中断',
+    done: '已完成', paused: '已暂停', blocked: '已延期', interrupted: '已中断',
   }
   return labels[status] || status
 }

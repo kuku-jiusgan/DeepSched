@@ -6,7 +6,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
-from app.models import Task, TimeSlot
+from app.models import Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_status_service import refresh_instrument_status
 from app.services.schedule_advance_notification_service import notify_advanced_task_assignees
 from app.services.schedule_forward_slot_service import build_forward_slots
@@ -45,6 +45,7 @@ def complete_task_and_shift(
 
     planned_end = max(slot.plan_end for slot in task_slots)
     task.status = "done"
+    _close_running_execution_segment(db, task.id, end_time)
     if end_time > planned_end:
         mark_task_delayed(task)
     completed_slot = _select_completed_slot(task_slots, completed_slot_id, end_time)
@@ -88,6 +89,21 @@ def complete_task_and_shift(
     result["delayed_slots"] = delay_result["shifted_slots"]
     result["delay_affected_tasks"] = delay_result["affected_tasks"]
     return result
+
+
+def _close_running_execution_segment(db, task_id: int, ended_at: datetime) -> None:
+    segment = (
+        db.query(TaskExecutionSegment)
+        .filter(
+            TaskExecutionSegment.task_id == task_id,
+            TaskExecutionSegment.ended_at.is_(None),
+        )
+        .order_by(TaskExecutionSegment.started_at.desc(), TaskExecutionSegment.id.desc())
+        .first()
+    )
+    if segment:
+        segment.ended_at = ended_at
+        segment.end_reason = "completed"
 
 
 def _propagate_delay_safely(
