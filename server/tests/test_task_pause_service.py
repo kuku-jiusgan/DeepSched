@@ -14,7 +14,7 @@ class TaskPauseServiceTest(unittest.TestCase):
     def setUp(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        self.db = sessionmaker(bind=engine)()
+        self.db = sessionmaker(bind=engine, autoflush=False)()
         self.operator = User(username="tech", display_name="技术员", role="技术员")
         self.instrument = Instrument(code="LCMS-01", name="液质联用仪")
         self.project_a = Project(code="A", name="项目A")

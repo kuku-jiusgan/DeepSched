@@ -61,6 +61,7 @@ def pause_and_switch_task(
     source_slot.actual_end = paused_at
     source_task.status = "paused"
     _close_execution_segment(db, source_slot, paused_at, clean_reason, operator.id)
+    db.flush()
     refresh_instrument_status(db, source_slot.instrument_id)
 
     target_task_name = None
