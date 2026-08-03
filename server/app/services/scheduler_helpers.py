@@ -139,12 +139,29 @@ def build_dependencies(
         (task.id, leaf_predecessor_id)
         for task in tasks
         for dependency in task.predecessors
-        for leaf_predecessor_id in _leaf_task_ids(
-            dependency.predecessor_id,
+        for leaf_predecessor_id in _effective_predecessor_ids(
+            dependency.predecessor,
             children_by_parent,
         )
     }
     return sorted(dependencies)
+
+
+def _effective_predecessor_ids(
+    predecessor,
+    children_by_parent: dict[int, list[int]],
+) -> set[int]:
+    if not getattr(predecessor, "is_external_gate", False):
+        return _leaf_task_ids(predecessor.id, children_by_parent)
+    bridged_ids = {
+        task_id
+        for dependency in predecessor.predecessors
+        for task_id in _effective_predecessor_ids(
+            dependency.predecessor,
+            children_by_parent,
+        )
+    }
+    return bridged_ids or {predecessor.id}
 
 
 def _leaf_task_ids(

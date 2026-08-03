@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Iterable, Set
 
-from app.models import AuditLog, Task, TimeSlot
+from app.models import AuditLog, Task, TaskDependency, TimeSlot
 from app.services.instrument_status_service import delete_time_slots_and_refresh
 from app.services.schedule_advance_notification_service import (
     capture_task_schedule_windows,
@@ -107,6 +107,9 @@ def _affected_slot_ids(db, task: Task, slot: TimeSlot, cutoff: datetime) -> Set[
     slot_ids.update(_ids(_same_project_slots(db, task, cutoff)))
     if slot.instrument_id:
         slot_ids.update(_ids(_same_instrument_slots(db, slot, cutoff)))
+    if task.requires_human and task.assignee_id is not None:
+        slot_ids.update(_ids(_same_assignee_slots(db, task, cutoff)))
+    slot_ids.update(_dependency_slot_ids(db, slot_ids, cutoff))
     return slot_ids
 
 
@@ -128,6 +131,47 @@ def _same_instrument_slots(db, slot: TimeSlot, cutoff: datetime) -> Iterable[Tim
         TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
         TimeSlot.plan_start >= cutoff,
     ).all()
+
+
+def _same_assignee_slots(db, task: Task, cutoff: datetime) -> Iterable[TimeSlot]:
+    task_ids = db.query(Task.id).filter(
+        Task.id != task.id,
+        Task.requires_human.is_(True),
+        Task.assignee_id == task.assignee_id,
+        Task.status.in_(ACTIVE_TASK_STATUSES),
+    )
+    return db.query(TimeSlot).filter(
+        TimeSlot.task_id.in_(task_ids),
+        TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+        TimeSlot.actual_start.is_(None),
+        TimeSlot.plan_start >= cutoff,
+    ).all()
+
+
+def _dependency_slot_ids(db, slot_ids: set[int], cutoff: datetime) -> set[int]:
+    task_ids = _task_ids_for_slots(db, slot_ids)
+    descendants: set[int] = set()
+    frontier = set(task_ids)
+    while frontier:
+        rows = db.query(TaskDependency.task_id).join(
+            Task,
+            Task.id == TaskDependency.task_id,
+        ).filter(
+            TaskDependency.predecessor_id.in_(frontier),
+            Task.status.in_(ACTIVE_TASK_STATUSES),
+        ).distinct().all()
+        next_ids = {task_id for task_id, in rows} - task_ids - descendants
+        descendants.update(next_ids)
+        frontier = next_ids
+    if not descendants:
+        return set()
+    rows = db.query(TimeSlot.id).filter(
+        TimeSlot.task_id.in_(descendants),
+        TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+        TimeSlot.actual_start.is_(None),
+        TimeSlot.plan_start >= cutoff,
+    ).all()
+    return {slot_id for slot_id, in rows}
 
 
 def _apply_delay_with_working_hours(

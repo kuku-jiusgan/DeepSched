@@ -39,6 +39,8 @@
 
         <template v-else-if="column.key === 'client'">{{ record.client_name || '-' }}</template>
 
+        <template v-else-if="column.key === 'name'">{{ record.name || '-' }}</template>
+
         <template v-else-if="column.key === 'manager'">{{ record.manager_name || '-' }}</template>
 
         <template v-else-if="column.key === 'estimated_hours'">{{ record.estimated_hours ?? '-' }}</template>
@@ -430,7 +432,7 @@ const columns = [
 
   { title: '项目编号', dataIndex: 'code', key: 'code', width: 130 },
 
-  { title: '项目名称', dataIndex: 'name', key: 'name', ellipsis: true },
+  { title: '项目名称', dataIndex: 'name', key: 'name', width: 180, ellipsis: true },
 
   { title: '客户', dataIndex: 'client_name', key: 'client', width: 140 },
 
@@ -819,4 +821,3 @@ async function loadTaskTypes() {
 onMounted(async () => { await loadTaskTypes(); await Promise.all([fetchProjects(), loadUsers(), loadInstruments()]) })
 
 </script>
-

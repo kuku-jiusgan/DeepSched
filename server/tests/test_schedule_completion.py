@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Notification, Task, TaskDependency, TimeSlot, User
+from app.models import Notification, Project, Task, TaskDependency, TimeSlot, User
 from app.services.schedule_completion_service import (
     _forward_shift_instrument_queue,
     _mark_task_slots_completed,
@@ -314,6 +314,119 @@ class ScheduleCompletionTest(unittest.TestCase):
 
         self.assertEqual(1, result["moved_tasks"])
         self.assertEqual(0, self.db.query(Notification).count())
+
+    def test_late_completion_shifts_following_task_for_same_assignee(self):
+        project = Project(
+            id=1, name="延期项目", code="DELAY-1",
+            start_date=datetime(2026, 7, 13),
+            end_date=datetime(2026, 7, 20, 23, 59),
+        )
+        assignee = User(
+            id=7, username="analyst-7", display_name="负责人",
+            role="分析员", is_active=True,
+        )
+        completed = Task(
+            project=project, name="方法验证", task_type="test", status="running",
+            requires_human=True, assignee=assignee,
+        )
+        following = Task(
+            project_id=2, name="报告撰写", task_type="manual", status="scheduled",
+            delay_status="delayed", requires_human=True, assignee=assignee,
+        )
+        self.db.add_all([project, assignee, completed, following])
+        self.db.flush()
+        self.db.add_all([
+            TimeSlot(
+                task_id=completed.id, plan_start=datetime(2026, 7, 13, 8, 30),
+                plan_end=datetime(2026, 7, 13, 9, 0), status="running",
+            ),
+            TimeSlot(
+                task_id=following.id, plan_start=datetime(2026, 7, 13, 9, 0),
+                plan_end=datetime(2026, 7, 13, 17, 0), status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        result = self._complete_and_shift(completed.id, datetime(2026, 7, 13, 10, 27))
+
+        shifted = self.db.query(TimeSlot).filter(TimeSlot.task_id == following.id).one()
+        self.assertEqual(datetime(2026, 7, 13, 10, 30), shifted.plan_start)
+        self.assertEqual(datetime(2026, 7, 13, 18, 30), shifted.plan_end)
+        self.db.refresh(following)
+        self.assertEqual("not_delayed", following.delay_status)
+        self.assertEqual(1, result["delay_affected_tasks"])
+        self.assertEqual(0, result["moved_tasks"])
+
+    def test_late_completion_keeps_reported_delay_on_blocked_following_task(self):
+        project = Project(
+            id=1, name="延期项目", code="DELAY-BLOCKED",
+            end_date=datetime(2026, 7, 20, 23, 59),
+        )
+        completed = Task(
+            project=project, name="方法验证", task_type="test", status="running",
+        )
+        following = Task(
+            project=project, name="报告撰写", task_type="manual", status="blocked",
+            delay_status="delayed",
+        )
+        self.db.add_all([project, completed, following])
+        self.db.flush()
+        self.db.add_all([
+            TimeSlot(
+                task_id=completed.id, plan_start=datetime(2026, 7, 13, 8, 30),
+                plan_end=datetime(2026, 7, 13, 9, 0), status="running",
+            ),
+            TimeSlot(
+                task_id=following.id, plan_start=datetime(2026, 7, 13, 9, 0),
+                plan_end=datetime(2026, 7, 13, 17, 0), status="blocked",
+            ),
+        ])
+        self.db.commit()
+
+        self._complete_and_shift(completed.id, datetime(2026, 7, 13, 10, 27))
+
+        self.db.refresh(following)
+        shifted = self.db.query(TimeSlot).filter(TimeSlot.task_id == following.id).one()
+        self.assertEqual(datetime(2026, 7, 13, 10, 30), shifted.plan_start)
+        self.assertEqual("delayed", following.delay_status)
+
+    def test_late_completion_is_kept_when_following_task_cannot_shift(self):
+        project = Project(
+            id=1, name="截止项目", code="DELAY-END",
+            end_date=datetime(2026, 7, 13, 17, 30),
+        )
+        completed = Task(
+            project=project, name="方法验证", task_type="test", status="running",
+        )
+        following = Task(
+            project=project, name="报告撰写", task_type="manual", status="scheduled",
+        )
+        self.db.add_all([project, completed, following])
+        self.db.flush()
+        self.db.add_all([
+            TimeSlot(
+                task_id=completed.id, plan_start=datetime(2026, 7, 13, 8, 30),
+                plan_end=datetime(2026, 7, 13, 9, 0), status="running",
+            ),
+            TimeSlot(
+                task_id=following.id, plan_start=datetime(2026, 7, 13, 9, 0),
+                plan_end=datetime(2026, 7, 13, 17, 0), status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        result = self._complete_and_shift(completed.id, datetime(2026, 7, 13, 10, 0))
+
+        completed_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == completed.id,
+        ).one()
+        following_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == following.id,
+        ).one()
+        self.assertEqual("completed", completed_slot.status)
+        self.assertEqual(datetime(2026, 7, 13, 10, 0), completed_slot.actual_end)
+        self.assertEqual(datetime(2026, 7, 13, 9, 0), following_slot.plan_start)
+        self.assertIn("无法自动顺延", result["message"])
 
     def _forward_shift(self, instrument_id: int, released_at: datetime) -> dict:
         working_options = {

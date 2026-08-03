@@ -73,6 +73,7 @@ const detailLabels: Record<string, string> = {
   mode: '排程模式', result: '执行结果', path: '接口', status: '状态', success: '执行结果',
   duration_ms: '耗时', created: '新增任务数', client_ids: '任务标识', expected_approval_at: '预计签批时间',
   schedule_run_id: '排程批次', delay_hours: '延期时长（小时）', reason: '延期原因', shifted_slots: '受影响排程数',
+  insert_summary: '插单说明',
   task_ids: '插单任务', anchor_task_id: '插入位置任务', moved_tasks: '移动任务数',
   username: '登录账号', display_name: '姓名', roles: '角色', email: '邮箱', phone: '手机号',
   wecom_id: '企业微信号', is_active: '账号状态', login_method: '登录方式',
@@ -105,6 +106,7 @@ function targetText(record: AuditLogRecord) {
   return record.target_id ? `${target} #${record.target_id}` : target
 }
 function detailText(detail: Record<string, unknown>) {
+  if (Array.isArray(detail.task_details)) return formatPlanTasks(detail)
   if (Array.isArray(detail.changes)) return formatUserChanges(detail.changes)
   if (detail.project_fields && typeof detail.project_fields === 'object') return formatProjectDetail(detail.project_fields as Record<string, unknown>)
   if (detail.username && detail.display_name) return formatUserDetail(detail)
@@ -114,6 +116,25 @@ function detailText(detail: Record<string, unknown>) {
     .filter(([key]) => key !== 'client_ip' && key !== 'target_display' && !(key === 'task_id' && detail.task_display))
     .map(([key, value]) => `${detailLabels[key] || key}: ${formatDetailValue(value)}`)
     .join(' · ') || '-'
+}
+function formatPlanTasks(detail: Record<string, unknown>) {
+  const tasks = detail.task_details as Array<Record<string, unknown>>
+  const lines = tasks.map((task, index) => {
+    const parts = [
+      `${index + 1}. ${task.name}`,
+      `类型：${task.task_type}`,
+      `工时：${task.estimated_hours === null || task.estimated_hours === undefined ? '无需排程' : `${task.estimated_hours} 小时`}`,
+      `负责人：${task.assignee || '未指定负责人'}`,
+      `仪器：${formatTaskList(task.instruments, '无需仪器')}`,
+      `前置任务：${formatTaskList(task.predecessors, '无')}`,
+    ]
+    if (task.parent) parts.push(`所属任务：${task.parent}`)
+    return parts.join(' ｜ ')
+  })
+  return [`新增 ${detail.created || tasks.length} 个任务：`, ...lines].join('\n')
+}
+function formatTaskList(value: unknown, emptyText: string) {
+  return Array.isArray(value) && value.length ? value.join('、') : emptyText
 }
 function formatProjectDetail(fields: Record<string, unknown>) {
   const projectLabels: Record<string, string> = {
@@ -171,6 +192,6 @@ onMounted(loadLogs)
 .page-header h2 { margin: 0; font-size: 20px; color: var(--color-text-primary); }
 .page-header p { margin: 5px 0 0; color: var(--color-text-secondary); font-size: 13px; }
 .filter-bar { display: flex; gap: 12px; margin-bottom: 16px; }
-.filter-bar .ant-input { width: 260px; }.filter-bar .ant-select { width: 170px; }.detail-text { color: var(--color-text-secondary); }
+.filter-bar .ant-input { width: 260px; }.filter-bar .ant-select { width: 170px; }.detail-text { color: var(--color-text-secondary); white-space: pre-line; line-height: 1.75; }
 @media (max-width: 720px) { .filter-bar { flex-wrap: wrap; }.filter-bar .ant-input, .filter-bar .ant-select { width: 100%; } }
 </style>

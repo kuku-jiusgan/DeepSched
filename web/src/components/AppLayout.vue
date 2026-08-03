@@ -480,12 +480,14 @@ function notificationTypeLabel(type: string) {
     schedule_changed: '排程变更',
     task_start_delay: '开始延迟',
     task_end_delay: '结束延期',
+    task_schedule_advanced: '排程提前',
+    task_schedule_delayed: '排程推迟',
     hours_exceeded: '工时超标',
     approval_pending: '方案待提交',
     approval_due: '签批提醒',
     approval_schedule_result: '签批排程',
   }
-  return labels[type] || type
+  return labels[type] || '系统通知'
 }
 
 function notificationTypeColor(type: string) {
@@ -495,6 +497,8 @@ function notificationTypeColor(type: string) {
     schedule_changed: 'blue',
     task_start_delay: 'gold',
     task_end_delay: 'volcano',
+    task_schedule_advanced: 'green',
+    task_schedule_delayed: 'orange',
     hours_exceeded: 'purple',
     approval_pending: 'default',
     approval_due: 'orange',

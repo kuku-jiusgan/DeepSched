@@ -19,6 +19,8 @@ from app.services.scheduler_helpers import (
 )
 from app.services.project_status_service import calculate_project_status
 from app.services.task_delay_status_service import mark_task_delayed
+from app.services.schedule_delay_propagation_service import propagate_actual_delay
+from app.services.schedule_delay_service import ScheduleDelayInvalidError
 
 def complete_task_and_shift(
     db: Session,
@@ -48,6 +50,7 @@ def complete_task_and_shift(
     completed_slot = _select_completed_slot(task_slots, completed_slot_id, end_time)
     affected_instrument_ids = {slot.instrument_id for slot in task_slots if slot.instrument_id}
     _mark_task_slots_completed(task_slots, completed_slot, end_time)
+    delay_result = _propagate_delay_safely(db, task, planned_end, end_time)
     if task.project:
         task.project.status = calculate_project_status(task.project)
 
@@ -61,13 +64,47 @@ def complete_task_and_shift(
             "message": "任务已完成，未释放仪器，后续排程保持不变",
             "moved_tasks": 0,
             "released_instrument": False,
+            "delayed_slots": delay_result["shifted_slots"],
+            "delay_affected_tasks": delay_result["affected_tasks"],
+        }
+    if end_time > planned_end:
+        db.flush()
+        delay_warning = delay_result.get("warning")
+        return {
+            "status": "ok",
+            "message": delay_warning or (
+                f"任务已延期完成，已顺延 {delay_result['affected_tasks']} 个受影响任务"
+            ),
+            "moved_tasks": 0,
+            "released_instrument": True,
+            "delayed_slots": delay_result["shifted_slots"],
+            "delay_affected_tasks": delay_result["affected_tasks"],
         }
     result = _forward_shift_instrument_queue(db, completed_slot.instrument_id, end_time)
     moved_task_details = result.pop("moved_task_details", [])
     notify_advanced_task_assignees(db, task, end_time, planned_end, moved_task_details)
     db.flush()
     result["released_instrument"] = True
+    result["delayed_slots"] = delay_result["shifted_slots"]
+    result["delay_affected_tasks"] = delay_result["affected_tasks"]
     return result
+
+
+def _propagate_delay_safely(
+    db: Session,
+    task: Task,
+    planned_end: datetime,
+    actual_end: datetime,
+) -> dict:
+    try:
+        with db.begin_nested():
+            return propagate_actual_delay(db, task, planned_end, actual_end)
+    except ScheduleDelayInvalidError as exc:
+        return {
+            "shifted_slots": 0,
+            "affected_tasks": 0,
+            "warning": f"任务已延期完成，但后续任务无法自动顺延：{exc}",
+        }
 
 
 def _select_completed_slot(

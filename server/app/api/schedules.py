@@ -94,7 +94,7 @@ def update_timeslot(
 def start_task(
     slot_id: int,
     db: Session = Depends(get_db),
-    user=Depends(require_slot_operator),
+    _user=Depends(require_slot_operator),
 ):
     return execute_transaction(db, lambda: start_task_execution(db, slot_id))
 
@@ -123,7 +123,7 @@ def delay_task(
     slot_id: int,
     data: TaskDelayRequest,
     db: Session = Depends(get_db),
-    _user=Depends(require_slot_operator),
+    user=Depends(require_slot_operator),
 ):
     return execute_transaction(
         db,
@@ -192,21 +192,15 @@ def confirm_insert(
     user=Depends(require_management_user),
 ):
     try:
-        result = confirm_insert_service(db, data)
+        operator_name = user.display_name or user.username
+        result = confirm_insert_service(db, data, operator_name=operator_name)
         record_audit_log(
             db,
-            user.display_name or user.username,
+            operator_name,
             "schedule_insert_confirmed",
             "schedule",
             None,
-            {
-                "mode": data.mode,
-                "project_id": data.project_id,
-                "task_ids": data.task_ids,
-                "anchor_task_id": data.anchor_task_id,
-                "moved_tasks": result.moved_tasks,
-                "schedule_run_id": result.schedule_run_id,
-            },
+            result.audit_detail,
         )
         db.commit()
         return result

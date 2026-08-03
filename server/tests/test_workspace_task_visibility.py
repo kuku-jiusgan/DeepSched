@@ -11,7 +11,7 @@ from app.api.schedules import (
     _task_actual_window,
 )
 from app.core.database import Base
-from app.models import Project, Task, TimeSlot, User
+from app.models import AuditLog, Project, Task, TimeSlot, User
 from app.services.workspace_service import get_workspace_tasks
 
 
@@ -137,6 +137,33 @@ class WorkspaceTaskVisibilityTest(unittest.TestCase):
 
         task_result = next(item for item in result if item.task_id == self.owner_task.id)
         self.assertEqual("delayed", task_result.delay.status)
+
+    def test_normal_task_does_not_expose_old_delay_detail(self):
+        slot = TimeSlot(
+            task_id=self.owner_task.id,
+            instrument_id=1,
+            plan_start=datetime(2026, 7, 24, 12, 30),
+            plan_end=datetime(2026, 8, 3, 13, 30),
+            status="scheduled",
+        )
+        self.db.add(slot)
+        self.db.flush()
+        self.db.add(AuditLog(
+            user_name="系统管理员",
+            action="task_delay_reported",
+            target_type="time_slot",
+            target_id=slot.id,
+            detail={"task_id": self.owner_task.id, "delay_hours": 2, "reason": "旧延期"},
+        ))
+        self.owner_task.delay_status = "not_delayed"
+        self.db.commit()
+
+        result = get_workspace_tasks(self.db, self.owner, datetime(2026, 7, 24, 11, 30))
+
+        task_result = next(item for item in result if item.task_id == self.owner_task.id)
+        self.assertEqual("not_delayed", task_result.delay.status)
+        self.assertIsNone(task_result.delay.hours)
+        self.assertIsNone(task_result.delay.reason)
 
     def test_completed_slot_keeps_explicit_delay_detail_for_gantt(self):
         slot = TimeSlot(

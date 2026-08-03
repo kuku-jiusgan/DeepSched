@@ -122,7 +122,7 @@ class TaskExecutionServiceTest(unittest.TestCase):
         self.assertEqual("ok", result["status"])
         self.assertEqual("running", self.db.get(Task, self.task.id).status)
 
-    def test_instrument_task_cannot_start_early_when_instrument_is_occupied(self):
+    def test_instrument_task_cannot_start_early_when_instrument_is_running(self):
         self.predecessor.status = "done"
         self.slot.plan_start = datetime.now() + timedelta(hours=1)
         self.slot.plan_end = datetime.now() + timedelta(hours=2)
@@ -132,7 +132,7 @@ class TaskExecutionServiceTest(unittest.TestCase):
             name="当前方法验证",
             task_type="FFYZ_001",
             requires_instrument=True,
-            status="scheduled",
+            status="running",
         )
         occupying_slot = TimeSlot(
             id=2,
@@ -140,7 +140,8 @@ class TaskExecutionServiceTest(unittest.TestCase):
             instrument_id=1,
             plan_start=datetime.now() - timedelta(hours=1),
             plan_end=datetime.now() + timedelta(minutes=30),
-            status="scheduled",
+            actual_start=datetime.now() - timedelta(hours=1),
+            status="running",
             tier="confirmed",
         )
         self.db.add_all([occupying_task, occupying_slot])

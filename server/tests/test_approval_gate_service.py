@@ -117,7 +117,11 @@ class ApprovalGateServiceTest(unittest.TestCase):
         self.assertIsNotNone(result.gate.expected_approval_at)
 
     @patch("app.services.project_plan_apply_service.apply_project_plan")
-    def test_submit_rejects_incomplete_predecessor(self, apply_project_plan):
+    def test_submit_allows_expected_date_before_predecessor_completion(self, apply_project_plan):
+        apply_project_plan.return_value = type("Result", (), {
+            "status": "applied", "message": "预测排程已更新", "preview_token": None,
+            "schedule_run_id": "run-early-forecast", "moved_tasks": 0,
+        })()
         gate = create_approval_gate(
             self.db,
             1,
@@ -125,18 +129,22 @@ class ApprovalGateServiceTest(unittest.TestCase):
             self.manager,
         )
 
-        with self.assertRaisesRegex(ApprovalGateInvalidError, "方案编写.*尚未完成"):
-            submit_approval_gate(
-                self.db,
-                gate.id,
-                ApprovalGateSubmit(expected_approval_at=datetime.now() + timedelta(days=3)),
-                self.manager,
-            )
+        result = submit_approval_gate(
+            self.db,
+            gate.id,
+            ApprovalGateSubmit(expected_approval_at=datetime.now() + timedelta(days=3)),
+            self.manager,
+        )
 
-        apply_project_plan.assert_not_called()
+        self.assertEqual("waiting_approval", result.gate.gate_status)
+        apply_project_plan.assert_called_once()
 
     @patch("app.services.project_plan_apply_service.apply_project_plan")
-    def test_submit_rejects_time_before_predecessor_completion(self, apply_project_plan):
+    def test_submit_allows_expected_time_before_recorded_predecessor_completion(self, apply_project_plan):
+        apply_project_plan.return_value = type("Result", (), {
+            "status": "applied", "message": "预测排程已更新", "preview_token": None,
+            "schedule_run_id": "run-before-completion", "moved_tasks": 0,
+        })()
         gate = create_approval_gate(
             self.db,
             1,
@@ -156,15 +164,15 @@ class ApprovalGateServiceTest(unittest.TestCase):
         ))
         self.db.commit()
 
-        with self.assertRaisesRegex(ApprovalGateInvalidError, "不能早于前置任务完成时间"):
-            submit_approval_gate(
-                self.db,
-                gate.id,
-                ApprovalGateSubmit(expected_approval_at=datetime.now() + timedelta(days=1)),
-                self.manager,
-            )
+        result = submit_approval_gate(
+            self.db,
+            gate.id,
+            ApprovalGateSubmit(expected_approval_at=datetime.now() + timedelta(days=1)),
+            self.manager,
+        )
 
-        apply_project_plan.assert_not_called()
+        self.assertEqual("waiting_approval", result.gate.gate_status)
+        apply_project_plan.assert_called_once()
 
     def test_workspace_gate_exposes_predecessor_status_and_completion_time(self):
         gate = create_approval_gate(

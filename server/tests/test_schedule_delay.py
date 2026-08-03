@@ -1,16 +1,20 @@
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Project, Task, TimeSlot
+from app.models import Project, Task, TimeSlot, User
 from app.services.schedule_delay_service import (
     ScheduleDelayInvalidError,
     report_task_delay as report_task_delay_service,
 )
 from app.api.transactions import execute_transaction
+from app.api.schedules import delay_task
+from app.schemas.schemas import TaskDelayRequest
 
 
 def report_task_delay(db, slot_id, delay_hours, reason):
@@ -28,6 +32,24 @@ class ScheduleDelayTest(unittest.TestCase):
 
     def tearDown(self):
         self.db.close()
+
+    def test_delay_route_passes_operator_name_to_service(self):
+        request = TaskDelayRequest(delay_hours=2, reason="实验延迟")
+        user = SimpleNamespace(display_name="王福芳", username="wangfufang")
+        expected = {
+            "status": "ok", "task_id": 17, "slot_id": 5,
+            "delay_hours": 2, "shifted_slots": 1,
+            "affected_tasks": 2, "reason": "实验延迟",
+        }
+
+        with patch(
+            "app.api.schedules.report_task_delay",
+            return_value=expected,
+        ) as report:
+            result = delay_task(5, request, self.db, user)
+
+        self.assertEqual(expected, result)
+        report.assert_called_once_with(self.db, 5, 2, "实验延迟", "王福芳")
 
     def test_delay_from_current_card_extends_final_task_slot(self):
         task = Task(project_id=1, name="multi-day", task_type="test", status="scheduled")
@@ -88,6 +110,42 @@ class ScheduleDelayTest(unittest.TestCase):
         self.assertEqual(1, len(shifted_slots))
         self.assertEqual(datetime(2026, 7, 14, 9, 0), shifted_slots[0].plan_start)
         self.assertEqual(datetime(2026, 7, 14, 10, 30), shifted_slots[0].plan_end)
+
+    def test_delay_shifts_same_assignee_task_in_another_project(self):
+        assignee = User(
+            username="shared-owner", display_name="共同负责人",
+            role="分析员", is_active=True,
+        )
+        delayed_task = Task(
+            project_id=1, name="delayed", task_type="test", status="scheduled",
+            requires_human=True, assignee=assignee,
+        )
+        following_task = Task(
+            project_id=2, name="following", task_type="test", status="scheduled",
+            requires_human=True, assignee=assignee,
+        )
+        self.db.add_all([assignee, delayed_task, following_task])
+        self.db.flush()
+        delayed_slot = TimeSlot(
+            task_id=delayed_task.id,
+            plan_start=datetime(2026, 7, 13, 8, 30),
+            plan_end=datetime(2026, 7, 13, 9, 0), status="scheduled",
+        )
+        following_slot = TimeSlot(
+            task_id=following_task.id,
+            plan_start=datetime(2026, 7, 13, 9, 0),
+            plan_end=datetime(2026, 7, 13, 17, 0), status="scheduled",
+        )
+        self.db.add_all([delayed_slot, following_slot])
+        self.db.commit()
+
+        report_task_delay(self.db, delayed_slot.id, 1.5, "实验延迟")
+
+        shifted = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == following_task.id,
+        ).one()
+        self.assertEqual(datetime(2026, 7, 13, 10, 30), shifted.plan_start)
+        self.assertEqual(datetime(2026, 7, 13, 18, 30), shifted.plan_end)
 
     def test_delay_rejects_delayed_task_past_project_end(self):
         project = Project(

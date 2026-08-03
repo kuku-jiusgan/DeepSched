@@ -311,6 +311,53 @@ class ScheduleConflictServiceTest(unittest.TestCase):
 
         self.assertEqual(1, len(find_human_conflicts(self.db)))
 
+    def test_existing_conflict_outside_current_run_does_not_block_scheduling(self):
+        self._create_user(1)
+        self._create_task(1, 1)
+        self._create_task(2, 1)
+        self._create_task(3, 1)
+        self.db.add_all([
+            TimeSlot(
+                task_id=1, schedule_run_id="old-a",
+                plan_start=datetime(2026, 7, 16, 8, 30),
+                plan_end=datetime(2026, 7, 16, 12, 0), status="scheduled",
+            ),
+            TimeSlot(
+                task_id=2, schedule_run_id="old-b",
+                plan_start=datetime(2026, 7, 16, 10, 0),
+                plan_end=datetime(2026, 7, 16, 14, 0), status="scheduled",
+            ),
+            TimeSlot(
+                task_id=3, schedule_run_id="current",
+                plan_start=datetime(2026, 7, 17, 8, 30),
+                plan_end=datetime(2026, 7, 17, 10, 0), status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        ensure_no_human_conflicts(self.db, "current")
+
+    def test_conflict_with_current_run_still_blocks_scheduling(self):
+        self._create_user(1)
+        self._create_task(1, 1)
+        self._create_task(2, 1)
+        self.db.add_all([
+            TimeSlot(
+                task_id=1, schedule_run_id="old",
+                plan_start=datetime(2026, 7, 16, 8, 30),
+                plan_end=datetime(2026, 7, 16, 12, 0), status="scheduled",
+            ),
+            TimeSlot(
+                task_id=2, schedule_run_id="current",
+                plan_start=datetime(2026, 7, 16, 10, 0),
+                plan_end=datetime(2026, 7, 16, 14, 0), status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        with self.assertRaises(ScheduleConflictError):
+            ensure_no_human_conflicts(self.db, "current")
+
 
 if __name__ == "__main__":
     unittest.main()

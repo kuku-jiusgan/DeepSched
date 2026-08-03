@@ -176,18 +176,11 @@ def submit_approval_gate(
 ) -> ApprovalGateActionOut:
     gate = _gate_or_404(db, gate_id)
     _ensure_can_operate_gate(gate, user)
-    _ensure_gate_predecessors_completed(gate)
     if gate.gate_status == "approved":
         raise ApprovalGateInvalidError("该方案已经签批")
     expected_at = _naive_datetime(data.expected_approval_at)
     if expected_at <= datetime.now():
         raise ApprovalGateInvalidError("预计签批完成时间必须晚于当前时间")
-    predecessor_completed_at = _latest_predecessor_completed_at(gate)
-    if predecessor_completed_at and expected_at < predecessor_completed_at:
-        raise ApprovalGateInvalidError(
-            f"预计签批完成时间不能早于前置任务完成时间"
-            f"【{predecessor_completed_at:%Y-%m-%d %H:%M}】"
-        )
     gate.gate_status = "waiting_approval"
     gate.status = "waiting_approval"
     gate.submitted_at = gate.submitted_at or datetime.now()
@@ -530,15 +523,6 @@ def _ensure_gate_predecessors_completed(gate: Task) -> None:
         ensure_predecessors_completed(gate)
     except TaskExecutionInvalidError as exc:
         raise ApprovalGateInvalidError(str(exc))
-
-
-def _latest_predecessor_completed_at(gate: Task) -> datetime | None:
-    completion_times = [
-        completed_at
-        for dependency in gate.predecessors
-        if (completed_at := _task_completed_at(dependency.predecessor)) is not None
-    ]
-    return max(completion_times, default=None)
 
 
 def _task_completed_at(task: Task) -> datetime | None:

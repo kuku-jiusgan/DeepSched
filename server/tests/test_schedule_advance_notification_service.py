@@ -8,12 +8,18 @@ from sqlalchemy.orm import sessionmaker
 from app.core.database import Base
 from app.models import AlertRule, Notification, Task, TimeSlot, User
 from app.services.schedule_advance_notification_service import (
+    _format_time_change,
     capture_task_schedule_windows,
     notify_rescheduled_tasks_advanced,
 )
 
 
 class ScheduleAdvanceNotificationServiceTest(unittest.TestCase):
+    def test_formats_schedule_change_in_hours_or_days(self):
+        self.assertEqual("3 小时", _format_time_change(3 * 3600))
+        self.assertEqual("24 小时", _format_time_change(24 * 3600))
+        self.assertEqual("2 天", _format_time_change(48 * 3600))
+
     def setUp(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
@@ -72,6 +78,9 @@ class ScheduleAdvanceNotificationServiceTest(unittest.TestCase):
         self.assertIn("全局重排", notifications[0].content)
         self.assertIn("2026-07-20 09:00", notifications[0].content)
         self.assertIn("2026-07-18 09:00", notifications[0].content)
+        self.assertNotIn("2026-07-20 11:00", notifications[0].content)
+        self.assertNotIn("2026-07-18 11:00", notifications[0].content)
+        self.assertIn("提前约 2 天", notifications[0].content)
         enqueue.assert_called_once()
 
     @patch("app.services.push_notification_service.enqueue_wecom_delivery")

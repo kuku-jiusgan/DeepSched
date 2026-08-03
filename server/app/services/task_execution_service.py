@@ -77,7 +77,6 @@ def _ensure_can_start(db, task: Task, slot: TimeSlot) -> None:
     if slot.status not in STARTABLE_SLOT_STATUSES:
         raise TaskExecutionInvalidError("当前任务状态不能开始")
     ensure_predecessors_completed(task)
-    now = datetime.now()
     if not task.requires_instrument:
         return
     if not slot.instrument_id:
@@ -85,7 +84,6 @@ def _ensure_can_start(db, task: Task, slot: TimeSlot) -> None:
     occupying_slot = current_occupying_slot(
         db,
         slot.instrument_id,
-        now,
         excluded_task_id=task.id,
     )
     if occupying_slot and occupying_slot.task:

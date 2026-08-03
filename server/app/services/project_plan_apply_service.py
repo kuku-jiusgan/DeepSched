@@ -62,11 +62,12 @@ def apply_project_plan(db, project_id: int) -> ProjectPlanApplyResponse:
             project_id=project_id,
         )
 
-    stable_result = _execute_replan(db, project, selected_tasks, [], commit=True)
+    stable_result = _execute_replan(db, project, selected_tasks, [], commit=False)
     if stable_result.status == "applied" and _selected_tasks_start_today(
         db, selected_tasks, stable_result.schedule_run_id,
     ):
-        return stable_result
+        db.rollback()
+        return _execute_replan(db, project, selected_tasks, [], commit=True)
     if stable_result.status == "applied":
         db.rollback()
         movable_tasks = _load_insert_movable_tasks(db, project, selected_tasks)

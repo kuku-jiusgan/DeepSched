@@ -68,6 +68,17 @@ describe('workspace task selectors', () => {
     expect(isWorkspacePendingTask(future, now)).toBe(true)
   })
 
+  it('shows a later task today in completion instead of exception confirmation', () => {
+    const futureToday = task({
+      task_window: { start: '2026-07-18T12:30:00', end: '2026-08-03T13:30:00' },
+      delay: { status: 'not_delayed', hours: null, reason: null, reported_at: null },
+    })
+
+    expect(isCompletionConfirmTask(futureToday, now)).toBe(true)
+    expect(isWorkspaceExceptionConfirmTask(futureToday, now)).toBe(false)
+    expect(isWorkspacePendingTask(futureToday, now)).toBe(false)
+  })
+
   it('keeps delayed tasks in the exception card independently of the active-tab selector', () => {
     expect(isWorkspaceExceptionConfirmTask(task(), now)).toBe(true)
     expect(isCompletionConfirmTask(task(), now)).toBe(false)

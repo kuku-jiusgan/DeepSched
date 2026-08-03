@@ -350,6 +350,7 @@ class InsertOrderResult(BaseModel):
     moved_tasks: int = 0
     conflicts_checked: bool = False
     impacts: List[InsertOrderImpact] = []
+    audit_detail: dict[str, object] = Field(default_factory=dict, exclude=True)
 
 InsertOrderCost = InsertOrderPreview
 

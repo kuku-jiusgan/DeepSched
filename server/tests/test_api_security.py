@@ -45,11 +45,10 @@ class ApiSecurityTest(unittest.TestCase):
         routes = list(_api_routes(protected_router))
         self.assertGreater(len(routes), 60)
 
-        for included_router in protected_router.routes:
-            with self.subTest(router=type(included_router).__name__):
-                dependencies = getattr(included_router, "include_context").dependencies
+        for route in routes:
+            with self.subTest(route=route.path):
                 dependency_calls = {
-                    getattr(dependency, "dependency", None) for dependency in dependencies
+                    dependency.call for dependency in route.dependant.dependencies
                 }
                 self.assertIn(require_authenticated_user, dependency_calls)
 

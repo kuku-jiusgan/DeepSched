@@ -61,6 +61,8 @@ class SchedulerService:
         commit: bool = True,
         excluded_task_ids: set[int] | None = None,
         original_schedule_windows: dict[int, tuple[datetime, datetime]] | None = None,
+        stability_task_ids: set[int] | None = None,
+        additional_dependencies: list[tuple[int, int]] | None = None,
         advance_notification_reason: str = "重新排程",
         emit_advance_notifications: bool = True,
     ) -> dict:
@@ -114,7 +116,10 @@ class SchedulerService:
             return {"status": "error", "message": diagnostic_message}
 
         task_children = load_task_children(self.db, tasks)
-        task_deps = build_dependencies(tasks, task_children)
+        task_deps = sorted(
+            set(build_dependencies(tasks, task_children))
+            | set(additional_dependencies or [])
+        )
         maintenance_rule = constraints["maintenance_avoidance"]
         maint_windows = (
             build_maintenance_windows(instruments, horizon_start)
@@ -450,6 +455,19 @@ class SchedulerService:
                 if 0 <= deadline <= total_units:
                     model.Add(task_tardiness[t.id] >= task_ends[t.id] - deadline)
 
+        stability_penalties = []
+        for task_id in stability_task_ids or set():
+            old_window = original_schedule_windows.get(task_id)
+            if task_id not in task_starts or not old_window:
+                continue
+            old_start_unit = max(0, min(
+                total_units,
+                datetime_to_units(old_window[0], horizon_start),
+            ))
+            deviation = model.NewIntVar(0, total_units, f"stability_t{task_id}")
+            model.AddAbsEquality(deviation, task_starts[task_id] - old_start_unit)
+            stability_penalties.append(deviation)
+
         add_scheduler_objective(
             model,
             tasks,
@@ -464,6 +482,7 @@ class SchedulerService:
                 parent_id: len(child_ids)
                 for parent_id, child_ids in task_children.items()
             },
+            stability_penalties,
         )
 
         solver = cp_model.CpSolver()
@@ -526,8 +545,8 @@ class SchedulerService:
         )
 
         try:
-            ensure_no_instrument_conflicts(self.db)
-            ensure_no_human_conflicts(self.db)
+            ensure_no_instrument_conflicts(self.db, schedule_run_id)
+            ensure_no_human_conflicts(self.db, schedule_run_id)
         except ScheduleConflictError as exc:
             self.db.rollback()
             return {"status": "error", "message": str(exc), "timeslots_created": 0}

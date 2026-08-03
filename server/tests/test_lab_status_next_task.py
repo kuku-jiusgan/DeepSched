@@ -48,7 +48,7 @@ class LabStatusNextTaskTest(unittest.TestCase):
         self.assertEqual("XM-001", item["next_project_code"])
         self.assertEqual("张分析", item["next_user"])
 
-    def test_scheduled_multiday_task_is_current_before_manual_start(self):
+    def test_overdue_scheduled_task_remains_idle_before_manual_start(self):
         now = datetime.now()
         user = User(id=1, username="analyst", display_name="江秀秀", role="分析员")
         project = Project(id=1, name="克拉霉素项目", code="XM2026194", manager_id=1)
@@ -70,12 +70,12 @@ class LabStatusNextTaskTest(unittest.TestCase):
 
         item = lab_status(self.db)[0]
 
-        self.assertEqual("方法开发", item["current_task"])
-        self.assertEqual(first_start.isoformat(), item["running_start"])
-        self.assertEqual("方法验证", item["next_task"])
-        self.assertNotEqual("方法开发", item["next_task"])
+        self.assertIsNone(item["current_task"])
+        self.assertIsNone(item["running_start"])
+        self.assertEqual("idle", item["status"])
+        self.assertEqual("方法开发", item["next_task"])
 
-    def test_previous_task_remains_current_until_next_task_starts(self):
+    def test_blocked_task_without_actual_start_is_not_current(self):
         now = datetime.now()
         project = Project(id=1, name="项目", code="XM-002")
         instrument = Instrument(id=1, code="LCMS-01", name="液质联用仪", status="idle")
@@ -93,7 +93,8 @@ class LabStatusNextTaskTest(unittest.TestCase):
 
         item = lab_status(self.db)[0]
 
-        self.assertEqual("上一任务", item["current_task"])
+        self.assertIsNone(item["current_task"])
+        self.assertEqual("idle", item["status"])
         self.assertEqual("下一任务", item["next_task"])
 
     def test_actually_started_next_task_replaces_previous_task(self):

@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.api.projects import _task_to_out
-from app.models import Project, Task, TaskDependency, TaskTypeConfig, User
+from app.models import AuditLog, Project, Task, TaskDependency, TaskTypeConfig, TimeSlot, User
 from app.schemas.project_plan_draft_schemas import ProjectPlanDraftCommitIn, ProjectPlanDraftTaskIn
 from app.services.project_plan_draft_service import (
     ProjectPlanDraftInvalidError,
@@ -56,6 +56,15 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
         self.assertEqual("approval_gate", saved_gate.task_type)
         self.assertEqual("not_submitted", saved_gate.gate_status)
         self.assertIn((by_name["方案签批"].id, by_name["方法验证"].id), dependencies)
+        audit = self.db.query(AuditLog).filter(
+            AuditLog.action == "project_plan_drafts_committed"
+        ).one()
+        self.assertEqual("DRAFT-1 · 草稿项目", audit.detail["target_display"])
+        self.assertNotIn("client_ids", audit.detail)
+        self.assertEqual("方法开发", audit.detail["task_details"][0]["name"])
+        self.assertEqual(70, audit.detail["task_details"][0]["estimated_hours"])
+        self.assertEqual(["方法开发"], audit.detail["task_details"][1]["predecessors"])
+        self.assertEqual(0, self.db.query(TimeSlot).count())
 
     def test_hours_over_project_limit_rolls_back_whole_batch(self):
         data = ProjectPlanDraftCommitIn(tasks=[
@@ -73,6 +82,38 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
         ])
 
         with self.assertRaises(ProjectPlanDraftInvalidError):
+            commit_project_plan_drafts(self.db, 1, data, self.manager)
+
+        self.assertEqual(0, self.db.query(Task).count())
+
+    def test_self_dependency_is_rejected_before_insert(self):
+        data = ProjectPlanDraftCommitIn(tasks=[
+            self._task(-1, "自依赖任务", "QCFA_001", 10, predecessors=[-1]),
+        ])
+
+        with self.assertRaisesRegex(ProjectPlanDraftInvalidError, "前置关系不能形成循环"):
+            commit_project_plan_drafts(self.db, 1, data, self.manager)
+
+        self.assertEqual(0, self.db.query(Task).count())
+
+    def test_dependency_cycle_is_rejected_before_insert(self):
+        data = ProjectPlanDraftCommitIn(tasks=[
+            self._task(-1, "任务 A", "QCFA_001", 10, predecessors=[-2]),
+            self._task(-2, "任务 B", "QCFA_001", 10, predecessors=[-1]),
+        ])
+
+        with self.assertRaisesRegex(ProjectPlanDraftInvalidError, "前置关系不能形成循环"):
+            commit_project_plan_drafts(self.db, 1, data, self.manager)
+
+        self.assertEqual(0, self.db.query(Task).count())
+
+    def test_parent_cycle_is_rejected_before_insert(self):
+        data = ProjectPlanDraftCommitIn(tasks=[
+            self._task(-1, "父任务 A", "QCFA_001", 10, parent_id=-2),
+            self._task(-2, "父任务 B", "QCFA_001", 10, parent_id=-1),
+        ])
+
+        with self.assertRaisesRegex(ProjectPlanDraftInvalidError, "父子任务层级不能形成循环"):
             commit_project_plan_drafts(self.db, 1, data, self.manager)
 
         self.assertEqual(0, self.db.query(Task).count())

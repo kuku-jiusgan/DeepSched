@@ -27,7 +27,7 @@
     </div>
 
     <div v-else class="gantt-container" :class="{ 'is-week-view': viewMode === 'week' }" ref="containerRef">
-      <div class="gantt-left" ref="leftRef">
+      <div class="gantt-left">
         <div class="gantt-header-cell">项目</div>
         <div v-for="row in flatRows" :key="'l-' + row.inst.id + '-q' + row.quarter"
           class="gantt-left-row" :class="{ 'is-subrow': row.isSubrow, 'is-last': row.isLast }"
@@ -39,7 +39,7 @@
         </div>
       </div>
 
-      <div class="gantt-right" ref="rightRef" @scroll="onScroll">
+      <div class="gantt-right">
         <div class="gantt-timeline-header" :style="{ width: totalWidth + 'px' }">
           <div v-for="col in timeColumns" :key="col.key" class="gantt-col-header" :style="{ width: colWidth + 'px' }"
             :class="{ 'is-weekend': col.isWeekend, 'is-today': col.isToday }">
@@ -114,8 +114,6 @@ const tooltipX = ref(0)
 const tooltipY = ref(0)
 const tooltipStyle = computed(() => ({ left: tooltipX.value + 'px', top: tooltipY.value + 'px' }))
 const containerRef = ref<HTMLElement | null>(null)
-const leftRef = ref<HTMLElement | null>(null)
-const rightRef = ref<HTMLElement | null>(null)
 const colWidth = ref(140)
 const rowHeight = ref(200)
 const BASE_PROJECT_ROW_HEIGHT = 35
@@ -469,7 +467,7 @@ async function switchView(mode: 'day' | 'week' | 'month') {
   else if (mode === 'week') cursorDate.value = dayjs().startOf('week')
   else cursorDate.value = dayjs().startOf('day')
   await recalc()
-  if (mode === 'day') await centerGanttTimelineOnCurrentTime(rightRef, colWidth)
+  if (mode === 'day') await centerGanttTimelineOnCurrentTime(containerRef, colWidth)
 }
 
 function goPrev() {
@@ -489,11 +487,7 @@ async function goToday() {
   else if (viewMode.value === 'week') cursorDate.value = dayjs().startOf('week')
   else cursorDate.value = dayjs().startOf('day')
   await recalc()
-  if (viewMode.value === 'day') await centerGanttTimelineOnCurrentTime(rightRef, colWidth)
-}
-
-function onScroll() {
-  if (leftRef.value && rightRef.value) leftRef.value.scrollTop = rightRef.value.scrollTop
+  if (viewMode.value === 'day') await centerGanttTimelineOnCurrentTime(containerRef, colWidth)
 }
 
 async function recalc() {
@@ -533,7 +527,7 @@ async function fetchData(silent = false) {
     if (!silent) loading.value = false
     await nextTick()
     await recalc()
-    if (viewMode.value === 'day') await centerGanttTimelineOnCurrentTime(rightRef, colWidth)
+    if (viewMode.value === 'day') await centerGanttTimelineOnCurrentTime(containerRef, colWidth)
   }
 }
 

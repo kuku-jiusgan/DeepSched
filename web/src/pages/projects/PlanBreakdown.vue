@@ -23,7 +23,7 @@
         type="info"
         showIcon
         message="当前有未保存的计划草稿"
-        description="新增任务和模板计划目前只保存在本页面；离开页面将丢失，点击“保存并开始排程”后才会写入数据库。"
+        description="新增任务和模板计划目前只保存在本页面。点击“仅保存计划”可持久化内容且不触发排程。"
         style="margin-bottom: 16px"
       />
       <a-alert
@@ -31,7 +31,7 @@
         type="warning"
         showIcon
         message="计划已修改，待重新排程"
-        description="当前甘特图仍保留原排程；只有点击“保存并开始排程”后才会应用新计划。"
+        description="计划内容已经保存，当前甘特图仍保留原排程；只有点击“保存并排程”后才会应用新计划。"
         style="margin-bottom: 16px"
       />
       <div class="action-bar">
@@ -125,8 +125,11 @@
         </a-table-column>
       </a-table>
       <div style="margin-top: 16px; text-align: right">
+        <a-button v-if="hasLocalDrafts" v-operation="'create_task'" size="large" :loading="savingPlan" @click="handleSavePlan" style="margin-right: 8px">
+          <SaveOutlined /> 仅保存计划
+        </a-button>
         <a-button v-operation="'schedule'" type="primary" size="large" @click="handleStartSchedule" :loading="scheduling">
-          <PlayCircleOutlined /> 保存并开始排程
+          <PlayCircleOutlined /> 保存并排程
         </a-button>
       </div>
     </template>
@@ -187,7 +190,7 @@ import { ref, computed, reactive, onMounted, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
-import { PlusOutlined, EditOutlined, LeftOutlined, PlayCircleOutlined, FileTextOutlined, ImportOutlined, HolderOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined, EditOutlined, LeftOutlined, PlayCircleOutlined, FileTextOutlined, ImportOutlined, HolderOutlined, SaveOutlined } from '@ant-design/icons-vue'
 import { commitProjectPlanDrafts, createApprovalGate, reorderProjectTasks, getProject, getProjectDAG, updateTask, deleteTask, getUserDirectory, getTaskTypes, getInstruments, applyProjectPlan, confirmProjectPlanInsert, type ApprovalGateCreatePayload, type ProjectPlanDraftTaskPayload, type Project, type Task, type DAGData, type TaskTypeConfig } from '@/services/api'
 import type { ProjectPlanApplyResult } from '@/types'
 import PlanInsertPreviewModal from './components/PlanInsertPreviewModal.vue'
@@ -362,7 +365,10 @@ async function handleTaskSubmit() {
   try {
     if (editingTask.value?.is_local_draft) {
       const index = allTasks.value.findIndex(task => task.id === editingTask.value?.id)
-      if (index >= 0) allTasks.value[index] = buildDraftTask(payload, editingTask.value.id)
+      const planOrder = editingTask.value.parent_id === payload.parent_id
+        ? editingTask.value.plan_order
+        : undefined
+      if (index >= 0) allTasks.value[index] = buildDraftTask(payload, editingTask.value.id, planOrder)
       expandTask(payload.parent_id)
       message.success('草稿任务已更新')
     } else if (editingTask.value) {
@@ -413,6 +419,7 @@ function buildDraftTask(
     parent_id: number | null; instrument_ids: number[];
   },
   id: number,
+  planOrder?: number,
 ): Task {
   return {
     id,
@@ -436,7 +443,7 @@ function buildDraftTask(
     assignee_name: getAssigneeName(payload.assignee_id),
     parent_id: payload.parent_id,
     is_local_draft: true,
-    plan_order: siblingTasks(payload.parent_id).length,
+    plan_order: planOrder ?? siblingTasks(payload.parent_id).length,
   }
 }
 async function handleCreateApprovalGate(payload: ApprovalGateCreatePayload) {
@@ -506,6 +513,28 @@ async function loadTaskTypes() {
   } catch { console.error('loadTaskTypes failed') }
 }
 const scheduling = ref(false)
+const savingPlan = ref(false)
+async function saveLocalDrafts() {
+  const drafts = allTasks.value.filter(task => task.is_local_draft)
+  if (!drafts.length) return null
+  const pendingOrders = siblingOrderGroups()
+  const result = await commitProjectPlanDrafts(projectId, drafts.map(toDraftPayload))
+  await persistCommittedDraftOrders(pendingOrders, result.id_map)
+  return result
+}
+async function handleSavePlan() {
+  savingPlan.value = true
+  try {
+    const result = await saveLocalDrafts()
+    if (!result) { message.info('当前没有需要保存的计划草稿'); return }
+    message.success(`${result.message}，尚未执行排程`)
+    await fetchProject()
+  } catch (error: unknown) {
+    message.error(errorDetail(error, '保存计划失败'))
+  } finally {
+    savingPlan.value = false
+  }
+}
 async function handleStartSchedule() {
   const missingInstrumentTasks = allTasks.value.filter(task => (
     !isParentTask(task.id)
@@ -519,11 +548,8 @@ async function handleStartSchedule() {
   }
   scheduling.value = true
   try {
-    const drafts = allTasks.value.filter(task => task.is_local_draft)
-    if (drafts.length) {
-      const pendingOrders = siblingOrderGroups()
-      const saveResult = await commitProjectPlanDrafts(projectId, drafts.map(toDraftPayload))
-      await persistCommittedDraftOrders(pendingOrders, saveResult.id_map)
+    const saveResult = await saveLocalDrafts()
+    if (saveResult) {
       message.success(saveResult.message)
       await fetchProject()
     }

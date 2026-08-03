@@ -13,7 +13,7 @@ class ScheduleConflictError(Exception):
 ACTIVE_SLOT_STATUSES = ["scheduled", "running", "completed", "blocked", "interrupted"]
 
 
-def find_instrument_conflicts(db) -> list[dict]:
+def find_instrument_conflicts(db, schedule_run_id: str | None = None) -> list[dict]:
     slots = db.query(TimeSlot).filter(
         TimeSlot.instrument_id.isnot(None),
         TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
@@ -30,6 +30,8 @@ def find_instrument_conflicts(db) -> list[dict]:
         for index, (slot, start, end) in enumerate(instrument_slots):
             for previous_slot, previous_start, previous_end in instrument_slots[:index]:
                 if previous_end <= start or not _is_schedulable_conflict(previous_slot, slot):
+                    continue
+                if not _in_run(previous_slot, slot, schedule_run_id):
                     continue
                 conflicts.append({
                     "instrument_id": instrument_id,
@@ -50,7 +52,7 @@ def find_instrument_conflicts(db) -> list[dict]:
     return conflicts
 
 
-def find_human_conflicts(db) -> list[dict]:
+def find_human_conflicts(db, schedule_run_id: str | None = None) -> list[dict]:
     slots = db.query(TimeSlot).join(Task).filter(
         Task.requires_human.is_(True),
         Task.assignee_id.isnot(None),
@@ -68,6 +70,8 @@ def find_human_conflicts(db) -> list[dict]:
         for index, (slot, start, end) in enumerate(assignee_slots):
             for previous_slot, previous_start, previous_end in assignee_slots[:index]:
                 if previous_end <= start or not _is_schedulable_conflict(previous_slot, slot):
+                    continue
+                if not _in_run(previous_slot, slot, schedule_run_id):
                     continue
                 conflicts.append({
                     "assignee_id": assignee_id,
@@ -92,6 +96,12 @@ def _is_schedulable_conflict(first: TimeSlot, second: TimeSlot) -> bool:
     if first.task_id == second.task_id:
         return False
     return first.actual_start is None or second.actual_start is None
+
+
+def _in_run(first: TimeSlot, second: TimeSlot, schedule_run_id: str | None) -> bool:
+    if schedule_run_id is None:
+        return True
+    return schedule_run_id in {first.schedule_run_id, second.schedule_run_id}
 
 
 def _effective_slot_range(slot: TimeSlot):
@@ -143,8 +153,8 @@ def _format_time(value) -> str:
     return value.strftime("%Y-%m-%d %H:%M")
 
 
-def ensure_no_instrument_conflicts(db) -> None:
-    conflicts = find_instrument_conflicts(db)
+def ensure_no_instrument_conflicts(db, schedule_run_id: str | None = None) -> None:
+    conflicts = find_instrument_conflicts(db, schedule_run_id)
     if not conflicts:
         return
     conflict = conflicts[0]
@@ -157,8 +167,8 @@ def ensure_no_instrument_conflicts(db) -> None:
     )
 
 
-def ensure_no_human_conflicts(db) -> None:
-    conflicts = find_human_conflicts(db)
+def ensure_no_human_conflicts(db, schedule_run_id: str | None = None) -> None:
+    conflicts = find_human_conflicts(db, schedule_run_id)
     if not conflicts:
         return
     conflict = conflicts[0]

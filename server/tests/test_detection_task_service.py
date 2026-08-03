@@ -30,9 +30,9 @@ class DetectionTaskServiceTest(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    @patch("app.services.detection_task_service.SchedulerService.generate")
-    def test_creates_top_level_task_without_predecessors_and_schedules_it(self, generate):
-        generate.return_value = {"status": "ok", "message": "排程完成"}
+    @patch("app.services.detection_task_service.apply_project_plan")
+    def test_creates_top_level_task_without_predecessors_and_schedules_it(self, apply_plan):
+        apply_plan.return_value.model_dump.return_value = {"status": "ok", "message": "排程完成"}
         start = datetime(2026, 7, 21)
         data = SimpleNamespace(
             code="JC-001", name="含量检测", client_name="客户A", priority=2,
@@ -49,7 +49,7 @@ class DetectionTaskServiceTest(unittest.TestCase):
         self.assertIsNone(project.tasks[0].parent_id)
         self.assertEqual([], project.tasks[0].predecessor_ids)
         self.assertEqual("ok", result["status"])
-        generate.assert_called_once_with(project_ids=[project.id])
+        apply_plan.assert_called_once_with(self.db, project.id)
 
     def test_detection_tasks_are_separate_from_standard_projects(self):
         detection = Project(code="JC-001", name="检测任务", project_kind="detection")
@@ -81,9 +81,9 @@ class DetectionTaskServiceTest(unittest.TestCase):
 
         self.assertEqual(["JC-OWN"], [item.code for item in result])
 
-    @patch("app.services.detection_task_service.SchedulerService.generate")
-    def test_completed_detection_task_cannot_be_deleted(self, generate):
-        generate.return_value = {"status": "ok", "message": "排程完成"}
+    @patch("app.services.detection_task_service.apply_project_plan")
+    def test_completed_detection_task_cannot_be_deleted(self, apply_plan):
+        apply_plan.return_value.model_dump.return_value = {"status": "ok", "message": "排程完成"}
         start = datetime(2026, 7, 21)
         data = SimpleNamespace(
             code="JC-DONE", name="已完成检测", client_name=None, priority=3,
@@ -114,9 +114,9 @@ class DetectionTaskServiceTest(unittest.TestCase):
 
         self.assertIsNone(self.db.query(Project).filter(Project.id == project.id).first())
 
-    @patch("app.services.detection_task_service.SchedulerService.generate")
-    def test_updates_detection_task_and_reschedules_it(self, generate):
-        generate.return_value = {"status": "ok", "message": "排程完成"}
+    @patch("app.services.detection_task_service.apply_project_plan")
+    def test_updates_detection_task_and_reschedules_it(self, apply_plan):
+        apply_plan.return_value.model_dump.return_value = {"status": "ok", "message": "排程完成"}
         start = datetime(2026, 7, 21)
         original = SimpleNamespace(
             code="JC-001", name="原检测", client_name=None, priority=3,
@@ -130,7 +130,7 @@ class DetectionTaskServiceTest(unittest.TestCase):
             **original.__dict__, "code": "JC-002", "name": "日常检测",
             "est_duration_hours": 6,
         })
-        generate.reset_mock()
+        apply_plan.reset_mock()
 
         project, result = update_detection_task(self.db, project.id, updated, self.user)
 
@@ -139,7 +139,7 @@ class DetectionTaskServiceTest(unittest.TestCase):
         self.assertEqual(6, project.tasks[0].est_duration_hours)
         self.assertEqual("pending", project.tasks[0].status)
         self.assertEqual("ok", result["status"])
-        generate.assert_called_once_with(project_ids=[project.id])
+        apply_plan.assert_called_once_with(self.db, project.id)
 
 
 if __name__ == "__main__":

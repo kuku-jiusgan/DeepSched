@@ -12,17 +12,17 @@
 .gantt-page.is-fullscreen .gantt-container { flex: 1; min-height: 0; margin-top: 0; }
 .action-bar.is-screen-toolbar { align-items: center; }
 
-.gantt-container { display: flex; flex: 1; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; margin-top: 12px; min-height: 0; }
+.gantt-container { position: relative; display: flex; flex: 1; border: 1px solid #e5e7eb; border-radius: 8px; overflow: auto; margin-top: 12px; min-height: 0; background: #fff; }
 
-.gantt-left { width: 160px; min-width: 160px; background: #f8fafc; border-right: 1px solid #e5e7eb; overflow-y: auto; overflow-x: hidden; }
+.gantt-left { position: sticky; left: 0; z-index: 5; isolation: isolate; width: 160px; min-width: 160px; background: #f8fafc; border-right: 1px solid #e5e7eb; }
 .gantt-left::-webkit-scrollbar { width: 0; }
-.gantt-header-cell { height: 50px; display: flex; align-items: center; padding: 0 12px; font-weight: 600; font-size: 13px; color: #475569; border-bottom: 2px solid #c0c7cf; background: #f1f5f9; }
+.gantt-header-cell { position: sticky; top: 0; z-index: 6; height: 50px; display: flex; align-items: center; padding: 0 12px; font-weight: 600; font-size: 13px; color: #475569; border-bottom: 2px solid #c0c7cf; background: #f1f5f9; }
 .gantt-left-row { display: flex; flex-direction: column; justify-content: center; padding: 0 12px; border-bottom: none; overflow: hidden; }
 .gantt-left-row.is-last { border-bottom: 2px solid #b0bec5; }
 .proj-name { font-size: 13px; font-weight: 500; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .proj-code { font-size: 11px; color: #94a3b8; }
 
-.gantt-right { flex: 1; overflow: auto; }
+.gantt-right { flex: 1; }
 .gantt-right::-webkit-scrollbar { width: 6px; height: 6px; }
 .gantt-right::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
 .gantt-timeline-header { display: flex; height: 50px; border-bottom: 2px solid #c0c7cf; position: sticky; top: 0; background: #f1f5f9; z-index: 2; }

@@ -11,6 +11,14 @@ DELAYED_NOTIFICATION_RULE_TYPE = "task_schedule_delayed"
 ScheduleWindow = tuple[datetime, datetime]
 
 
+def _format_time_change(total_seconds: float) -> str:
+    hours = max(0.1, round(abs(total_seconds) / 3600, 1))
+    if hours > 24:
+        days = round(hours / 24, 1)
+        return f"{days:g} 天"
+    return f"{hours:g} 小时"
+
+
 def capture_task_schedule_windows(
     db,
     task_ids: set[int] | list[int],
@@ -57,21 +65,19 @@ def notify_rescheduled_tasks_advanced(
             continue
         project_code = task.project.code if task.project else ""
         task_label = f"{project_code} · {task.name}" if project_code else task.name
-        advanced_minutes = max(1, round(
-            (original_window[0] - new_window[0]).total_seconds() / 60,
-        ))
+        advanced_duration = _format_time_change(
+            (original_window[0] - new_window[0]).total_seconds(),
+        )
         sent += push_by_rule(
             db,
             ADVANCE_NOTIFICATION_RULE_TYPE,
             [task.assignee],
             "排程调整后，您的任务已前移",
             (
-                f"因{reason}，您的任务“{task_label}”已由 "
-                f"{original_window[0]:%Y-%m-%d %H:%M}–"
-                f"{original_window[1]:%Y-%m-%d %H:%M} 前移至 "
-                f"{new_window[0]:%Y-%m-%d %H:%M}–"
-                f"{new_window[1]:%Y-%m-%d %H:%M}，"
-                f"计划开始时间提前约 {advanced_minutes} 分钟，请按新时间安排。"
+                f"因{reason}，您的任务“{task_label}”计划开始时间由 "
+                f"{original_window[0]:%Y-%m-%d %H:%M} 调整为 "
+                f"{new_window[0]:%Y-%m-%d %H:%M}，"
+                f"计划开始时间提前约 {advanced_duration}，请按新时间安排。"
             ),
             related_entity_type="task",
             related_entity_id=task.id,
@@ -94,10 +100,12 @@ def notify_rescheduled_tasks_delayed(db, original_windows: dict[int, ScheduleWin
             continue
         project_code = task.project.code if task.project else ""
         task_label = f"{project_code} · {task.name}" if project_code else task.name
-        delayed_minutes = max(1, round((new_window[0] - original_window[0]).total_seconds() / 60))
+        delayed_duration = _format_time_change(
+            (new_window[0] - original_window[0]).total_seconds(),
+        )
         sent += push_by_rule(
             db, DELAYED_NOTIFICATION_RULE_TYPE, [task.assignee], "排程调整后，您的任务被动后移",
-            f"因{reason}，您的任务“{task_label}”已由 {original_window[0]:%Y-%m-%d %H:%M}–{original_window[1]:%Y-%m-%d %H:%M} 后移至 {new_window[0]:%Y-%m-%d %H:%M}–{new_window[1]:%Y-%m-%d %H:%M}，计划开始时间推迟约 {delayed_minutes} 分钟，请按新时间安排。",
+            f"因{reason}，您的任务“{task_label}”计划开始时间由 {original_window[0]:%Y-%m-%d %H:%M} 调整为 {new_window[0]:%Y-%m-%d %H:%M}，计划开始时间推迟约 {delayed_duration}，请按新时间安排。",
             related_entity_type="task", related_entity_id=task.id, context_roles=["任务负责人"],
         )
     return sent

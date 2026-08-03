@@ -2,17 +2,11 @@
   <div>
     <div class="page-header">
       <h2>插单与影响预览</h2>
-      <p>支持按优先级自动插单，或指定插入到某个项目任务之后；冻结和已开始任务不会移动。</p>
+      <p>将已排程任务插入到指定任务之后；插单可调整冻结任务，已开始和已完成任务不会移动。</p>
     </div>
 
     <a-card class="insert-card" :bordered="false">
       <a-form layout="vertical">
-        <a-form-item label="插单方式" required>
-          <a-radio-group v-model:value="form.mode" @change="resetPreview">
-            <a-radio value="priority">按优先级自动插单</a-radio>
-            <a-radio value="custom_after_task">指定插入位置</a-radio>
-          </a-radio-group>
-        </a-form-item>
         <a-form-item label="插单项目" required>
           <a-select
             v-model:value="form.projectId"
@@ -32,29 +26,24 @@
           </a-checkbox-group>
           <a-empty v-if="form.projectId && !selectableTasks.length" description="该项目暂无可插单的叶子任务" />
         </a-form-item>
-        <template v-if="form.mode === 'custom_after_task'">
-          <a-form-item label="目标项目" required>
-            <a-select
-              v-model:value="form.targetProjectId"
-              :options="targetProjectOptions"
-              placeholder="选择插入位置所在的项目"
-              show-search
-              option-filter-prop="label"
-              @change="handleTargetProjectChange"
-            />
-          </a-form-item>
-          <a-form-item label="插入到该任务之后" required>
-            <a-select
-              v-model:value="form.anchorTaskId"
-              :options="anchorTaskOptions"
-              placeholder="选择已排程、运行中或已完成的叶子任务"
-              show-search
-              option-filter-prop="label"
-            />
-          </a-form-item>
-        </template>
-        <a-form-item v-else label="临时项目等级" extra="不选择时使用项目当前等级">
-          <a-select v-model:value="form.priorityOverride" allowClear :options="priorityOptions" placeholder="使用项目当前等级" />
+        <a-form-item label="目标项目" required>
+          <a-select
+            v-model:value="form.targetProjectId"
+            :options="targetProjectOptions"
+            placeholder="选择插入位置所在的项目"
+            show-search
+            option-filter-prop="label"
+            @change="handleTargetProjectChange"
+          />
+        </a-form-item>
+        <a-form-item label="插入到该任务之后" required>
+          <a-select
+            v-model:value="form.anchorTaskId"
+            :options="anchorTaskOptions"
+            placeholder="选择已排程、运行中或已完成的叶子任务"
+            show-search
+            option-filter-prop="label"
+          />
         </a-form-item>
         <a-space>
           <a-button v-operation="'preview'" type="primary" :loading="previewing" @click="loadPreview">计算影响</a-button>
@@ -90,7 +79,7 @@
             {{ formatRange(record.new_start, record.new_end) }}
           </template>
           <template v-else-if="column.key === 'delay'">
-            <span :class="{ 'delay-positive': record.delay_hours > 0 }">{{ record.delay_hours }}h</span>
+            <span :class="impactTimeClass(record.delay_hours)">{{ impactTimeText(record.delay_hours) }}</span>
           </template>
         </template>
       </a-table>
@@ -119,8 +108,6 @@ import type { InsertCost, Project, Task } from '@/types'
 interface InsertForm {
   projectId: number | null
   taskIds: number[]
-  priorityOverride: number | null
-  mode: 'priority' | 'custom_after_task'
   targetProjectId: number | null
   anchorTaskId: number | null
 }
@@ -133,19 +120,12 @@ const confirming = ref(false)
 const form = reactive<InsertForm>({
   projectId: null,
   taskIds: [],
-  priorityOverride: null,
-  mode: 'priority',
   targetProjectId: null,
   anchorTaskId: null,
 })
-const priorityOptions = [
-  { label: '一级（最高）', value: 1 },
-  { label: '二级', value: 2 },
-  { label: '三级', value: 3 },
-]
 
 function priorityLabel(priority: number) {
-  return priorityOptions.find(option => option.value === priority)?.label || `${priority}级`
+  return ({ 1: '一级（最高）', 2: '二级', 3: '三级' } as Record<number, string>)[priority] || `${priority}级`
 }
 
 const projectOptions = computed(() => projects.value.map(project => ({
@@ -157,7 +137,7 @@ const selectedProject = computed(() => projects.value.find(project => project.id
 const targetProject = computed(() => projects.value.find(project => project.id === form.targetProjectId) || null)
 const selectableTasks = computed(() => uniqueTasksById(
   flattenLeafTasks(selectedProject.value?.tasks || []).filter(task =>
-    !task.is_external_gate && !['running', 'done', 'completed'].includes(task.status),
+    !task.is_external_gate && ['scheduled', 'blocked'].includes(task.status),
   ),
 ))
 const targetProjectOptions = computed(() => projectOptions.value)
@@ -177,7 +157,7 @@ const impactColumns = [
   { title: '任务', dataIndex: 'task_name', key: 'task' },
   { title: '原排程', key: 'original', width: 240 },
   { title: '新排程', key: 'new', width: 240 },
-  { title: '顺延', key: 'delay', width: 90 },
+  { title: '时间变化', key: 'delay', width: 110 },
 ]
 
 onMounted(async () => {
@@ -198,7 +178,6 @@ function uniqueTasksById(tasks: Task[]): Task[] {
 
 function handleProjectChange() {
   form.taskIds = []
-  form.priorityOverride = null
   preview.value = null
 }
 
@@ -216,16 +195,15 @@ function requestData(): InsertOrderRequest | null {
     message.warning('请选择插单任务')
     return null
   }
-  if (form.mode === 'custom_after_task' && !form.anchorTaskId) {
+  if (!form.anchorTaskId) {
     message.warning('请选择插入位置任务')
     return null
   }
   return {
     project_id: form.projectId,
     task_ids: form.taskIds,
-    mode: form.mode,
-    ...(form.mode === 'priority' && form.priorityOverride ? { priority_override: form.priorityOverride } : {}),
-    ...(form.mode === 'custom_after_task' && form.anchorTaskId ? { anchor_task_id: form.anchorTaskId } : {}),
+    mode: 'custom_after_task',
+    anchor_task_id: form.anchorTaskId,
   }
 }
 
@@ -251,9 +229,7 @@ function handleConfirm() {
   if (!data || !preview.value) return
   Modal.confirm({
     title: '确认执行插单？',
-    content: form.mode === 'custom_after_task'
-      ? '确认后将永久保存该任务前置关系，并按预览结果重排受影响任务。'
-      : `将创建 ${preview.value.timeslots_created} 个时间槽，并移动 ${preview.value.impacts.filter(item => !item.is_insert_task).length} 个低优任务。`,
+    content: '确认后将保存新的排程时间，不会修改项目原有前置关系。',
     okText: '确认插单',
     cancelText: '取消',
     onOk: () => executeConfirm(data),
@@ -280,7 +256,16 @@ function formatRange(start: string | null, end: string | null) {
 
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
-    pending: '待排', ready: '可排', scheduled: '已排程', blocked: '已阻塞',
+    pending: '待排程',
+    ready: '可排程',
+    scheduled: '已排程',
+    blocked: '已阻塞',
+    waiting_external: '等待方案签批',
+    waiting_approval: '等待签批结果',
+    running: '进行中',
+    interrupted: '已中断',
+    done: '已完成',
+    completed: '已完成',
   }
   return labels[status] || status
 }
@@ -298,6 +283,16 @@ function impactRoleColor(role: string | null | undefined, isInsertTask: boolean)
   return isInsertTask ? 'blue' : 'orange'
 }
 
+function impactTimeText(hours: number) {
+  if (hours > 0) return `顺延 ${hours}h`
+  if (hours < 0) return `提前 ${Math.abs(hours)}h`
+  return '无变化'
+}
+
+function impactTimeClass(hours: number) {
+  return { 'delay-positive': hours > 0, 'advance-positive': hours < 0 }
+}
+
 function errorDetail(error: unknown, fallback: string) {
   if (isAxiosError<{ detail?: string }>(error)) return error.response?.data?.detail || fallback
   return fallback
@@ -313,5 +308,6 @@ function errorDetail(error: unknown, fallback: string) {
 .task-meta { margin-left: 8px; color: var(--color-text-tertiary); font-size: 12px; }
 .preview-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .delay-positive { color: var(--color-danger); font-weight: 600; }
+.advance-positive { color: var(--color-success); font-weight: 600; }
 @media (max-width: 760px) { .task-options { grid-template-columns: 1fr; } }
 </style>

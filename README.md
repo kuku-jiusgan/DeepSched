@@ -28,22 +28,33 @@ DEEPSCHED_PROXY=http://127.0.0.1:7897 ./setup-linux.sh
 
 停止服务时在启动终端按 `Ctrl+C`。前后端日志写入 `.runtime/logs/`。
 
-## Docker 部署
+## 本机正式运行
 
-复制 `.env.example` 为 `.env`，替换其中全部密码，再执行：
+当前服务器使用本机 Python 虚拟环境、SQLite 和前端静态构建，不依赖 Docker 或 MySQL。首次运行仍先安装依赖：
 
 ```bash
-docker compose up --build -d
+./setup-linux.sh
 ```
 
-Docker Compose 使用 MySQL，适合部署验证；日常开发建议使用上面的本地开发模式。
-
-## Linux 生产运行
-
-公网反向代理到 5889 端口时，使用生产启动脚本：
+启动正式模式前，先停止开发模式，再执行：
 
 ```bash
 ./start-production.sh
 ```
 
-该脚本会构建前端，由 FastAPI 生产入口在 5889 端口同时提供 `web/dist` 和 `/api/`，并对静态文件开启 GZip。不要在公网环境使用 `start-linux.sh`。
+正式启动脚本会：
+
+- 构建 `web/dist`；
+- 强制使用 `ENVIRONMENT=production`；
+- 默认使用 `server/cro_scheduler.db`；
+- 在 `5889` 端口同时提供前端页面和 `/api/`；
+- 将日志写入 `.runtime/logs/server/`；
+- 关闭 Swagger、Redoc 和 OpenAPI 调试入口。
+
+公网 Nginx 继续反向代理到本机 `5889` 端口。不要在公网环境使用 `start-linux.sh`。
+
+如需临时更换监听地址或端口，可以使用：
+
+```bash
+DEEPSCHED_HOST=127.0.0.1 DEEPSCHED_PORT=5890 ./start-production.sh
+```

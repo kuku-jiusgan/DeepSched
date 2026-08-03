@@ -21,15 +21,11 @@
           <div><span>解锁任务：</span>{{ taskNames(gate.unlock_tasks) }}</div>
         </div>
         <div v-if="!predecessorsCompleted(gate)" class="approval-prerequisite-warning">
-          前置任务【{{ incompletePredecessorNames(gate) }}】尚未完成，暂不能提交或确认签批。
+          前置任务【{{ incompletePredecessorNames(gate) }}】尚未完成。可以先填写预计签批时间，确认签批仍需等待前置任务完成。
         </div>
         <div class="today-card-choice">请选择：</div>
         <div class="today-card-actions">
-          <a-tooltip v-if="gate.gate_status !== 'approved'" :title="prerequisiteBlockReason(gate)">
-            <span v-operation="'submit'" class="disabled-action-wrapper">
-              <a-button size="small" class="workspace-action-button workspace-action-button-secondary" :disabled="!predecessorsCompleted(gate)" @click="openExpectedApproval(gate)">预计签批时间</a-button>
-            </span>
-          </a-tooltip>
+          <a-button v-if="gate.gate_status !== 'approved'" v-operation="'submit'" size="small" class="workspace-action-button workspace-action-button-secondary" @click="openExpectedApproval(gate)">预计签批时间</a-button>
           <a-tooltip v-if="gate.gate_status !== 'approved'" :title="prerequisiteBlockReason(gate)">
             <span v-operation="'approve'" class="disabled-action-wrapper">
               <a-button size="small" class="workspace-action-button workspace-action-button-success" :disabled="!predecessorsCompleted(gate)" @click="confirmApprove(gate)">确认签批</a-button>
@@ -48,7 +44,7 @@
       ok-text="保存并生成预测排程"
       cancel-text="取消"
       :confirm-loading="expectedSubmitting"
-      :ok-button-props="{ disabled: !expectedApprovalAt || !expectedGate || !predecessorsCompleted(expectedGate) }"
+      :ok-button-props="{ disabled: !expectedApprovalAt || !expectedGate }"
       :cancel-button-props="{ disabled: expectedSubmitting }"
       :mask-closable="!expectedSubmitting"
       :closable="!expectedSubmitting"
@@ -68,7 +64,7 @@
           />
         </a-form-item>
       </a-form>
-      <p class="expected-approval-help">不得早于前置任务完成时间{{ expectedMinimumLabel }}。保存后将从该时间起预测安排后续任务。</p>
+      <p class="expected-approval-help">预计时间可以在方案撰写完成前填写，但必须晚于当前时间。后续任务仍会同时遵守方案签批和前置任务约束。</p>
     </a-modal>
   </div>
 </template>
@@ -93,11 +89,6 @@ const expectedSubmitting = ref(false)
 const expectedGate = ref<ApprovalGate | null>(null)
 const expectedApprovalAt = ref<Dayjs | null>(null)
 const completedTaskStatuses = new Set(['done', 'completed'])
-const expectedMinimumLabel = computed(() => {
-  if (!expectedGate.value) return ''
-  return `【${minimumExpectedAt(expectedGate.value).format('YYYY-MM-DD HH:mm')}】`
-})
-
 function openExpectedApproval(gate: ApprovalGate) {
   expectedGate.value = gate
   const latestApprovalAt = gate.latest_approval_at ? dayjs(gate.latest_approval_at) : null
@@ -214,17 +205,8 @@ function predecessorsCompleted(gate: ApprovalGate) {
 function prerequisiteBlockReason(gate: ApprovalGate) {
   return predecessorsCompleted(gate) ? '' : `前置任务【${incompletePredecessorNames(gate) || '未配置'}】尚未完成`
 }
-function latestPredecessorCompletedAt(gate: ApprovalGate) {
-  const completionTimes = gate.predecessor_tasks
-    .map(task => task.completed_at ? dayjs(task.completed_at) : null)
-    .filter((value): value is Dayjs => value !== null && value.isValid())
-  return completionTimes.reduce<Dayjs | null>((latest, value) => !latest || value.isAfter(latest) ? value : latest, null)
-}
-function minimumExpectedAt(gate: ApprovalGate) {
-  const afterNow = dayjs().add(1, 'millisecond')
-  const predecessorCompletedAt = latestPredecessorCompletedAt(gate)
-  const lowerBound = predecessorCompletedAt?.isAfter(afterNow) ? predecessorCompletedAt : afterNow
-  return ceilToHalfHour(lowerBound)
+function minimumExpectedAt(_gate: ApprovalGate) {
+  return ceilToHalfHour(dayjs().add(1, 'millisecond'))
 }
 function formatDateTime(value?: string | null) { return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-' }
 function gateMeta(status: ApprovalGateStatus) {

@@ -1,10 +1,10 @@
-.gantt-page { display: flex; flex-direction: column; height: calc(100vh - 64px); }
+.gantt-page { display: flex; flex-direction: column; min-height: calc(100vh - 64px); }
 
 .gantt-page.is-fullscreen {
   position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999;
   background: #f6f8fb; padding: 16px; height: 100vh;
 }
-.gantt-page.is-fullscreen .gantt-container { flex: 1; min-height: 0; }
+.gantt-page.is-fullscreen .gantt-container { flex: 1; min-height: 0; overflow: auto; }
 .gantt-page.is-fullscreen .page-header { display: none; }
 .gantt-page.is-fullscreen .action-bar { padding: 0 0 12px 0; }
 
@@ -30,12 +30,12 @@
 .gantt-container {
   position: relative;
   display: flex;
-  flex: 1;
+  flex: 0 0 auto;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   margin-top: 12px;
-  min-height: 0;
   background: #fff;
 }
 

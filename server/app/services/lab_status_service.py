@@ -22,10 +22,10 @@ def list_lab_status(db) -> list[dict]:
 
 
 def _instrument_status(db, instrument: Instrument, now: datetime) -> dict:
-    current_slot = current_occupying_slot(db, instrument.id, now)
+    current_slot = current_occupying_slot(db, instrument.id)
     status = _reconcile_instrument_status(instrument, current_slot)
     current = _task_status_fields(db, current_slot, now)
-    upcoming = _next_task_slot(db, instrument.id, now, current["task_id"])
+    upcoming = _next_task_slot(db, instrument.id, current["task_id"])
     next_fields = _next_task_fields(db, upcoming)
     return {
         "id": instrument.id,
@@ -62,11 +62,10 @@ def _reconcile_instrument_status(instrument: Instrument, current_slot: TimeSlot 
     return effective_status
 
 
-def _next_task_slot(db, instrument_id: int, now: datetime, current_task_id: int | None) -> TimeSlot | None:
+def _next_task_slot(db, instrument_id: int, current_task_id: int | None) -> TimeSlot | None:
     query = db.query(TimeSlot).filter(
         TimeSlot.instrument_id == instrument_id,
         TimeSlot.status == "scheduled",
-        TimeSlot.plan_start > now,
     )
     if current_task_id:
         query = query.filter(TimeSlot.task_id != current_task_id)

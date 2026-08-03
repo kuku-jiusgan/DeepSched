@@ -92,6 +92,8 @@ def _segment_out(segment) -> WorkspaceSegmentOut:
 
 
 def _task_delay_detail(task, actionable, segments, delay_by_slot) -> dict:
+    if task.delay_status != "delayed":
+        return {"hours": None, "reason": None, "reported_at": None}
     preferred_slots = ([actionable] if actionable else []) + list(reversed(segments))
     seen: set[int] = set()
     for slot in preferred_slots:

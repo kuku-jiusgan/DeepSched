@@ -10,7 +10,7 @@ from app.services.scheduler_objective import add_scheduler_objective
 class SchedulerObjectiveTest(unittest.TestCase):
     def test_sibling_group_completion_moves_later_sibling_forward(self):
         model = cp_model.CpModel()
-        project = SimpleNamespace(priority=1)
+        project = SimpleNamespace(priority=1, end_date=None)
         tasks = [
             SimpleNamespace(
                 id=1, parent_id=10, priority_weight=1, project=project,
@@ -64,7 +64,7 @@ class SchedulerObjectiveTest(unittest.TestCase):
 
     def test_remaining_sibling_is_prioritized_when_other_sibling_is_fixed(self):
         model = cp_model.CpModel()
-        project = SimpleNamespace(priority=3)
+        project = SimpleNamespace(priority=3, end_date=None)
         tasks = [
             SimpleNamespace(
                 id=1, parent_id=None, priority_weight=1, project=project,
