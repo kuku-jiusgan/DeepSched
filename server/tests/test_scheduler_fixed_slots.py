@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import TimeSlot
+from app.models import Project, Task, TimeSlot
 from app.services.scheduler_fixed_slots import (
     add_human_capacity_constraints,
     add_instrument_capacity_constraints,
@@ -65,6 +65,55 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
         fixed_slots = load_fixed_slots(self.db)
 
         self.assertEqual([manual_slot.id], [slot.id for slot in fixed_slots])
+
+    def test_only_slots_for_relevant_resources_are_loaded(self):
+        project = Project(code="P1", name="测试项目", priority=3)
+        self.db.add(project)
+        self.db.flush()
+        relevant_manual_task = Task(
+            project_id=project.id,
+            name="相关人工任务",
+            task_type="manual",
+            requires_instrument=False,
+            requires_human=True,
+            assignee_id=7,
+        )
+        unrelated_task = Task(
+            project_id=project.id,
+            name="无关仪器任务",
+            task_type="instrument",
+            requires_instrument=True,
+            requires_human=True,
+            assignee_id=8,
+        )
+        self.db.add_all([relevant_manual_task, unrelated_task])
+        self.db.flush()
+        relevant_manual_slot = TimeSlot(
+            task_id=relevant_manual_task.id,
+            plan_start=datetime(2026, 8, 3, 8, 30),
+            plan_end=datetime(2026, 8, 3, 12, 30),
+            status="scheduled",
+        )
+        unrelated_slot = TimeSlot(
+            task_id=unrelated_task.id,
+            instrument_id=2,
+            plan_start=datetime(2026, 8, 3, 8, 30),
+            plan_end=datetime(2026, 8, 3, 20, 0),
+            status="running",
+        )
+        self.db.add_all([relevant_manual_slot, unrelated_slot])
+        self.db.commit()
+
+        fixed_slots = load_fixed_slots(
+            self.db,
+            relevant_instrument_ids={1},
+            relevant_assignee_ids={7},
+        )
+
+        self.assertEqual(
+            [relevant_manual_slot.id],
+            [slot.id for slot in fixed_slots],
+        )
 
     def test_running_fixed_slot_uses_actual_start(self):
         model = cp_model.CpModel()

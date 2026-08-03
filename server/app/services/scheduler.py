@@ -320,7 +320,22 @@ class SchedulerService:
             else 0
         )
         CROSS_PROJECT_SETUP_UNITS = to_units(setup_hours) if setup_hours else 0
-        fixed_slots = load_fixed_slots(self.db, {task.id for task in tasks})
+        relevant_instrument_ids = {
+            instrument.id
+            for task in tasks
+            for instrument in compat.get(task.id, [])
+        }
+        relevant_assignee_ids = {
+            task.assignee_id
+            for task in tasks
+            if task.requires_human and task.assignee_id is not None
+        }
+        fixed_slots = load_fixed_slots(
+            self.db,
+            {task.id for task in tasks},
+            relevant_instrument_ids,
+            relevant_assignee_ids,
+        )
         add_instrument_capacity_constraints(
             model,
             instruments,

@@ -41,16 +41,35 @@ def _is_protected_slot(slot: TimeSlot) -> bool:
     )
 
 
-def load_fixed_slots(db, excluded_task_ids: set[int] | None = None) -> list[TimeSlot]:
+def load_fixed_slots(
+    db,
+    excluded_task_ids: set[int] | None = None,
+    relevant_instrument_ids: set[int] | None = None,
+    relevant_assignee_ids: set[int] | None = None,
+) -> list[TimeSlot]:
     query = db.query(TimeSlot).filter(
         TimeSlot.status.in_(FIXED_SLOT_STATUSES),
     )
     if excluded_task_ids:
         query = query.filter(~TimeSlot.task_id.in_(excluded_task_ids))
     slots = query.order_by(TimeSlot.instrument_id, TimeSlot.plan_start, TimeSlot.id).all()
-    return [
+    fixed_slots = [
         slot for slot in slots
         if slot.status != "completed" or (slot.actual_start and slot.actual_end)
+    ]
+    if relevant_instrument_ids is None and relevant_assignee_ids is None:
+        return fixed_slots
+
+    instrument_ids = relevant_instrument_ids or set()
+    assignee_ids = relevant_assignee_ids or set()
+    return [
+        slot for slot in fixed_slots
+        if slot.instrument_id in instrument_ids
+        or (
+            slot.task
+            and slot.task.requires_human
+            and slot.task.assignee_id in assignee_ids
+        )
     ]
 
 
