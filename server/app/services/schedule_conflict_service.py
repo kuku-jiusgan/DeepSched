@@ -110,6 +110,8 @@ def _effective_slot_range(slot: TimeSlot):
             return slot.actual_start, slot.actual_end
         return None
     if slot.actual_start:
+        if slot.plan_start > datetime.now():
+            return slot.plan_start, slot.plan_end
         effective_end = slot.actual_end or max(slot.plan_end, datetime.now())
         return slot.actual_start, effective_end
     return slot.plan_start, slot.plan_end

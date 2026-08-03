@@ -16,6 +16,8 @@ def _fixed_slot_range(slot: TimeSlot) -> tuple[datetime, datetime]:
     if slot.status == "completed":
         return slot.actual_start, slot.actual_end
     if slot.actual_start:
+        if slot.plan_start > datetime.now():
+            return slot.plan_start, slot.plan_end
         return slot.actual_start, slot.actual_end or max(slot.plan_end, datetime.now())
     return slot.plan_start, slot.plan_end
 

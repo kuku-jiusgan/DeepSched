@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from ortools.sat.python import cp_model
@@ -188,6 +188,46 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
             fixed_slots=[running, continuation],
             horizon_start=datetime(2026, 7, 16, 8, 30),
             total_units=240,
+            non_overlap_enabled=True,
+            setup_units=0,
+        )
+
+        solver = cp_model.CpSolver()
+        self.assertIn(solver.Solve(model), (cp_model.OPTIMAL, cp_model.FEASIBLE))
+
+    def test_early_started_future_slot_does_not_block_until_plan_end(self):
+        model = cp_model.CpModel()
+        horizon_start = datetime.now().replace(second=0, microsecond=0)
+        current_slot = TimeSlot(
+            id=10,
+            task_id=1,
+            instrument_id=1,
+            plan_start=horizon_start + timedelta(days=7),
+            plan_end=horizon_start + timedelta(days=7, hours=3),
+            actual_start=horizon_start - timedelta(hours=1),
+            status="running",
+        )
+        available_slot = TimeSlot(
+            id=11,
+            task_id=2,
+            instrument_id=1,
+            plan_start=horizon_start + timedelta(days=1),
+            plan_end=horizon_start + timedelta(days=1, hours=3),
+            status="scheduled",
+        )
+
+        add_instrument_capacity_constraints(
+            model=model,
+            instruments=[SimpleNamespace(id=1)],
+            tasks=[],
+            capacity_intervals={},
+            presences={},
+            inst_starts={},
+            inst_ends={},
+            split_unit_presences={},
+            fixed_slots=[current_slot, available_slot],
+            horizon_start=horizon_start,
+            total_units=24 * 30,
             non_overlap_enabled=True,
             setup_units=0,
         )
