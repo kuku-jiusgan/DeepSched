@@ -477,6 +477,8 @@ def _build_impacts(
         if not new_window:
             continue
         old_window = old_windows.get(task.id)
+        if old_window == new_window:
+            continue
         delay_hours = 0.0
         if old_window:
             delay_hours = (new_window[1] - old_window[1]).total_seconds() / 3600

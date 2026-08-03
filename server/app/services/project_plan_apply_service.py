@@ -122,6 +122,10 @@ def _preview_plan_insert(
             message=preview.message or stable_message or "插单模拟失败",
             project_id=project.id,
         )
+    if preview.moved_tasks == 0:
+        preview.message = "排程完成，未顺延其他任务"
+        db.commit()
+        return preview
     return ProjectPlanApplyResponse(
         status="insert_confirmation_required",
         message=_project_impact_message(preview.project_impacts),

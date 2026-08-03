@@ -147,6 +147,23 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         self.assertEqual("inserted", roles[inserted_task.id])
         self.assertEqual("shifted", roles[shifted_task.id])
 
+    def test_unchanged_task_is_not_reported_as_shifted(self):
+        _, unchanged_task = self._scheduled_project("B", 3, 1)
+        unchanged_window = (
+            datetime(2026, 8, 3, 11, 0),
+            datetime(2026, 8, 11, 12, 0),
+        )
+
+        impacts = _build_impacts(
+            [unchanged_task],
+            set(),
+            {unchanged_task.id: unchanged_window},
+            {unchanged_task.id: unchanged_window},
+            {unchanged_task.id: "shifted"},
+        )
+
+        self.assertEqual([], impacts)
+
 
 if __name__ == "__main__":
     unittest.main()

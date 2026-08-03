@@ -3,10 +3,36 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app.schemas.schemas import ProjectPlanApplyResponse
-from app.services.project_plan_apply_service import apply_project_plan
+from app.services.project_plan_apply_service import apply_project_plan, _preview_plan_insert
 
 
 class ProjectPlanApplyTransactionTest(unittest.TestCase):
+    @patch("app.services.project_plan_apply_service._plan_fingerprint", return_value="token")
+    @patch("app.services.project_plan_apply_service._execute_replan")
+    @patch("app.services.project_plan_apply_service._load_insert_movable_tasks")
+    def test_preview_without_real_shift_is_committed_without_confirmation(
+        self,
+        load_movable,
+        execute_replan,
+        _fingerprint,
+    ):
+        db = MagicMock()
+        project = SimpleNamespace(id=1)
+        selected = [SimpleNamespace(id=10)]
+        load_movable.return_value = [SimpleNamespace(id=20)]
+        execute_replan.return_value = ProjectPlanApplyResponse(
+            status="applied",
+            project_id=1,
+            schedule_run_id="preview-run",
+            moved_tasks=0,
+        )
+
+        result = _preview_plan_insert(db, project, selected, "稳定排程失败")
+
+        self.assertEqual("applied", result.status)
+        self.assertEqual("排程完成，未顺延其他任务", result.message)
+        db.commit.assert_called_once()
+
     @patch("app.services.project_plan_apply_service._preview_plan_insert")
     @patch("app.services.project_plan_apply_service._load_insert_movable_tasks")
     @patch("app.services.project_plan_apply_service._selected_tasks_start_today")
