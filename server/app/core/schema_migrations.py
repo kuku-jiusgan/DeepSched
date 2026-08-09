@@ -2,8 +2,23 @@ from sqlalchemy import inspect, text
 
 
 def ensure_runtime_schema(engine) -> None:
+    from app.models import ScheduleCalendarSnapshot, TaskNightRun
+
+    TaskNightRun.__table__.create(bind=engine, checkfirst=True)
+    ScheduleCalendarSnapshot.__table__.create(bind=engine, checkfirst=True)
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
+
+    if "sys_calendar" in table_names:
+        calendar_columns = {column["name"] for column in inspector.get_columns("sys_calendar")}
+        with engine.begin() as connection:
+            if "source" not in calendar_columns:
+                connection.execute(text(
+                    "ALTER TABLE sys_calendar ADD COLUMN source VARCHAR(20) NOT NULL DEFAULT 'default'"
+                ))
+            connection.execute(text(
+                "UPDATE sys_calendar SET source = 'default' WHERE source IS NULL OR source = ''"
+            ))
 
     if "user" in table_names:
         user_columns = {column["name"] for column in inspector.get_columns("user")}
@@ -184,10 +199,13 @@ def ensure_runtime_schema(engine) -> None:
 
     if "time_slot" in table_names:
         time_slot_columns = {column["name"] for column in inspector.get_columns("time_slot")}
-        if "schedule_run_id" not in time_slot_columns:
-            with engine.begin() as connection:
+        with engine.begin() as connection:
+            if "schedule_run_id" not in time_slot_columns:
                 connection.execute(text("ALTER TABLE time_slot ADD COLUMN schedule_run_id VARCHAR(64) DEFAULT 'legacy'"))
                 connection.execute(text("UPDATE time_slot SET schedule_run_id = 'legacy' WHERE schedule_run_id IS NULL"))
+            if "is_night_run" not in time_slot_columns:
+                connection.execute(text("ALTER TABLE time_slot ADD COLUMN is_night_run BOOLEAN DEFAULT 0"))
+                connection.execute(text("UPDATE time_slot SET is_night_run = 0 WHERE is_night_run IS NULL"))
 
     if "alert_rule" in table_names:
         alert_columns = {column["name"] for column in inspector.get_columns("alert_rule")}

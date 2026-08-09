@@ -1,10 +1,6 @@
 import type { Task } from '@/types'
 import dayjs from 'dayjs'
-
-const TASK_STATUS_LABELS: Record<string, string> = {
-  pending: '待开始', ready: '可排程', scheduled: '已排程', running: '运行中',
-  done: '已完成', blocked: '已延期', waiting_external: '等待外部签批',
-}
+import { isTaskCompleted } from '@/utils/statusMeta'
 const TASK_TYPE_COLORS: Record<string, string> = {
   FFKF_001: '#8b5cf6', QCFA_001: '#f59e0b', FFYZ_001: '#10b981',
   SJCL_001: '#3b82f6', ZXBG_001: '#ef4444',
@@ -18,13 +14,9 @@ export function priorityColor(priority: number) {
   return priority === 1 ? '#dc2626' : priority === 2 ? '#ea580c' : '#2563eb'
 }
 
-export function taskStatusLabel(status: string) {
-  return TASK_STATUS_LABELS[status] || status
-}
-
 export function taskTreeHasCompletedTask(task: Task): boolean {
   return task.schedule_lock_status === 'completed'
-    || ['done', 'completed'].includes(task.status)
+    || isTaskCompleted(task.status)
     || Boolean(task.children?.some(taskTreeHasCompletedTask))
 }
 

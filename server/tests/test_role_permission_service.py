@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
+from app.models import RolePermission
 from app.services.role_permission_service import (
     PAGE_CATALOG,
     action_allowed,
@@ -69,6 +70,54 @@ class RolePermissionServiceTest(unittest.TestCase):
 
         self.assertTrue(action_allowed(self.db, "技术员", "/projects/detection-tasks", "edit"))
         self.assertFalse(action_allowed(self.db, "技术员", "/projects/detection-tasks", "delete"))
+
+    def test_existing_permissions_enable_follow_up_actions(self):
+        legacy_permissions = {
+            "/tasks/workspace": {"complete": True},
+            "/projects/plan-breakdown": {"create_task": True},
+            "/projects/resource-ledger": {"edit": True},
+            "/schedule/rules": {"edit": True},
+            "/schedule/engine": {"generate": True},
+        }
+        for page_key, actions in legacy_permissions.items():
+            self.db.add(RolePermission(
+                role="技术组长",
+                page_key=page_key,
+                can_view=True,
+                can_operate=True,
+                action_permissions=actions,
+            ))
+        self.db.commit()
+
+        self.assertTrue(permission_for(self.db, "技术组长", "/tasks/workspace")["action_permissions"]["pause"])
+        self.assertTrue(permission_for(self.db, "技术组长", "/projects/plan-breakdown")["action_permissions"]["save_draft"])
+        resource_actions = permission_for(self.db, "技术组长", "/projects/resource-ledger")["action_permissions"]
+        self.assertTrue(resource_actions["manage_capabilities"])
+        self.assertTrue(resource_actions["manage_maintenance"])
+        self.assertTrue(permission_for(self.db, "技术组长", "/schedule/rules")["action_permissions"]["toggle"])
+        self.assertTrue(permission_for(self.db, "技术组长", "/schedule/engine")["action_permissions"]["daily_roll"])
+
+    def test_project_admin_can_view_workspace_but_cannot_operate(self):
+        self.db.add(RolePermission(
+            role="项目管理员",
+            page_key="/tasks/workspace",
+            can_view=True,
+            can_operate=True,
+            action_permissions={"start": True, "complete": True, "pause": True},
+        ))
+        self.db.commit()
+
+        value = permission_for(self.db, "项目管理员", "/tasks/workspace")
+
+        self.assertTrue(value["can_view"])
+        self.assertFalse(value["can_operate"])
+        self.assertTrue(value["action_permissions"])
+        self.assertFalse(any(value["action_permissions"].values()))
+
+        detection_value = permission_for(self.db, "项目管理员", "/projects/detection-tasks")
+        self.assertTrue(detection_value["can_view"])
+        self.assertFalse(detection_value["can_operate"])
+        self.assertFalse(any(detection_value["action_permissions"].values()))
 
 
 if __name__ == "__main__":

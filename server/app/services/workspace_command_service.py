@@ -11,6 +11,14 @@ def complete_workspace_task(db, slot_id: int, release_instrument: bool) -> dict:
     slot = get_time_slot(db, slot_id)
     if slot is None:
         raise DomainNotFoundError("时间槽不存在")
+    task = get_task(db, slot.task_id)
+    if task is None:
+        raise DomainNotFoundError("任务不存在")
+    if task.status != "running" or not any(
+        task_slot.actual_start is not None
+        for task_slot in task.time_slots
+    ):
+        raise DomainValidationError("任务尚未开始，不能直接完成")
     result = complete_task_and_shift(
         db,
         slot.task_id,

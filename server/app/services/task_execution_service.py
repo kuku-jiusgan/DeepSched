@@ -22,16 +22,23 @@ class TaskExecutionInvalidError(DomainConflictError):
     pass
 
 
-def start_task_execution(db, slot_id: int, operator_id: int | None = None) -> dict[str, str]:
+def start_task_execution(
+    db,
+    slot_id: int,
+    operator_id: int | None = None,
+    allow_queue_insert: bool = False,
+) -> dict[str, str]:
     slot = db.query(TimeSlot).filter(TimeSlot.id == slot_id).first()
     if not slot:
         raise TaskExecutionNotFoundError("时间槽不存在")
     task = db.query(Task).filter(Task.id == slot.task_id).first()
     if not task:
         raise TaskExecutionNotFoundError("任务不存在")
-    _ensure_can_start(db, task, slot)
-
+    reconcile_task_status_from_slots(task, slot)
     started_at = datetime.now()
+    slot = _resume_anchor_slot(task, slot, started_at)
+    _ensure_can_start(db, task, slot, allow_queue_insert)
+
     task.status = "running"
     if slot.plan_start and started_at > slot.plan_start:
         mark_task_delayed(task)
@@ -42,7 +49,9 @@ def start_task_execution(db, slot_id: int, operator_id: int | None = None) -> di
         if running_slot.id == slot.id:
             running_slot.actual_start = started_at
             running_slot.actual_end = None
-        mark_instrument_running(db, running_slot.instrument_id)
+            mark_instrument_running(db, running_slot.instrument_id)
+    ensure_running_state_consistent(task, slot)
+    ensure_running_continuation_consistent(task, slot)
     db.add(TaskExecutionSegment(
         task_id=task.id,
         slot_id=slot.id,
@@ -51,6 +60,33 @@ def start_task_execution(db, slot_id: int, operator_id: int | None = None) -> di
         started_at=started_at,
     ))
     return {"status": "ok"}
+
+
+def ensure_running_state_consistent(task: Task, slot: TimeSlot) -> None:
+    if task.status != "running" or slot.status != "running" or slot.actual_start is None:
+        raise TaskExecutionInvalidError("任务与时间槽运行状态同步失败")
+
+
+def ensure_running_continuation_consistent(task: Task, start_slot: TimeSlot) -> None:
+    stale_slots = [
+        slot for slot in task.time_slots
+        if slot.plan_end >= start_slot.plan_start
+        and slot.status in {"paused", "blocked", "interrupted"}
+    ]
+    if stale_slots:
+        raise TaskExecutionInvalidError("任务恢复后仍存在未同步的后续时间槽")
+
+
+def reconcile_task_status_from_slots(task: Task, requested_slot: TimeSlot) -> None:
+    if task.status != "running":
+        return
+    has_running_slot = any(
+        slot.status == "running"
+        or (slot.actual_start is not None and slot.actual_end is None)
+        for slot in task.time_slots
+    )
+    if not has_running_slot and requested_slot.status in STARTABLE_SLOT_STATUSES:
+        task.status = requested_slot.status
 
 
 def ensure_predecessors_completed(task: Task) -> None:
@@ -81,9 +117,11 @@ def _incomplete_leaf_task_names(task: Task) -> list[str]:
     return [] if task.status in COMPLETED_TASK_STATUSES else [task.name]
 
 
-def _ensure_can_start(db, task: Task, slot: TimeSlot) -> None:
+def _ensure_can_start(db, task: Task, slot: TimeSlot, allow_queue_insert: bool = False) -> None:
     if task.status in COMPLETED_TASK_STATUSES or slot.status == "completed":
         raise TaskExecutionInvalidError("任务已经完成，不能重复开始")
+    if task.status == "paused":
+        ensure_paused_state_consistent(task)
     if task.status == "running" or any(
         task_slot.actual_start is not None and task_slot.actual_end is None
         for task_slot in task.time_slots
@@ -96,6 +134,8 @@ def _ensure_can_start(db, task: Task, slot: TimeSlot) -> None:
         return
     if not slot.instrument_id:
         raise TaskExecutionInvalidError("仪器任务尚未分配仪器，不能启动")
+    if not allow_queue_insert:
+        _ensure_earlier_instrument_tasks_completed(db, task, slot)
     occupying_slot = current_occupying_slot(
         db,
         slot.instrument_id,
@@ -104,6 +144,26 @@ def _ensure_can_start(db, task: Task, slot: TimeSlot) -> None:
     if occupying_slot and occupying_slot.task:
         raise TaskExecutionInvalidError(
             f"仪器当前任务【{occupying_slot.task.name}】尚未结束，不能启动【{task.name}】"
+        )
+
+
+def _ensure_earlier_instrument_tasks_completed(db, task: Task, slot: TimeSlot) -> None:
+    earlier_slot = (
+        db.query(TimeSlot)
+        .join(Task, Task.id == TimeSlot.task_id)
+        .filter(
+            TimeSlot.instrument_id == slot.instrument_id,
+            TimeSlot.task_id != task.id,
+            TimeSlot.plan_start < slot.plan_start,
+            TimeSlot.status.in_(["scheduled", "running", "paused", "blocked", "interrupted"]),
+            Task.status.notin_(["done", "completed"]),
+        )
+        .order_by(TimeSlot.plan_start, TimeSlot.id)
+        .first()
+    )
+    if earlier_slot and earlier_slot.task:
+        raise TaskExecutionInvalidError(
+            f"仪器前序任务【{earlier_slot.task.name}】尚未完成，不能启动【{task.name}】"
         )
 
 
@@ -118,3 +178,26 @@ def _continuous_slots(db, start_slot: TimeSlot) -> list[TimeSlot]:
         .order_by(TimeSlot.plan_start, TimeSlot.id)
         .all()
     )
+
+
+def _resume_anchor_slot(task: Task, requested_slot: TimeSlot, started_at: datetime) -> TimeSlot:
+    if task.status not in {"paused", "blocked", "interrupted"}:
+        return requested_slot
+    candidates = sorted(
+        (
+            slot for slot in task.time_slots
+            if slot.status in STARTABLE_SLOT_STATUSES and slot.plan_end >= started_at
+        ),
+        key=lambda slot: (slot.plan_start, slot.id),
+    )
+    return candidates[0] if candidates else requested_slot
+
+
+def ensure_paused_state_consistent(task: Task) -> None:
+    has_open_slot = any(
+        task_slot.actual_start is not None and task_slot.actual_end is None
+        for task_slot in task.time_slots
+    )
+    has_open_segment = any(segment.ended_at is None for segment in task.execution_segments)
+    if has_open_slot or has_open_segment:
+        raise TaskExecutionInvalidError("任务暂停状态不完整，请先修复执行记录")

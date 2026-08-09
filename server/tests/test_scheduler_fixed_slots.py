@@ -66,6 +66,30 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
 
         self.assertEqual([manual_slot.id], [slot.id for slot in fixed_slots])
 
+    def test_protected_slots_for_replanned_tasks_remain_fixed(self):
+        movable_slot = TimeSlot(
+            task_id=1,
+            instrument_id=1,
+            plan_start=datetime(2026, 8, 6, 8, 30),
+            plan_end=datetime(2026, 8, 6, 12, 30),
+            status="scheduled",
+            tier="confirmed",
+        )
+        frozen_slot = TimeSlot(
+            task_id=1,
+            instrument_id=1,
+            plan_start=datetime(2026, 8, 6, 13, 30),
+            plan_end=datetime(2026, 8, 6, 20, 0),
+            status="scheduled",
+            tier="frozen",
+        )
+        self.db.add_all([movable_slot, frozen_slot])
+        self.db.commit()
+
+        fixed_slots = load_fixed_slots(self.db, excluded_task_ids={1})
+
+        self.assertEqual([frozen_slot.id], [slot.id for slot in fixed_slots])
+
     def test_only_slots_for_relevant_resources_are_loaded(self):
         project = Project(code="P1", name="测试项目", priority=3)
         self.db.add(project)

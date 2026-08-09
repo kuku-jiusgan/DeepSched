@@ -116,8 +116,9 @@ async function loadCandidates() {
   isLoadingCandidates.value = true
   try {
     candidates.value = await getTaskSwitchCandidates(slotId)
-  } catch {
-    message.error('接替任务加载失败')
+  } catch (error: unknown) {
+    const candidate = error as { response?: { data?: { detail?: string } } }
+    message.error(candidate.response?.data?.detail || '接替任务加载失败')
   } finally {
     isLoadingCandidates.value = false
   }

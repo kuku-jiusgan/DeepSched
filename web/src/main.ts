@@ -11,7 +11,7 @@ import 'ant-design-vue/dist/reset.css'
 import App from './App.vue'
 import router from './router'
 import './index.css'
-import { canOperateAction, canOperatePage } from './services/permissions'
+import { canOperateAction, canOperatePage, permissionState } from './services/permissions'
 
 dayjs.locale('zh-cn')
 
@@ -41,14 +41,29 @@ function operationAllowed(value: unknown) {
   return canOperatePage(router.currentRoute.value.path)
 }
 
+function applyOperationVisibility(element: HTMLElement, binding: { value: unknown; modifiers: Partial<Record<string, boolean>> }) {
+  const allowed = operationAllowed(binding.value)
+  const showReadonly = binding.modifiers.readonly
+    && permissionState.roles.includes('项目管理员')
+    && !allowed
+  element.style.display = allowed || showReadonly ? '' : 'none'
+  if (showReadonly) {
+    element.dataset.operationReadonly = 'true'
+    element.setAttribute('aria-disabled', 'true')
+    if ('disabled' in element) (element as HTMLButtonElement).disabled = true
+  } else if (element.dataset.operationReadonly) {
+    delete element.dataset.operationReadonly
+    element.removeAttribute('aria-disabled')
+    if ('disabled' in element) (element as HTMLButtonElement).disabled = false
+  }
+}
+
 app.directive('operation', {
   mounted(element, binding) {
-    const allowed = operationAllowed(binding.value)
-    element.style.display = allowed ? '' : 'none'
+    applyOperationVisibility(element, binding)
   },
   updated(element, binding) {
-    const allowed = operationAllowed(binding.value)
-    element.style.display = allowed ? '' : 'none'
+    applyOperationVisibility(element, binding)
   },
 })
 app.mount('#app')

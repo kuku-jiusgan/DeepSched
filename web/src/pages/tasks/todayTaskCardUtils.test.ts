@@ -44,6 +44,7 @@ function task(overrides: Partial<WorkspaceTask> = {}): WorkspaceTask {
       reason: null,
       reported_at: null,
     },
+    resume_priority: null,
     ...overrides,
   }
 }

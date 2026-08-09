@@ -115,6 +115,24 @@ class SchedulerObjectiveTest(unittest.TestCase):
         self.assertEqual(cp_model.OPTIMAL, solver.Solve(model))
         self.assertLess(solver.Value(ends[2]), solver.Value(ends[1]))
 
+    def test_dependency_gap_is_minimized(self):
+        model = cp_model.CpModel()
+        project = SimpleNamespace(priority=1, end_date=None)
+        tasks = [
+            SimpleNamespace(id=1, parent_id=None, priority_weight=1, project=project, created_at=datetime(2026, 1, 1)),
+            SimpleNamespace(id=2, parent_id=None, priority_weight=1, project=project, created_at=datetime(2026, 1, 2)),
+        ]
+        starts = {1: model.NewIntVar(0, 0, "start_1"), 2: model.NewIntVar(1, 5, "start_2")}
+        ends = {1: model.NewIntVar(1, 1, "end_1"), 2: model.NewIntVar(2, 6, "end_2")}
+        model.Add(ends[2] == starts[2] + 1)
+        tardiness = {task.id: model.NewIntVar(0, 0, f"tardy_{task.id}") for task in tasks}
+        gap = model.NewIntVar(0, 5, "dependency_gap_1_2")
+        model.Add(gap >= starts[2] - ends[1])
+        add_scheduler_objective(model, tasks, starts, ends, tardiness, [], [], 6, 0, {}, dependency_gap_penalties=[gap])
+        solver = cp_model.CpSolver()
+        self.assertEqual(cp_model.OPTIMAL, solver.Solve(model))
+        self.assertEqual(1, solver.Value(starts[2]))
+
 
 if __name__ == "__main__":
     unittest.main()

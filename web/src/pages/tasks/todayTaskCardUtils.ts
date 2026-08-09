@@ -1,7 +1,11 @@
 import dayjs from 'dayjs'
 import type { WorkspaceTask } from '@/domains/tasks/workspaceTask'
+import { taskStatusLabel } from '@/utils/statusMeta'
 import {
   actionableSlotId,
+  canCompleteWorkspaceTask,
+  canPauseWorkspaceTask,
+  canStartWorkspaceTask,
   isExceptionConfirmTask,
   isTaskClosed,
   isTaskDue,
@@ -55,15 +59,15 @@ export function isWorkspaceExceptionConfirmTask(task: WorkspaceTask, now: dayjs.
 }
 
 export function canStartTask(task: WorkspaceTask) {
-  return ['pending', 'scheduled', 'blocked', 'paused'].includes(task.execution_status)
-    && (!task.actual_window.start || task.execution_status === 'paused')
-    && Boolean(actionableSlotId(task))
+  return canStartWorkspaceTask(task)
 }
 
 export function canCompleteTask(task: WorkspaceTask) {
-  const canComplete = task.execution_status === 'running'
-    || (task.execution_status === 'blocked' && Boolean(task.actual_window.start))
-  return canComplete && Boolean(actionableSlotId(task))
+  return canCompleteWorkspaceTask(task)
+}
+
+export function canPauseTask(task: WorkspaceTask) {
+  return canPauseWorkspaceTask(task)
 }
 
 export function formatTaskTime(value: string | dayjs.Dayjs | null, fallback: string) {
@@ -141,11 +145,7 @@ export function isHalfHourDuration(value: unknown) {
 }
 
 export function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    pending: '待处理', scheduled: '待执行', running: '运行中', completed: '已完成',
-    done: '已完成', paused: '已暂停', blocked: '已延期', interrupted: '已中断',
-  }
-  return labels[status] || status
+  return taskStatusLabel(status)
 }
 
 export function scheduleText(task: WorkspaceTask) {

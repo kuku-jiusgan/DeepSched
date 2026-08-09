@@ -100,12 +100,12 @@
         </a-table-column>
         <a-table-column v-if="canOperate" title="操作" key="actions" width="180">
           <template #default="{ record }">
-            <a-space v-if="record.is_external_gate && record.is_local_draft" :size="0">
+            <a-space v-if="record.is_external_gate && record.is_local_draft" v-operation="'delete_task'" :size="0">
               <a-popconfirm title="确定删除这个未保存的方案签批？" @confirm="handleDeleteTask(record.id)">
                 <a-button type="link" size="small" danger>删除</a-button>
               </a-popconfirm>
             </a-space>
-            <a-space v-else-if="record.is_external_gate" :size="0">
+            <a-space v-else-if="record.is_external_gate" v-operation="'delete_task'" :size="0">
               <a-popconfirm :disabled="!canDeleteTask(record)" title="确定删除方案签批？删除后下游任务将恢复为待排程状态。" @confirm="handleDeleteTask(record.id)">
                 <a-tooltip :title="deleteDisabledReason(record)">
                   <a-button type="link" size="small" danger :disabled="!canDeleteTask(record)">删除</a-button>
@@ -115,17 +115,19 @@
             <a-space v-else :size="0">
               <a-button v-operation="'create_task'" type="link" size="small" @click="openAddTask(record.id)" title="添加子任务"><PlusOutlined /></a-button>
               <a-button v-operation="'edit_task'" type="link" size="small" @click="openEditTask(record)"><EditOutlined /></a-button>
-              <a-popconfirm v-operation="'delete_task'" :disabled="!canDeleteTask(record)" title="确定删除该任务及其所有子任务？" @confirm="handleDeleteTask(record.id)">
-                <a-tooltip :title="deleteDisabledReason(record)">
-                  <a-button type="link" size="small" danger :disabled="!canDeleteTask(record)">删除</a-button>
-                </a-tooltip>
-              </a-popconfirm>
+              <span v-operation="'delete_task'">
+                <a-popconfirm :disabled="!canDeleteTask(record)" title="确定删除该任务及其所有子任务？" @confirm="handleDeleteTask(record.id)">
+                  <a-tooltip :title="deleteDisabledReason(record)">
+                    <a-button type="link" size="small" danger :disabled="!canDeleteTask(record)">删除</a-button>
+                  </a-tooltip>
+                </a-popconfirm>
+              </span>
             </a-space>
           </template>
         </a-table-column>
       </a-table>
       <div style="margin-top: 16px; text-align: right">
-        <a-button v-if="hasLocalDrafts" v-operation="'create_task'" size="large" :loading="savingPlan" @click="handleSavePlan" style="margin-right: 8px">
+        <a-button v-if="hasLocalDrafts" v-operation="'save_draft'" size="large" :loading="savingPlan" @click="handleSavePlan" style="margin-right: 8px">
           <SaveOutlined /> 仅保存计划
         </a-button>
         <a-button v-operation="'schedule'" type="primary" size="large" @click="handleStartSchedule" :loading="scheduling">
@@ -197,10 +199,11 @@ import PlanInsertPreviewModal from './components/PlanInsertPreviewModal.vue'
 import ApprovalGateModal from './components/ApprovalGateModal.vue'
 import dayjs from 'dayjs'
 import { canOperatePage, permissionState } from '@/services/permissions'
+import { taskStatusLabel } from '@/utils/statusMeta'
 import {
   allocateTemplateHours, buildTaskTree, countLeafTasks, gateDateText, gateStatusMeta, getTaskTypeColor,
   parentTaskIds, priorityColor, priorityLabel, sumTaskHours,
-  taskInstrumentIds, taskStatusLabel, taskTreeHasCompletedTask,
+  taskInstrumentIds, taskTreeHasCompletedTask,
 } from './planBreakdownUtils'
 import './planBreakdown.css'
 const router = useRouter()
@@ -435,6 +438,9 @@ function buildDraftTask(
     schedule_dirty: true,
     schedule_lock_status: 'none',
     can_edit_schedule_fields: true,
+    can_edit_basic_fields: true,
+    can_edit_schedule_window: true,
+    can_edit_resource_fields: true,
     priority_weight: 1,
     allow_split: false,
     instrument_ids: [...payload.instrument_ids],
@@ -482,7 +488,9 @@ function openTemplateImport() {
     id: restrictionId, project_id: projectId, name: '方案签批', task_type: 'approval_gate',
     requires_instrument: false, requires_human: false, switchover_hours: 0,
     status: 'waiting_external', delay_status: 'not_delayed', schedule_dirty: false, schedule_lock_status: 'none',
-    can_edit_schedule_fields: true, priority_weight: 1, allow_split: false,
+    can_edit_schedule_fields: true, can_edit_basic_fields: true,
+    can_edit_schedule_window: true, can_edit_resource_fields: true,
+    priority_weight: 1, allow_split: false,
     instrument_ids: [], predecessor_ids: [scheme.id], assignee_id: null,
     assignee_name: null, parent_id: group.id, is_external_gate: true,
     gate_status: 'not_submitted', is_local_draft: true,

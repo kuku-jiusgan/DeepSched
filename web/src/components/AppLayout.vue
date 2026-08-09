@@ -216,11 +216,10 @@ const baseMenuItems = [
   ]},
   { key: '/kanban', icon: icon('AppstoreOutlined'), label: '资源看板', children: [
     { key: '/kanban/instrument-gantt', icon: icon('BarChartOutlined'), label: '仪器甘特图' },
-    { key: '/kanban/project-gantt', icon: icon('BarChartOutlined'), label: '项目甘特图' },
-    { key: '/kanban/human-gantt', icon: icon('TeamOutlined'), label: '人力甘特图' },
   ]},
   { key: '/tasks', icon: icon('CheckSquareOutlined'), label: '任务管理', children: [
     { key: '/tasks/workspace', icon: icon('UserOutlined'), label: '个人工作台' },
+    { key: '/tasks/agenda', icon: icon('CalendarOutlined'), label: '我的安排' },
     { key: '/tasks/faults', icon: icon('ToolOutlined'), label: '故障提报' },
   ]},
   { key: '/projects', icon: icon('ProjectOutlined'), label: '项目管理', children: [

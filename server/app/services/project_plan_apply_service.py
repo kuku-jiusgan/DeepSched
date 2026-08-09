@@ -194,6 +194,7 @@ def _execute_replan(
     new_project_completions = _project_completions(db, moved_project_ids)
     project_impacts = _build_project_impacts(
         movable_tasks,
+        impacts,
         old_project_completions,
         new_project_completions,
     )
@@ -378,6 +379,7 @@ def _project_completions(db, project_ids: set[int]) -> dict[int, datetime]:
 
 def _build_project_impacts(
     movable_tasks: list[Task],
+    task_impacts: list[InsertOrderImpact],
     old_completions: dict[int, datetime],
     new_completions: dict[int, datetime],
 ) -> list[ProjectScheduleImpact]:
@@ -386,10 +388,24 @@ def _build_project_impacts(
         for task in movable_tasks
         if task.project is not None
     }
+    impacts_by_project: dict[int, list[InsertOrderImpact]] = {}
+    for impact in task_impacts:
+        if impact.is_insert_task:
+            continue
+        impacts_by_project.setdefault(impact.project_id, []).append(impact)
     impacts = []
     for project_id, project in sorted(projects.items()):
         original_completion = old_completions.get(project_id)
         new_completion = new_completions.get(project_id)
+        project_task_impacts = impacts_by_project.get(project_id, [])
+        original_start = min(
+            (impact.original_start for impact in project_task_impacts if impact.original_start),
+            default=None,
+        )
+        new_start = min(
+            (impact.new_start for impact in project_task_impacts),
+            default=None,
+        )
         delay_hours = _hours_between(original_completion, new_completion)
         overdue_hours = _hours_between(project.end_date, new_completion)
         impacts.append(ProjectScheduleImpact(
@@ -397,6 +413,8 @@ def _build_project_impacts(
             project_code=project.code,
             project_name=project.name,
             project_end_date=project.end_date,
+            original_start=original_start,
+            new_start=new_start,
             original_completion=original_completion,
             new_completion=new_completion,
             delay_hours=round(delay_hours, 1),
@@ -417,9 +435,9 @@ def _project_impact_message(impacts: list[ProjectScheduleImpact]) -> str:
         return "需要移动同优先级或低优先级的未开始项目任务，请确认排程影响"
     details = []
     for impact in impacts:
-        completion = (
-            impact.new_completion.strftime("%Y-%m-%d %H:%M")
-            if impact.new_completion
+        start_time = (
+            impact.new_start.strftime("%Y-%m-%d %H:%M")
+            if impact.new_start
             else "暂无"
         )
         delay = max(0, impact.delay_hours)
@@ -430,7 +448,7 @@ def _project_impact_message(impacts: list[ProjectScheduleImpact]) -> str:
         )
         details.append(
             f"项目【{impact.project_code} {impact.project_name}】"
-            f"预计顺延 {delay:g} 小时，调整后完成时间 {completion}，{deadline}"
+            f"预计顺延 {delay:g} 小时，调整后开始时间为 {start_time}，{deadline}"
         )
     return "需要移动同优先级或低优先级的未开始项目任务，请确认影响：" + "；".join(details)
 

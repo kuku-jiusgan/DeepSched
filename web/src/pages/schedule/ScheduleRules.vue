@@ -15,7 +15,7 @@
             <div class="rule-name">{{ rule.name }}</div>
             <div class="rule-desc">{{ rule.description }}</div>
           </div>
-          <div class="rule-params">
+          <div v-operation="'edit'" class="rule-params">
             <template v-if="rule.code === 'time_granularity'">
               <span style="margin-right: 8px; color: #64748b; font-size: 13px">当前值：</span>
               <a-input-number
@@ -64,7 +64,7 @@
             </div>
             <div class="rule-desc" :style="{ color: rule.is_enabled ? '#64748b' : '#cbd5e1' }">{{ rule.description }}</div>
           </div>
-          <div class="rule-params">
+          <div v-operation="'edit'" class="rule-params">
             <template v-if="rule.code === 'working_hours'">
               <span style="font-size: 12px; color: #94a3b8">白天</span>
               <a-select
@@ -124,7 +124,7 @@
               />
             </template>
           </div>
-          <div class="rule-toggle">
+          <div v-operation="'toggle'" class="rule-toggle">
             <a-switch v-model:checked="rule.is_enabled" size="small" :disabled="isRuleLocked(rule)" @change="toggleRule(rule)" />
           </div>
         </div>
@@ -142,7 +142,7 @@
             </div>
             <div class="rule-desc" :style="{ color: rule.is_enabled ? '#64748b' : '#cbd5e1' }">{{ rule.description }}</div>
           </div>
-          <div class="rule-params">
+          <div v-operation="'edit'" class="rule-params">
             <span style="font-size: 12px; color: #94a3b8; margin-right: 6px">权重</span>
             <a-input-number
               :value="getNumberParam(rule, 'weight', 0)"
@@ -155,7 +155,7 @@
               @change="(v: number | null) => saveRuleParam(rule, 'weight', v ?? 0)"
             />
           </div>
-          <div class="rule-toggle">
+          <div v-operation="'toggle'" class="rule-toggle">
             <a-switch v-model:checked="rule.is_enabled" size="small" @change="toggleRule(rule)" />
           </div>
         </div>

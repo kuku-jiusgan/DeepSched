@@ -291,7 +291,7 @@ class ScheduleConflictServiceTest(unittest.TestCase):
 
         self.assertEqual([], find_human_conflicts(self.db))
 
-    def test_completed_actual_time_creates_human_conflict(self):
+    def test_completed_actual_time_does_not_block_future_scheduling(self):
         self._create_user(1)
         self._create_task(1, 1)
         self._create_task(2, 1)
@@ -309,7 +309,7 @@ class ScheduleConflictServiceTest(unittest.TestCase):
         ])
         self.db.commit()
 
-        self.assertEqual(1, len(find_human_conflicts(self.db)))
+        self.assertEqual([], find_human_conflicts(self.db))
 
     def test_existing_conflict_outside_current_run_does_not_block_scheduling(self):
         self._create_user(1)

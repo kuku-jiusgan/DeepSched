@@ -27,6 +27,7 @@ import { ref, computed, onMounted } from "vue"
 import { message } from "ant-design-vue"
 import { getProjects, getProjectDAG } from "@/services/api"
 import type { Project, DAGData } from "@/types"
+import { taskStatusColor, taskStatusLabel } from '@/utils/statusMeta'
 
 const NODE_W = 180; const NODE_H = 52; const LAYER_GAP = 100; const NODE_GAP = 24
 
@@ -77,8 +78,8 @@ const layoutEdges = computed(() => layout.value.edges)
 const svgW = computed(() => layout.value.svgW)
 const svgH = computed(() => layout.value.svgH)
 
-function statusColor(s: string) { const m: Record<string,string>={completed:"#16a34a",running:"#2563eb",scheduled:"#7c3aed",blocked:"#dc2626"}; return m[s]||"#94a3b8" }
-function statusLabel(s: string) { const m: Record<string,string>={completed:"已完成",running:"运行中",scheduled:"已排程",blocked:"阻塞"}; return m[s]||"待处理" }
+function statusColor(status: string) { return taskStatusColor(status) }
+function statusLabel(status: string) { return taskStatusLabel(status) }
 function gateStatusLabel(s?: string) { const m: Record<string,string>={not_submitted:"待提交",waiting_approval:"等待客户",approved:"已签批"}; return m[s || 'not_submitted'] }
 
 onMounted(async () => { try { projects.value = await getProjects() } catch { message.error("加载项目失败") } })

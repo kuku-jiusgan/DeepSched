@@ -10,7 +10,7 @@ class ScheduleConflictError(Exception):
     pass
 
 
-ACTIVE_SLOT_STATUSES = ["scheduled", "running", "completed", "paused", "blocked", "interrupted"]
+ACTIVE_SLOT_STATUSES = ["scheduled", "running", "paused", "blocked", "interrupted"]
 
 
 def find_instrument_conflicts(db, schedule_run_id: str | None = None) -> list[dict]:
@@ -105,10 +105,6 @@ def _in_run(first: TimeSlot, second: TimeSlot, schedule_run_id: str | None) -> b
 
 
 def _effective_slot_range(slot: TimeSlot):
-    if slot.status == "completed":
-        if slot.actual_start and slot.actual_end:
-            return slot.actual_start, slot.actual_end
-        return None
     if slot.actual_start:
         if slot.plan_start > datetime.now():
             return slot.plan_start, slot.plan_end

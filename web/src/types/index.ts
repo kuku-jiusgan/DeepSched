@@ -4,6 +4,7 @@ export interface Project {
   code: string;
   client_name?: string;
   estimated_hours?: number | null;
+  actual_hours?: number;
   priority: number;
   status: string;
   manager_id?: number | null;
@@ -26,6 +27,7 @@ export interface DetectionTask {
   start_date: string;
   end_date: string;
   task: Task;
+  actual_hours: number;
   schedule_status?: string | null;
   schedule_message?: string | null;
   preview_token?: string | null;
@@ -45,6 +47,9 @@ export interface Task {
   schedule_dirty: boolean;
   schedule_lock_status: 'none' | 'frozen' | 'running' | 'completed';
   can_edit_schedule_fields: boolean;
+  can_edit_basic_fields: boolean;
+  can_edit_schedule_window: boolean;
+  can_edit_resource_fields: boolean;
   earliest_start?: string;
   latest_due?: string;
   priority_weight: number;
@@ -205,6 +210,8 @@ export interface TimeSlot {
   actual_end?: string;
   tier: string;
   status: string;
+  execution_status?: string;
+  is_night_run?: boolean;
   task_name?: string;
   task_type?: string | null;
   task_status?: string | null;
@@ -219,6 +226,7 @@ export interface TimeSlot {
   delay_hours?: number | null;
   delay_reason?: string | null;
   delay_reported_at?: string | null;
+  delay_started_at?: string | null;
   approval_gate_status?: ApprovalGateStatus;
   approval_risk_status?: ApprovalRiskStatus;
   approval_latest_at?: string | null;
@@ -273,6 +281,8 @@ export interface ProjectScheduleImpact {
   project_code: string;
   project_name: string;
   project_end_date: string | null;
+  original_start: string | null;
+  new_start: string | null;
   original_completion: string | null;
   new_completion: string | null;
   delay_hours: number;

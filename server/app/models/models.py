@@ -106,6 +106,18 @@ class Task(Base):
     @property
     def can_edit_schedule_fields(self):
         return self.schedule_lock_status == "none"
+
+    @property
+    def can_edit_basic_fields(self):
+        return self.schedule_lock_status != "completed"
+
+    @property
+    def can_edit_schedule_window(self):
+        return self.schedule_lock_status != "completed"
+
+    @property
+    def can_edit_resource_fields(self):
+        return self.schedule_lock_status == "none"
     predecessors = relationship("TaskDependency", foreign_keys="TaskDependency.task_id", back_populates="task", cascade="all, delete-orphan")
     capability_requirements = relationship("TaskCapabilityRequirement", back_populates="task", cascade="all, delete-orphan")
     time_slots = relationship("TimeSlot", back_populates="task", cascade="all, delete-orphan")
@@ -196,6 +208,7 @@ class TimeSlot(Base):
     plan_end = Column(DateTime, nullable=False)
     actual_start = Column(DateTime)
     actual_end = Column(DateTime)
+    is_night_run = Column(Boolean, default=False, nullable=False)
     tier = Column(String(10), nullable=False, default="forecast")
     status = Column(String(20), default="scheduled")
     created_at = Column(DateTime, default=datetime.now)
@@ -222,6 +235,26 @@ class TaskExecutionSegment(Base):
     slot = relationship("TimeSlot")
     instrument = relationship("Instrument")
     operator = relationship("User")
+
+
+class TaskNightRun(Base):
+    __tablename__ = "task_night_run"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(Integer, ForeignKey("task.id"), nullable=False)
+    slot_id = Column(Integer, ForeignKey("time_slot.id"), nullable=False)
+    instrument_id = Column(Integer, ForeignKey("instrument.id"), nullable=False)
+    operator_id = Column(Integer, ForeignKey("user.id"))
+    started_at = Column(DateTime, nullable=False)
+    ended_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    __table_args__ = (UniqueConstraint("task_id", "instrument_id", "started_at"),)
+
+    task = relationship("Task")
+    slot = relationship("TimeSlot")
+    instrument = relationship("Instrument")
+    operator = relationship("User")
+
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
@@ -371,5 +404,19 @@ class SysCalendar(Base):
     is_working_day = Column(Boolean, default=True, comment="是否工作日")
     holiday_name = Column(String(100), comment="假期名称（如：春节、国庆节）")
     day_type = Column(String(20), default="workday", comment="workday/weekend/holiday/compensate")
+    source = Column(String(20), nullable=False, default="default", comment="default/sync/manual")
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ScheduleCalendarSnapshot(Base):
+    __tablename__ = "schedule_calendar_snapshot"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    schedule_run_id = Column(String(64), nullable=False, unique=True)
+    horizon_start = Column(DateTime, nullable=False)
+    horizon_end = Column(DateTime, nullable=False)
+    working_hours = Column(JSON, nullable=False)
+    calendar_days = Column(JSON, nullable=False)
+    maintenance_windows = Column(JSON, nullable=False)
+    rule_versions = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)

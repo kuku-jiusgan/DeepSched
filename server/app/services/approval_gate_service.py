@@ -24,8 +24,9 @@ from app.services.task_delay_status_service import reset_task_delay
 from app.services.user_role_service import has_any_role, has_role
 
 
-APPROVAL_WRITE_ROLES = FULL_PROJECT_ACCESS_ROLES
+APPROVAL_WRITE_ROLES = FULL_PROJECT_ACCESS_ROLES - {"项目管理员"}
 SYSTEM_ADMIN_ROLE = "系统管理员"
+APPROVAL_WORKSPACE_ALL_VIEW_ROLES = {"系统管理员", "项目管理员"}
 MOVABLE_SLOT_STATUSES = ["scheduled", "blocked"]
 
 
@@ -114,7 +115,10 @@ def list_approval_gates(
     if workspace_only:
         visible = [
             gate for gate in gates
-            if gate.project and (has_role(user, SYSTEM_ADMIN_ROLE) or gate.assignee_id == user.id)
+            if gate.project and (
+                any(has_role(user, role) for role in APPROVAL_WORKSPACE_ALL_VIEW_ROLES)
+                or gate.assignee_id == user.id
+            )
         ]
     else:
         visible = [gate for gate in gates if gate.project and can_view_project(gate.project, user)]
@@ -412,7 +416,9 @@ def _gate_out(db, gate: Task, user: User) -> ApprovalGateOut:
         preview_token=gate.approval_preview_token,
         moved_tasks=gate.approval_moved_tasks or 0,
         project_expected_completion=expected_completion,
-        can_operate=_can_operate(project, user) or gate.assignee_id == user.id,
+        can_operate=(
+            _can_operate(project, user) or gate.assignee_id == user.id
+        ) and not has_role(user, "项目管理员"),
     )
 
 

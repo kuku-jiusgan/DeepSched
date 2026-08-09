@@ -1,4 +1,5 @@
 import dayjs, { type Dayjs } from 'dayjs'
+import { isTaskCompleted } from '@/utils/statusMeta'
 
 export interface TaskTimeWindow {
   start: string | null
@@ -25,9 +26,18 @@ export interface WorkspaceDelay {
   reported_at: string | null
 }
 
+export interface WorkspaceResumePriority {
+  task_id: number
+  task_name: string
+  project_id: number | null
+  project_name: string | null
+  project_code: string | null
+}
+
 export interface WorkspaceTask {
   task_id: number
   task_name: string | null
+  top_level_task_name?: string | null
   task_type: string | null
   assignee_id: number | null
   assignee_name: string | null
@@ -42,6 +52,7 @@ export interface WorkspaceTask {
   actionable_slot: WorkspaceSegment | null
   segments: WorkspaceSegment[]
   delay: WorkspaceDelay
+  resume_priority: WorkspaceResumePriority | null
 }
 
 type UnknownRecord = Record<string, unknown>
@@ -51,6 +62,7 @@ export function normalizeWorkspaceTask(value: unknown): WorkspaceTask {
   const taskWindow = asRecord(task.task_window)
   const actualWindow = asRecord(task.actual_window)
   const delay = asRecord(task.delay)
+  const resumePriority = normalizeResumePriority(task.resume_priority)
   const nestedActionableSlot = normalizeWorkspaceSegment(task.actionable_slot)
   const legacyActionableSlot = nestedActionableSlot || normalizeLegacyWorkspaceSegment(task)
   const nestedSegments = Array.isArray(task.segments)
@@ -60,6 +72,7 @@ export function normalizeWorkspaceTask(value: unknown): WorkspaceTask {
   return {
     task_id: numberValue(task.task_id) ?? 0,
     task_name: stringValue(task.task_name),
+    top_level_task_name: stringValue(task.top_level_task_name),
     task_type: stringValue(task.task_type),
     assignee_id: numberValue(task.assignee_id),
     assignee_name: stringValue(task.assignee_name),
@@ -85,6 +98,21 @@ export function normalizeWorkspaceTask(value: unknown): WorkspaceTask {
       reason: stringValue(delay.reason) || stringValue(task.delay_reason),
       reported_at: stringValue(delay.reported_at) || stringValue(task.delay_reported_at),
     },
+    resume_priority: resumePriority,
+  }
+}
+
+function normalizeResumePriority(value: unknown): WorkspaceResumePriority | null {
+  const priority = asRecord(value)
+  const taskId = numberValue(priority.task_id)
+  const taskName = stringValue(priority.task_name)
+  if (taskId === null || !taskName) return null
+  return {
+    task_id: taskId,
+    task_name: taskName,
+    project_id: numberValue(priority.project_id),
+    project_name: stringValue(priority.project_name),
+    project_code: stringValue(priority.project_code),
   }
 }
 
@@ -146,7 +174,7 @@ function isWorkspaceSegment(value: WorkspaceSegment | null): value is WorkspaceS
 }
 
 export function isTaskClosed(task: WorkspaceTask) {
-  return ['done', 'completed'].includes(task.execution_status)
+  return isTaskCompleted(task.execution_status)
 }
 
 export function isTaskDue(task: WorkspaceTask, now: Dayjs = dayjs()) {
@@ -164,6 +192,23 @@ export function isWorkspaceActiveTask(task: WorkspaceTask, now: Dayjs = dayjs())
 
 export function isWorkspacePendingTask(task: WorkspaceTask, now: Dayjs = dayjs()) {
   return ['pending', 'scheduled'].includes(task.execution_status) && !isDuePendingTask(task, now)
+}
+
+export function workspaceActionStatus(task: WorkspaceTask) {
+  return task.actionable_slot?.status || task.execution_status
+}
+
+export function canStartWorkspaceTask(task: WorkspaceTask) {
+  return ['pending', 'scheduled', 'blocked', 'paused', 'interrupted'].includes(workspaceActionStatus(task))
+    && Boolean(actionableSlotId(task))
+}
+
+export function canCompleteWorkspaceTask(task: WorkspaceTask) {
+  return workspaceActionStatus(task) === 'running' && Boolean(actionableSlotId(task))
+}
+
+export function canPauseWorkspaceTask(task: WorkspaceTask) {
+  return workspaceActionStatus(task) === 'running' && Boolean(actionableSlotId(task))
 }
 
 export function isExceptionConfirmTask(task: WorkspaceTask, now: Dayjs = dayjs()) {

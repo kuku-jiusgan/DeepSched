@@ -38,9 +38,11 @@
         <template v-else-if="column.key === 'actions'">
           <a-space :size="4">
             <a-button v-operation="'edit'" type="link" size="small" @click="openEdit(record)"><EditOutlined /> 编辑</a-button>
-            <a-popconfirm v-operation="'delete'" title="确定删除该仪器？" @confirm="handleDelete(record.id)" okText="确定" cancelText="取消">
-              <a-button type="link" size="small" danger><DeleteOutlined /> 删除</a-button>
-            </a-popconfirm>
+            <span v-operation="'delete'">
+              <a-popconfirm title="确定删除该仪器？" @confirm="handleDelete(record.id)" okText="确定" cancelText="取消">
+                <a-button type="link" size="small" danger><DeleteOutlined /> 删除</a-button>
+              </a-popconfirm>
+            </span>
           </a-space>
         </template>
       </template>
@@ -219,7 +221,6 @@ async function handleSubmit() {
 async function handleDelete(id:number){try{await deleteInstrument(id);message.success('已删除');fetchData()}catch{message.error('删除失败')}}
 onMounted(fetchData)
 </script>
-
 
 
 

@@ -4,8 +4,8 @@
       <span class="today-card-dot" />
       <span>方案签批确认</span>
     </div>
-    <div v-if="actionableGates.length" class="today-card-stack">
-      <article v-for="gate in actionableGates" :key="gate.id" class="today-card">
+    <div v-if="displayGates.length" class="today-card-stack">
+      <article v-for="gate in displayGates" :key="gate.id" class="today-card">
         <div class="today-card-meta">
           <a-tag :color="gateMeta(gate.gate_status).color">{{ gateMeta(gate.gate_status).label }}</a-tag>
           <a-tag v-if="gate.risk_status !== 'normal'" :color="riskMeta(gate.risk_status).color">{{ riskMeta(gate.risk_status).label }}</a-tag>
@@ -77,18 +77,18 @@ import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { approveApprovalGate, confirmApprovalScheduleImpact, submitApprovalGate } from '@/services/api'
 import type { ApprovalGate, ApprovalGateStatus, ApprovalGateTaskRef, ApprovalRiskStatus } from '@/types'
+import { isTaskCompleted } from '@/utils/statusMeta'
 
 interface Props { approvalGates: ApprovalGate[] }
 
 const props = defineProps<Props>()
 const emit = defineEmits<{ refreshed: [] }>()
 const router = useRouter()
-const actionableGates = computed(() => props.approvalGates.filter(gate => gate.can_operate && (gate.gate_status !== 'approved' || gate.schedule_status === 'confirmation_required')))
+const displayGates = computed(() => props.approvalGates)
 const expectedModalOpen = ref(false)
 const expectedSubmitting = ref(false)
 const expectedGate = ref<ApprovalGate | null>(null)
 const expectedApprovalAt = ref<Dayjs | null>(null)
-const completedTaskStatuses = new Set(['done', 'completed'])
 function openExpectedApproval(gate: ApprovalGate) {
   expectedGate.value = gate
   const latestApprovalAt = gate.latest_approval_at ? dayjs(gate.latest_approval_at) : null
@@ -194,7 +194,7 @@ function confirmImpact(gate: ApprovalGate) {
 function viewHistory() { router.push('/tasks/approvals') }
 function taskNames(tasks: ApprovalGateTaskRef[]) { return tasks.map(task => task.name).join('、') || '-' }
 function incompletePredecessors(gate: ApprovalGate) {
-  return gate.predecessor_tasks.filter(task => !task.status || !completedTaskStatuses.has(task.status))
+  return gate.predecessor_tasks.filter(task => !isTaskCompleted(task.status))
 }
 function incompletePredecessorNames(gate: ApprovalGate) {
   return incompletePredecessors(gate).map(task => task.name).join('、')

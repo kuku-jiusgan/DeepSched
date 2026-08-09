@@ -23,11 +23,12 @@ class DetectionTaskNotFoundError(Exception):
 
 
 SYSTEM_ADMIN_ROLE = "系统管理员"
+FULL_DETECTION_TASK_VIEW_ROLES = {SYSTEM_ADMIN_ROLE, "项目管理员"}
 
 
 def list_detection_tasks(db, user) -> list[Project]:
     query = db.query(Project).filter(Project.project_kind == "detection")
-    if not has_role(user, SYSTEM_ADMIN_ROLE):
+    if not any(has_role(user, role) for role in FULL_DETECTION_TASK_VIEW_ROLES):
         query = query.filter(Project.tasks.any(Task.assignee_id == user.id))
     return query.order_by(Project.created_at.desc()).all()
 
@@ -84,8 +85,9 @@ def update_detection_task(db, detection_id: int, data, user) -> tuple[Project, d
     if not data.assignee_id:
         raise DetectionTaskInvalidError("检测任务必须指定执行人")
     task = project.tasks[0]
-    if task.schedule_lock_status != "none":
-        raise DetectionTaskInvalidError("运行中、冻结或已完成的检测任务不能编辑")
+    lock_status = task.schedule_lock_status
+    if lock_status == "completed":
+        raise DetectionTaskInvalidError("已完成的检测任务不能编辑")
     code = data.code.strip()
     name = data.name.strip()
     if not code or not name:
@@ -95,6 +97,8 @@ def update_detection_task(db, detection_id: int, data, user) -> tuple[Project, d
         raise DetectionTaskInvalidError(f"编号 {code} 已存在")
     if data.end_date < data.start_date:
         raise DetectionTaskInvalidError("计划完成时间不能早于计划开始时间")
+    if lock_status != "none":
+        return _update_locked_detection_task(db, project, task, data, code, name)
     try:
         validate_task_references(
             db, project.id, parent_id=None, milestone_id=None, predecessor_ids=[],
@@ -121,6 +125,48 @@ def update_detection_task(db, detection_id: int, data, user) -> tuple[Project, d
     result = _apply_detection_plan(db, project.id)
     db.refresh(project)
     return project, result
+
+
+def _update_locked_detection_task(db, project: Project, task: Task, data, code: str, name: str) -> tuple[Project, dict]:
+    _ensure_locked_update_only_changes_safe_fields(project, task, data, code)
+    latest_slot_end = max((slot.plan_end for slot in task.time_slots), default=None)
+    normalized_end = normalize_project_end(data.end_date)
+    if latest_slot_end and normalized_end < latest_slot_end:
+        raise DetectionTaskInvalidError("计划完成时间不能早于已有排程结束时间")
+    project.name = name
+    project.end_date = normalized_end
+    task.name = name
+    db.commit()
+    db.refresh(project)
+    return project, {"status": "ok", "message": "检测任务已更新"}
+
+
+def _ensure_locked_update_only_changes_safe_fields(project: Project, task: Task, data, code: str) -> None:
+    normalized_start = normalize_project_start(data.start_date)
+    if code != project.code:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改任务编号")
+    if normalized_start != project.start_date:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改计划开始时间")
+    if data.client_name != project.client_name:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改客户名称")
+    if data.priority != project.priority:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改优先级")
+    if data.manager_id != project.manager_id:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改项目负责人")
+    if data.task_type != task.task_type:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改任务类型")
+    if data.est_duration_hours != task.est_duration_hours:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改预计耗时")
+    if data.switchover_hours != task.switchover_hours:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改切换时间")
+    if data.requires_instrument != task.requires_instrument or data.requires_human != task.requires_human:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改资源类型")
+    if data.allow_split != task.allow_split or data.allow_transfer != task.allow_transfer:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改拆分或转移规则")
+    if sorted(data.instrument_ids) != sorted(task.instrument_ids or []):
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改指定仪器")
+    if data.assignee_id != task.assignee_id:
+        raise DetectionTaskInvalidError("运行中或冻结期检测任务不能修改执行人")
 
 
 def confirm_detection_task_insert(
@@ -176,4 +222,7 @@ def _get_detection_task(db, detection_id: int, user=None) -> Project:
 
 
 def _can_view_detection_task(project: Project, user) -> bool:
-    return has_role(user, SYSTEM_ADMIN_ROLE) or any(task.assignee_id == user.id for task in project.tasks)
+    return (
+        has_role(user, SYSTEM_ADMIN_ROLE)
+        or any(task.assignee_id == user.id for task in project.tasks)
+    )

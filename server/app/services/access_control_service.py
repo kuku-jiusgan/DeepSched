@@ -46,9 +46,7 @@ def require_slot_operator(db, slot_id: int, user) -> TimeSlot:
     task = db.query(Task).filter(Task.id == slot.task_id).first()
     if task is None:
         raise AccessResourceNotFoundError("任务不存在")
-    project = db.query(Project).filter(Project.id == task.project_id).first()
-    is_project_manager = project is not None and project.manager_id == user.id
-    if not is_management_user(user) and task.assignee_id != user.id and not is_project_manager:
+    if task.assignee_id != user.id:
         raise AccessDeniedError("只能操作本人负责的任务")
     return slot
 

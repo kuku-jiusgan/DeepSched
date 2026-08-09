@@ -228,7 +228,7 @@ class ApprovalGateServiceTest(unittest.TestCase):
         self.assertEqual(1, result.pending_count)
         self.assertEqual(0, result.approved_count)
 
-    def test_workspace_cards_only_include_assignee_or_system_admin(self):
+    def test_workspace_cards_include_all_for_project_admin_but_read_only(self):
         gate_out = create_approval_gate(
             self.db,
             1,
@@ -248,7 +248,8 @@ class ApprovalGateServiceTest(unittest.TestCase):
         self.assertEqual(1, assignee_result.total)
         self.assertTrue(assignee_result.items[0].can_operate)
         self.assertEqual(self.viewer.id, assignee_result.items[0].assignee_id)
-        self.assertEqual(0, project_admin_result.total)
+        self.assertEqual(1, project_admin_result.total)
+        self.assertFalse(project_admin_result.items[0].can_operate)
         self.assertEqual(1, system_admin_result.total)
 
     @patch("app.services.project_plan_apply_service.apply_project_plan")

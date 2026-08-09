@@ -44,6 +44,9 @@ from app.services.audit_log_service import (
 )
 from app.services.user_role_service import has_role
 from app.services.task_reorder_service import reorder_project_tasks, TaskReorderInvalidError
+from app.services.project_actual_hours_service import project_actual_hours_map
+from app.services.project_health_service import get_project_health
+from app.schemas.project_health_schemas import ProjectHealthOut
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
@@ -59,7 +62,7 @@ def create_project(data: ProjectCreate, token: str = Depends(auth_token), db: Se
             project_audit_detail(project),
         )
         db.commit()
-        return project_response(project)
+        return project_response(project, db)
     except ProjectCodeExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
@@ -68,7 +71,9 @@ def list_projects(
     token: str = Depends(auth_token),
     db: Session = Depends(get_db),
 ):
-    return [project_response(project) for project in list_visible_projects(db, get_current_user(token, db))]
+    projects = list_visible_projects(db, get_current_user(token, db))
+    actual_hours = project_actual_hours_map(db, projects)
+    return [project_response(project, db, actual_hours.get(project.id, 0)) for project in projects]
 
 @router.get("/{proj_id}", response_model=ProjectOut)
 def get_project(
@@ -77,7 +82,20 @@ def get_project(
     db: Session = Depends(get_db),
 ):
     try:
-        return project_response(get_visible_project(db, proj_id, get_current_user(token, db)))
+        return project_response(get_visible_project(db, proj_id, get_current_user(token, db)), db)
+    except ProjectNotVisibleError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/{proj_id}/health", response_model=ProjectHealthOut)
+def get_project_health_summary(
+    proj_id: int,
+    token: str = Depends(auth_token),
+    db: Session = Depends(get_db),
+):
+    try:
+        project = get_visible_project(db, proj_id, get_current_user(token, db))
+        return get_project_health(db, project)
     except ProjectNotVisibleError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -93,7 +111,7 @@ def update_project(proj_id: int, data: ProjectCreate, token: str = Depends(auth_
             project_audit_detail(project, before),
         )
         db.commit()
-        return project_response(project)
+        return project_response(project, db)
     except PlanChangeNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except PlanChangeInvalidError as exc:
@@ -102,9 +120,10 @@ def update_project(proj_id: int, data: ProjectCreate, token: str = Depends(auth_
 def ensure_project_info_write_permission(token: str, db: Session):
     return get_current_user(token, db)
 
-def project_response(project: Project) -> dict:
+def project_response(project: Project, db: Session, actual_hours: float | None = None) -> dict:
     data = ProjectOut.model_validate(project).model_dump()
     data["status"] = calculate_project_status(project)
+    data["actual_hours"] = actual_hours if actual_hours is not None else project_actual_hours_map(db, [project]).get(project.id, 0)
     return data
 
 @router.delete("/{proj_id}")

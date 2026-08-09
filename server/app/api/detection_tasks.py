@@ -16,17 +16,19 @@ from app.services.detection_task_service import (
     list_detection_tasks,
     update_detection_task,
 )
+from app.services.project_actual_hours_service import project_actual_hours_map
 
 router = APIRouter(prefix="/api/v1/detection-tasks", tags=["detection-tasks"])
 
 
-def _response(project, db, schedule=None) -> dict:
+def _response(project, db, schedule=None, actual_hours: float | None = None) -> dict:
     return DetectionTaskOut(
         id=project.id, project_id=project.id, code=project.code, name=project.name,
         client_name=project.client_name, priority=project.priority,
         manager_id=project.manager_id, manager_name=project.manager_name,
         start_date=project.start_date, end_date=project.end_date,
         task=_task_to_out(project.tasks[0], db),
+        actual_hours=actual_hours if actual_hours is not None else project_actual_hours_map(db, [project]).get(project.id, 0),
         schedule_status=(schedule or {}).get("status"),
         schedule_message=(schedule or {}).get("message"),
         preview_token=(schedule or {}).get("preview_token"),
@@ -35,7 +37,9 @@ def _response(project, db, schedule=None) -> dict:
 
 @router.get("", response_model=list[DetectionTaskOut])
 def get_detection_tasks(db: Session = Depends(get_db), user=Depends(require_authenticated_user)):
-    return [_response(item, db) for item in list_detection_tasks(db, user)]
+    projects = list_detection_tasks(db, user)
+    actual_hours = project_actual_hours_map(db, projects)
+    return [_response(item, db, actual_hours=actual_hours.get(item.id, 0)) for item in projects]
 
 
 @router.post("", response_model=DetectionTaskOut)

@@ -20,9 +20,11 @@
           <template v-else-if="column.key === 'actions'">
             <a-space :size="0">
               <a-button v-operation="'edit'" type="link" size="small" @click="openEdit(record)"><EditOutlined /></a-button>
-              <a-popconfirm v-operation="'delete'" title="确定删除此类型？" @confirm="handleDelete(record.id)">
-                <a-button type="link" size="small" danger><DeleteOutlined /></a-button>
-              </a-popconfirm>
+              <span v-operation="'delete'">
+                <a-popconfirm title="确定删除此类型？" @confirm="handleDelete(record.id)">
+                  <a-button type="link" size="small" danger><DeleteOutlined /></a-button>
+                </a-popconfirm>
+              </span>
             </a-space>
           </template>
         </template>

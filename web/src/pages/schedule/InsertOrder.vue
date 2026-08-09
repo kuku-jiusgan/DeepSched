@@ -104,6 +104,7 @@ import {
   type InsertOrderRequest,
 } from '@/services/api'
 import type { InsertCost, Project, Task } from '@/types'
+import { taskStatusLabel } from '@/utils/statusMeta'
 
 interface InsertForm {
   projectId: number | null
@@ -255,19 +256,7 @@ function formatRange(start: string | null, end: string | null) {
 }
 
 function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    pending: '待排程',
-    ready: '可排程',
-    scheduled: '已排程',
-    blocked: '已阻塞',
-    waiting_external: '等待方案签批',
-    waiting_approval: '等待签批结果',
-    running: '进行中',
-    paused: '已暂停', interrupted: '已中断',
-    done: '已完成',
-    completed: '已完成',
-  }
-  return labels[status] || status
+  return taskStatusLabel(status)
 }
 
 function impactRoleLabel(role: string | null | undefined, isInsertTask: boolean) {

@@ -11,7 +11,6 @@
       <div><span>待签批</span><strong>{{ summary.pending }}</strong></div>
       <div><span>即将超期</span><strong class="is-warning">{{ summary.upcoming }}</strong></div>
       <div><span>已超期/结题风险</span><strong class="is-danger">{{ summary.overdue }}</strong></div>
-      <div><span>已签批</span><strong class="is-success">{{ summary.approved }}</strong></div>
     </div>
 
     <div class="filter-bar">
@@ -21,11 +20,6 @@
       <a-select v-model:value="filters.risk" :options="riskOptions" placeholder="全部风险" allowClear style="width: 160px" @change="resetAndLoad" />
       <a-range-picker v-model:value="filters.expectedRange" format="YYYY-MM-DD" @change="resetAndLoad" />
     </div>
-
-    <a-tabs v-model:activeKey="activeTab" @change="handleTabChange">
-      <a-tab-pane key="pending" :tab="`待签批 (${summary.pending})`" />
-      <a-tab-pane key="approved" :tab="`已签批 (${summary.approved})`" />
-    </a-tabs>
 
     <a-table
       :dataSource="gates"
@@ -48,11 +42,8 @@
       <a-table-column title="预计签批" width="11%" class-name="compact-time-column">
         <template #default="{ record }">{{ formatCompactDateTime(record.expected_approval_at) }}</template>
       </a-table-column>
-      <a-table-column v-if="activeTab === 'pending'" title="最迟签批" width="11%" class-name="compact-time-column">
+      <a-table-column title="最迟签批" width="11%" class-name="compact-time-column">
         <template #default="{ record }">{{ formatCompactDateTime(record.latest_approval_at) }}</template>
-      </a-table-column>
-      <a-table-column v-else title="实际签批" width="11%" class-name="compact-time-column">
-        <template #default="{ record }">{{ formatCompactDateTime(record.approved_at) }}</template>
       </a-table-column>
       <a-table-column title="风险/结果" width="14%">
         <template #default="{ record }">
@@ -70,15 +61,14 @@
       <a-table-column title="操作" width="13%">
         <template #default="{ record }">
           <a-space :size="4">
-            <a-button v-if="activeTab === 'pending' && record.can_operate" v-operation="{ page: '/tasks/workspace', action: 'approve' }" type="link" size="small" @click="confirmApprove(record)">签批完成</a-button>
+            <a-button v-if="record.can_operate" v-operation="{ page: '/tasks/workspace', action: 'approve' }" type="link" size="small" @click="confirmApprove(record)">签批完成</a-button>
             <a-dropdown :trigger="['click']">
               <a-button type="text" size="small" title="更多操作"><EllipsisOutlined /></a-button>
               <template #overlay>
                 <a-menu>
                   <a-menu-item v-if="record.schedule_status === 'confirmation_required' && record.can_operate" v-operation="{ page: '/tasks/workspace', action: 'confirm_impact' }" danger @click="confirmImpact(record)">确认排程影响</a-menu-item>
                   <a-menu-item @click="openDetail(record)">查看详情</a-menu-item>
-                  <a-menu-item v-if="activeTab === 'pending'" @click="viewProject(record.project_id)">项目计划</a-menu-item>
-                  <a-menu-item v-else @click="viewGantt(record.project_id)">项目甘特图</a-menu-item>
+                  <a-menu-item @click="viewProject(record.project_id)">项目计划</a-menu-item>
                 </a-menu>
               </template>
             </a-dropdown>
@@ -127,13 +117,12 @@ import {
 import type { ApprovalGate, ApprovalGateStatus, ApprovalGateTaskRef, ApprovalRiskStatus } from '@/types'
 
 const router = useRouter()
-const activeTab = ref<'pending' | 'approved'>('pending')
 const gates = ref<ApprovalGate[]>([])
 const projects = ref<{ id: number; code: string; name: string; manager_id?: number | null; manager_name?: string }[]>([])
 const loading = ref(false)
 const detailGate = ref<ApprovalGate | null>(null)
 const detailOpen = ref(false)
-const summary = reactive({ pending: 0, approved: 0, upcoming: 0, overdue: 0 })
+const summary = reactive({ pending: 0, upcoming: 0, overdue: 0 })
 const filters = reactive({ keyword: '', projectId: undefined as number | undefined, managerId: undefined as number | undefined, risk: undefined as string | undefined, expectedRange: null as [Dayjs, Dayjs] | null })
 const page = ref(1)
 const pageSize = ref(20)
@@ -157,7 +146,7 @@ async function loadGates(silent = true) {
   if (!silent) loading.value = true
   try {
     const result = await getApprovalGates({
-      status: activeTab.value,
+      status: 'pending',
       keyword: filters.keyword || undefined,
       project_id: filters.projectId,
       manager_id: filters.managerId,
@@ -169,13 +158,12 @@ async function loadGates(silent = true) {
     })
     gates.value = result.items
     total.value = result.total
-    Object.assign(summary, { pending: result.pending_count, approved: result.approved_count, upcoming: result.upcoming_count, overdue: result.overdue_count })
+    Object.assign(summary, { pending: result.pending_count, upcoming: result.upcoming_count, overdue: result.overdue_count })
   } catch { message.error('加载方案签批数据失败') }
   finally { loading.value = false }
 }
 
 function resetAndLoad() { page.value = 1; loadGates(false) }
-function handleTabChange() { resetAndLoad() }
 function handleTableChange(value: TablePaginationConfig) { page.value = value.current || 1; pageSize.value = value.pageSize || 20; loadGates(false) }
 function confirmApprove(gate: ApprovalGate) {
   Modal.confirm({
@@ -206,7 +194,6 @@ function confirmImpact(gate: ApprovalGate) {
   })
 }
 function viewProject(projectId: number) { router.push({ path: '/projects/plan-breakdown', query: { id: projectId } }) }
-function viewGantt(projectId: number) { router.push({ path: '/kanban/project-gantt', query: { project_id: projectId } }) }
 function openDetail(gate: ApprovalGate) { detailGate.value = gate; detailOpen.value = true }
 function taskNames(tasks: ApprovalGateTaskRef[]) { return tasks.map(task => task.name).join('、') || '-' }
 function formatDateTime(value?: string | null) { return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-' }
@@ -244,7 +231,6 @@ onMounted(async () => {
 .summary-strip strong { display: block; margin-top: 3px; color: var(--color-text-primary); font-size: 20px; }
 .summary-strip .is-warning { color: #b45309; }
 .summary-strip .is-danger { color: #dc2626; }
-.summary-strip .is-success { color: #15803d; }
 .filter-bar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
 .row-ellipsis { min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .primary-text { color: var(--color-text-primary); font-weight: 600; }

@@ -5,6 +5,7 @@ import { message } from 'ant-design-vue'
 import { LeftOutlined, RightOutlined, FullscreenOutlined, FullscreenExitOutlined, ExperimentOutlined, EditOutlined, CheckSquareOutlined, DotChartOutlined, FileTextOutlined } from '@ant-design/icons-vue'
 import { getInstruments, getTimeslots, getTaskTypes, type TaskTypeConfig } from '@/services/api'
 import type { Instrument, TimeSlot } from '@/types'
+import { taskStatusLabel } from '@/utils/statusMeta'
 import dayjs from 'dayjs'
 import { centerGanttTimelineOnCurrentTime } from './kanban/ganttTimelineScroll'
 import { useGanttAutoScroll } from './kanban/useGanttAutoScroll'
@@ -15,15 +16,18 @@ const WEEK_QUARTER_ROW_HEIGHT = 42
 const WEEK_SEGMENT_COUNT = 3
 const WEEK_SEGMENT_HOURS = 8
 const WEEK_SEGMENT_SECONDS = WEEK_SEGMENT_HOURS * 60 * 60
+const WORKDAY_START_HOUR = 8
+const WORKDAY_START_MINUTE = 30
+const WORKDAY_END_HOUR = 20
 const ENTITY_ROW_HEIGHT = 72
 const MIN_COL_WIDTH = 72
-const WEEK_BAR_TINY_WIDTH = 32
-const WEEK_BAR_ICON_WIDTH = 52
-const WEEK_BAR_FULL_WIDTH = 74
+const WEEK_BAR_ICON_WIDTH = 32
+const WEEK_BAR_PROJECT_WIDTH = 52
+const WEEK_BAR_FULL_WIDTH = 110
 const WEEK_FRAGMENT_GAP_PX = 2
 const DELAY_PROBLEM_STATUSES = new Set(['blocked', 'interrupted'])
 
-type SlotStatusKey = 'scheduled' | 'running' | 'completed' | 'blocked'
+type SlotStatusKey = 'scheduled' | 'running' | 'completed' | 'paused' | 'blocked'
 type InstrumentStatusKey = 'idle' | 'running' | 'maintenance' | 'fault' | 'disabled' | 'unknown'
 
 interface StatusMeta {
@@ -44,7 +48,9 @@ interface WeekBarSegment {
 
 interface WeekBarDisplay {
   showIcon: boolean
+  showStatusMarker: boolean
   showLabel: boolean
+  isProjectOnly: boolean
   projectText: string
   taskText: string
 }
@@ -55,10 +61,12 @@ interface GanttSlot extends TimeSlot {
   renderStart?: string
   renderEnd?: string
   originalPlanEnd?: string
+  isOverdueDisplay?: boolean
 }
 
 interface TaskTiming {
   expectedEnd: dayjs.Dayjs
+  actualStart: dayjs.Dayjs | null
   actualEnd: dayjs.Dayjs | null
   taskStatus: string | null
   delayHours: number
@@ -68,8 +76,9 @@ const slotStatusMetaMap: Record<string, StatusMeta> = {
   scheduled: { key: 'scheduled', label: '待执行' },
   pending: { key: 'scheduled', label: '待执行' },
   running: { key: 'running', label: '运行中' },
+  paused: { key: 'paused', label: taskStatusLabel('paused') },
   completed: { key: 'completed', label: '已完成' },
-  blocked: { key: 'blocked', label: '已延期' },
+  blocked: { key: 'blocked', label: '已阻塞' },
   interrupted: { key: 'blocked', label: '已中断' },
 }
 
@@ -89,6 +98,7 @@ const viewMode = ref<'day' | 'week' | 'month'>('week')
 const cursorDate = ref(dayjs().startOf('week'))
 const isFullscreen = ref(false)
 const hoveredSlot = ref<GanttSlot | null>(null)
+const pinnedSlotId = ref<number | null>(null)
 const tooltipX = ref(0)
 const tooltipY = ref(0)
 const tooltipStyle = computed(() => ({ left: tooltipX.value + 'px', top: tooltipY.value + 'px' }))
@@ -191,11 +201,15 @@ const taskTimingMap = computed(() => {
   const timingMap = new Map<number, TaskTiming>()
   for (const slot of slots.value) {
     const planEnd = dayjs(slot.plan_end)
+    const actualStart = slot.actual_start ? dayjs(slot.actual_start) : null
     const actualEnd = slot.actual_end ? dayjs(slot.actual_end) : null
     const delayHours = Number(slot.delay_hours || 0)
     const current = timingMap.get(slot.task_id)
     timingMap.set(slot.task_id, {
       expectedEnd: !current || planEnd.isAfter(current.expectedEnd) ? planEnd : current.expectedEnd,
+      actualStart: actualStart && (!current?.actualStart || actualStart.isBefore(current.actualStart))
+        ? actualStart
+        : (current?.actualStart || null),
       actualEnd: actualEnd && (!current?.actualEnd || actualEnd.isAfter(current.actualEnd))
         ? actualEnd
         : (current?.actualEnd || null),
@@ -206,7 +220,9 @@ const taskTimingMap = computed(() => {
   return timingMap
 })
 
-const displaySlots = computed<GanttSlot[]>(() => mergeContinuousSlots(toDisplaySlots(slots.value)))
+const displaySlots = computed<GanttSlot[]>(() =>
+  mergeContinuousSlots(splitSlotsAroundExecutedOccupancy(toDisplaySlots(slots.value))),
+)
 
 function computeLanes() {
   const map: Record<number, Record<number, number>> = {}
@@ -263,7 +279,7 @@ function getSegmentLabel(quarter: number) {
 }
 
 function getBarClasses(slot: GanttSlot, quarter?: number) {
-  const statusMeta = getSlotStatusMeta(slot.status)
+  const statusMeta = getSlotStatusMeta(displayStatus(slot))
   return [
     'status-' + statusMeta.key,
     {
@@ -271,6 +287,13 @@ function getBarClasses(slot: GanttSlot, quarter?: number) {
       'has-delay': hasDelay(slot),
     },
   ]
+}
+
+function displayStatus(slot: GanttSlot) {
+  if (slot.execution_status) return slot.execution_status
+  const taskStatus = taskTimingMap.value.get(slot.task_id)?.taskStatus
+  if (taskStatus === 'running' && ['blocked', 'interrupted'].includes(slot.status)) return 'running'
+  return slot.status
 }
 
 function getSlotsForQuarter(instId: number, quarter: number) {
@@ -282,8 +305,19 @@ function getSlotsForQuarter(instId: number, quarter: number) {
     const fragments: GanttSlot[] = []
     for (const col of cols) {
       const dayStart = col.start
-      const qStart = dayStart.hour(getSegmentStartHour(quarter))
-      const qEnd = dayStart.hour(getSegmentEndHour(quarter))
+      const segmentStart = dayStart.hour(getSegmentStartHour(quarter))
+      const segmentEnd = dayStart.hour(getSegmentEndHour(quarter))
+      const qStart = slot.is_night_run
+        ? segmentStart
+        : (segmentStart.isBefore(dayStart.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE))
+          ? dayStart.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE)
+          : segmentStart)
+      const qEnd = slot.is_night_run
+        ? segmentEnd
+        : (segmentEnd.isAfter(dayStart.hour(WORKDAY_END_HOUR))
+          ? dayStart.hour(WORKDAY_END_HOUR)
+          : segmentEnd)
+      if (!qEnd.isAfter(qStart)) continue
       if (!end.isAfter(qStart) || !start.isBefore(qEnd)) continue
       const fragmentStart = start.isAfter(qStart) ? start : qStart
       const fragmentEnd = end.isBefore(qEnd) ? end : qEnd
@@ -392,12 +426,32 @@ function getBarTaskText(slot: TimeSlot) {
   return `${taskName} · ${ownerName}${delayText}`
 }
 function isCompactBar(slot: TimeSlot, quarter?: number) {
-  if (viewMode.value === 'week') return false
-  return getRenderedBarWidth(slot, quarter) < WEEK_BAR_FULL_WIDTH
+  return getRenderedBarWidth(slot, quarter) < WEEK_BAR_PROJECT_WIDTH
 }
 
 function hasDelay(slot: TimeSlot) {
-  return getDelayRange(slot) !== null
+  const delayRange = getDelayRange(slot)
+  if (!delayRange) return false
+  return dayjs(slot.plan_end).isAfter(delayRange[0]) && dayjs(slot.plan_start).isBefore(delayRange[1])
+}
+
+function hasPausedExecution(slot: TimeSlot) {
+  const timing = taskTimingMap.value.get(slot.task_id)
+  return slot.status === 'paused' && Boolean(timing?.actualStart && timing.actualEnd)
+}
+
+function getPausedExecutionStyle(slot: TimeSlot, quarter?: number): CSSProperties {
+  const visibleRange = getVisibleSlotRange(slot, quarter)
+  const timing = taskTimingMap.value.get(slot.task_id)
+  if (!visibleRange || !timing?.actualStart || !timing.actualEnd) return { display: 'none' }
+  const overlapStart = timing.actualStart.isAfter(visibleRange[0]) ? timing.actualStart : visibleRange[0]
+  const overlapEnd = timing.actualEnd.isBefore(visibleRange[1]) ? timing.actualEnd : visibleRange[1]
+  if (!overlapEnd.isAfter(overlapStart)) return { display: 'none' }
+  const visibleMinutes = visibleRange[1].diff(visibleRange[0], 'minute', true)
+  return {
+    left: `${overlapStart.diff(visibleRange[0], 'minute', true) / visibleMinutes * 100}%`,
+    width: `${overlapEnd.diff(overlapStart, 'minute', true) / visibleMinutes * 100}%`,
+  }
 }
 
 function getDelaySegmentStyle(slot: TimeSlot, quarter?: number): CSSProperties {
@@ -414,22 +468,15 @@ function getDelaySegmentStyle(slot: TimeSlot, quarter?: number): CSSProperties {
 }
 
 function getDelayRange(slot: TimeSlot): [dayjs.Dayjs, dayjs.Dayjs] | null {
-  const timing = taskTimingMap.value.get(slot.task_id)
-  if (!timing || !isTerminalTaskSlot(slot, timing)) return null
-  const expectedEnd = timing.expectedEnd
+  // 延期显示必须以正式“延期使用”申请为准。实际执行超过计划时间
+  // 只代表执行结果，不应自动生成甘特图红色延期区间。
   const slotDelayHours = Number(slot.delay_hours || 0)
-  if (slotDelayHours > 0) {
-    const delayedEnd = dayjs(slot.plan_end)
-    return [delayedEnd.subtract(slotDelayHours, 'hour'), delayedEnd]
-  }
-  const actualEnd = timing.actualEnd
-  if (actualEnd) return actualEnd.isAfter(expectedEnd) ? [expectedEnd, actualEnd] : null
-
-  const isUnfinished = !['done', 'completed'].includes(timing.taskStatus || '')
-  const currentTime = dayjs()
-  return isUnfinished && currentTime.isAfter(expectedEnd)
-    ? [expectedEnd, currentTime]
-    : null
+  if (slotDelayHours <= 0) return null
+  const timing = taskTimingMap.value.get(slot.task_id)
+  if (!timing) return null
+  const delayedEnd = timing.expectedEnd
+  const reportedStart = slot.delay_started_at ? dayjs(slot.delay_started_at) : null
+  return [reportedStart?.isValid() ? reportedStart : delayedEnd.subtract(slotDelayHours, 'hour'), delayedEnd]
 }
 
 function isTerminalTaskSlot(slot: TimeSlot, timing: TaskTiming) {
@@ -442,14 +489,22 @@ function getWeekBarDisplay(slot: TimeSlot, quarter?: number): WeekBarDisplay {
   const width = getRenderedBarWidth(slot, quarter)
   const projectText = getBarProjectText(slot)
   const taskText = getBarTaskText(slot)
-  if (viewMode.value !== 'week') {
-    return { showIcon: true, showLabel: true, projectText, taskText }
+  if (width >= WEEK_BAR_FULL_WIDTH) {
+    return { showIcon: true, showStatusMarker: false, showLabel: true, isProjectOnly: false, projectText, taskText }
+  }
+  if (width >= WEEK_BAR_PROJECT_WIDTH) {
+    return { showIcon: false, showStatusMarker: false, showLabel: true, isProjectOnly: true, projectText, taskText: '' }
+  }
+  if (width >= WEEK_BAR_ICON_WIDTH) {
+    return { showIcon: true, showStatusMarker: false, showLabel: false, isProjectOnly: false, projectText: '', taskText: '' }
   }
   return {
-    showIcon: width >= WEEK_BAR_ICON_WIDTH,
-    showLabel: width >= WEEK_BAR_TINY_WIDTH,
-    projectText: width >= WEEK_BAR_FULL_WIDTH ? projectText : '',
-    taskText: width >= WEEK_BAR_FULL_WIDTH ? taskText : '',
+    showIcon: false,
+    showStatusMarker: true,
+    showLabel: false,
+    isProjectOnly: false,
+    projectText: '',
+    taskText: '',
   }
 }
 
@@ -489,16 +544,42 @@ function getDelayText(slot: TimeSlot) {
   return [hoursText, slot.delay_reason || '未填写原因'].filter(Boolean).join(' · ')
 }
 
-function statusLabel(s: string) {
-  return getSlotStatusMeta(s).label
+function statusLabel(slot: TimeSlot) {
+  return getSlotStatusMeta(slot.execution_status || slot.status).label
 }
 
 function showTooltip(slot: GanttSlot, e: MouseEvent) {
+  if (pinnedSlotId.value !== null) return
   hoveredSlot.value = slot
   tooltipX.value = e.clientX + 12
   tooltipY.value = e.clientY - 100
 }
-function hideTooltip() { hoveredSlot.value = null }
+function hideTooltip() {
+  if (pinnedSlotId.value === null) hoveredSlot.value = null
+}
+function toggleTooltip(slot: GanttSlot, e: MouseEvent | KeyboardEvent) {
+  if (pinnedSlotId.value === slot.id) {
+    dismissTooltip()
+    return
+  }
+  pinnedSlotId.value = slot.id
+  hoveredSlot.value = slot
+  if (e instanceof MouseEvent) {
+    tooltipX.value = e.clientX + 12
+    tooltipY.value = e.clientY - 100
+    return
+  }
+  const target = e.currentTarget
+  if (target instanceof HTMLElement) {
+    const bounds = target.getBoundingClientRect()
+    tooltipX.value = bounds.right + 12
+    tooltipY.value = bounds.top
+  }
+}
+function dismissTooltip() {
+  pinnedSlotId.value = null
+  hoveredSlot.value = null
+}
 
 function toDisplaySlots(sourceSlots: TimeSlot[]): GanttSlot[] {
   return sourceSlots.flatMap(slot => {
@@ -507,16 +588,13 @@ function toDisplaySlots(sourceSlots: TimeSlot[]): GanttSlot[] {
       const timing = taskTimingMap.value.get(slot.task_id)
       const isTerminal = Boolean(timing && isTerminalTaskSlot(slot, timing))
       const taskActualEnd = isTerminal ? timing?.actualEnd : null
-      const shouldExtendToNow = Boolean(
-        isTerminal
-        && timing
-        && !['done', 'completed'].includes(timing.taskStatus || '')
-        && dayjs().isAfter(timing.expectedEnd),
-      )
       const displayEnd = taskActualEnd?.isAfter(originalPlanEnd)
         ? taskActualEnd
-        : (shouldExtendToNow ? dayjs() : originalPlanEnd)
-      return [{ ...slot, originalPlanEnd: slot.plan_end, plan_end: displayEnd.toISOString() }]
+        : (['paused', 'interrupted'].includes(slot.status) && slot.actual_end
+          ? dayjs(slot.actual_end)
+          : originalPlanEnd)
+      const displaySlot = { ...slot, originalPlanEnd: slot.plan_end }
+      return [{ ...displaySlot, plan_end: displayEnd.toISOString() }]
     }
     if (!slot.actual_start || !slot.actual_end) return []
     return [{
@@ -525,6 +603,57 @@ function toDisplaySlots(sourceSlots: TimeSlot[]): GanttSlot[] {
       plan_start: slot.actual_start,
       plan_end: slot.actual_end,
     }]
+  })
+}
+
+function splitSlotsAroundExecutedOccupancy(sourceSlots: GanttSlot[]): GanttSlot[] {
+  const executedSlots = sourceSlots
+    .filter(slot => slot.status === 'completed' && slot.instrument_id && slot.plan_start && slot.plan_end)
+    .map(slot => ({
+      slot,
+      start: dayjs(slot.plan_start),
+      end: dayjs(slot.plan_end),
+    }))
+    .filter(item => item.end.isAfter(item.start))
+
+  return sourceSlots.flatMap(slot => {
+    if (slot.status === 'completed' || slot.isOverdueDisplay || !slot.instrument_id) return [slot]
+    const start = dayjs(slot.plan_start)
+    const end = dayjs(slot.plan_end)
+    const overlaps = executedSlots
+      .filter(item =>
+        item.slot.instrument_id === slot.instrument_id
+        && item.slot.task_id !== slot.task_id
+        && item.end.isAfter(start)
+        && item.start.isBefore(end),
+      )
+      .sort((left, right) => left.start.valueOf() - right.start.valueOf())
+    if (!overlaps.length) return [slot]
+
+    const fragments: GanttSlot[] = []
+    let cursor = start
+    for (const overlap of overlaps) {
+      const cutStart = overlap.start.isAfter(start) ? overlap.start : start
+      const cutEnd = overlap.end.isBefore(end) ? overlap.end : end
+      if (cutStart.isAfter(cursor)) {
+        fragments.push({
+          ...slot,
+          renderKey: `${slot.renderKey || slot.id}-before-${cutStart.valueOf()}`,
+          plan_start: cursor.toISOString(),
+          plan_end: cutStart.toISOString(),
+        })
+      }
+      if (cutEnd.isAfter(cursor)) cursor = cutEnd
+    }
+    if (cursor.isBefore(end)) {
+      fragments.push({
+        ...slot,
+        renderKey: `${slot.renderKey || slot.id}-after-${cursor.valueOf()}`,
+        plan_start: cursor.toISOString(),
+        plan_end: end.toISOString(),
+      })
+    }
+    return fragments.length ? fragments : [slot]
   })
 }
 
@@ -551,10 +680,13 @@ function mergeContinuousSlots(sourceSlots: TimeSlot[]): GanttSlot[] {
 }
 
 function canMergeSlots(current: GanttSlot, next: TimeSlot) {
+  const nextSlot = next as GanttSlot
   return current.instrument_id === next.instrument_id
     && current.task_id === next.task_id
     && current.status === next.status
     && current.tier === next.tier
+    && !current.isOverdueDisplay
+    && !nextSlot.isOverdueDisplay
     && !hasDelay(current)
     && !hasDelay(next)
     && dayjs(current.plan_end).isSame(dayjs(next.plan_start))
@@ -636,8 +768,8 @@ return {
   colWidth, containerRef, dayjs, flatRows, getBarClasses, getBarProjectText, getBarStyle,
   getDelaySegmentStyle, getDelayText, getInstrumentStatusMeta, getLeftRowStyle, getSegmentLabel,
   getSlotsForQuarter, getTaskIcon, getTaskTypeLabel, getWeekBarDisplay, goNext, goPrev, goToday,
-  hasDelay, hasVerticalOverflow, hideTooltip, hoveredSlot, instruments, isCompactBar, isFullscreen,
+  dismissTooltip, getPausedExecutionStyle, hasDelay, hasPausedExecution, hasVerticalOverflow, hideTooltip, hoveredSlot, instruments, isCompactBar, isFullscreen,
   leftRef, loading, periodLabel, rightRef, rowHeight, showTooltip, statusLabel, switchView,
-  timeColumns, toggleFullscreen, tooltipStyle, totalWidth, viewMode,
+  timeColumns, toggleFullscreen, toggleTooltip, tooltipStyle, totalWidth, viewMode,
 }
 }

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -31,9 +31,18 @@ class WorkspaceDelayOut(BaseModel):
     reported_at: datetime | None = None
 
 
+class WorkspaceResumePriorityOut(BaseModel):
+    task_id: int
+    task_name: str
+    project_id: int | None = None
+    project_name: str | None = None
+    project_code: str | None = None
+
+
 class WorkspaceTaskOut(BaseModel):
     task_id: int
     task_name: str | None = None
+    top_level_task_name: str | None = None
     task_type: str | None = None
     assignee_id: int | None = None
     assignee_name: str | None = None
@@ -48,3 +57,38 @@ class WorkspaceTaskOut(BaseModel):
     actionable_slot: WorkspaceSegmentOut | None = None
     segments: list[WorkspaceSegmentOut] = Field(default_factory=list)
     delay: WorkspaceDelayOut
+    resume_priority: WorkspaceResumePriorityOut | None = None
+
+
+class AgendaAssigneeOut(BaseModel):
+    id: int
+    display_name: str
+
+
+class AgendaItemOut(BaseModel):
+    slot_id: int
+    task_id: int
+    task_name: str
+    top_level_task_name: str | None = None
+    task_status: str
+    slot_status: str
+    execution_status: str
+    project_id: int
+    project_code: str
+    project_name: str
+    instrument_id: int | None = None
+    instrument_code: str | None = None
+    instrument_name: str | None = None
+    plan_start: datetime
+    plan_end: datetime
+    task_plan_end: datetime | None = None
+    actual_start: datetime | None = None
+    actual_end: datetime | None = None
+
+
+class AgendaOut(BaseModel):
+    start_date: date
+    end_date: date
+    assignee: AgendaAssigneeOut
+    can_select_assignee: bool
+    items: list[AgendaItemOut] = Field(default_factory=list)

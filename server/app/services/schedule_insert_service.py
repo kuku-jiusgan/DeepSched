@@ -229,7 +229,7 @@ def _build_custom_insert_context(db, anchor_task_id: int | None, selected_tasks:
         for predecessor_id in source_terminals
     ] + [
         (task_id, predecessor_id)
-        for task_id in resource_queue_ids
+        for task_id in resource_downstream_ids
         for predecessor_id in source_terminals
     ]
     _ensure_dependency_pairs_valid(db, dependency_pairs)
@@ -278,10 +278,21 @@ def _task_has_schedule(db, task_id: int) -> bool:
 def _movable_scheduled_task_ids(db, task_ids: set[int]) -> set[int]:
     if not task_ids:
         return set()
+    protected_task_ids = {
+        task_id for task_id, in db.query(TimeSlot.task_id).filter(
+            TimeSlot.task_id.in_(task_ids),
+            (
+                (TimeSlot.tier == "frozen")
+                | TimeSlot.status.in_(["running", "completed"])
+                | TimeSlot.actual_start.isnot(None)
+            ),
+        ).distinct().all()
+    }
     return {
         task_id for task_id, in db.query(TimeSlot.task_id).filter(
             TimeSlot.task_id.in_(task_ids),
-            TimeSlot.tier.in_(["frozen", "confirmed", "forecast"]),
+            ~TimeSlot.task_id.in_(protected_task_ids) if protected_task_ids else True,
+            TimeSlot.tier.in_(["confirmed", "forecast"]),
             TimeSlot.status.in_(["scheduled", "blocked"]),
         ).distinct().all()
     }
@@ -404,13 +415,14 @@ def _load_lower_priority_movable_tasks(
         has_protected_slot = db.query(TimeSlot.id).filter(
             TimeSlot.task_id == task.id,
             (
-                TimeSlot.status.in_(["running", "completed"])
+                (TimeSlot.tier == "frozen")
+                | TimeSlot.status.in_(["running", "completed"])
                 | TimeSlot.actual_start.isnot(None)
             ),
         ).first()
         has_future_slot = db.query(TimeSlot.id).filter(
             TimeSlot.task_id == task.id,
-            TimeSlot.tier.in_(["frozen", "confirmed", "forecast"]),
+            TimeSlot.tier.in_(["confirmed", "forecast"]),
             TimeSlot.status.in_(["scheduled", "blocked"]),
             TimeSlot.plan_start >= datetime.now(),
             *(

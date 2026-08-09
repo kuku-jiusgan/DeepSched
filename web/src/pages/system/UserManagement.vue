@@ -24,9 +24,11 @@
           <a-space :size="4">
             <a-button v-operation="'edit'" type="link" size="small" @click="openEdit(record)"><EditOutlined /> 编辑</a-button>
             <a-button v-operation="'password'" type="link" size="small" @click="openChangePwd(record)"><KeyOutlined /> 密码</a-button>
-            <a-popconfirm v-operation="'delete'" title="确定删除该用户？" @confirm="handleDelete(record.id)" okText="确定" cancelText="取消" :disabled="record.id === currentUserId">
-              <a-button type="link" size="small" danger :disabled="record.id === currentUserId"><DeleteOutlined /> 删除</a-button>
-            </a-popconfirm>
+            <span v-operation="'delete'">
+              <a-popconfirm title="确定删除该用户？" @confirm="handleDelete(record.id)" okText="确定" cancelText="取消" :disabled="record.id === currentUserId">
+                <a-button type="link" size="small" danger :disabled="record.id === currentUserId"><DeleteOutlined /> 删除</a-button>
+              </a-popconfirm>
+            </span>
           </a-space>
         </template>
       </template>

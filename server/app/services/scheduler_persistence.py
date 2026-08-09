@@ -10,6 +10,8 @@ from app.services.scheduler_helpers import (
     natural_day_boundary,
 )
 
+ACTIVE_EXECUTION_STATUSES = {"running", "paused", "interrupted"}
+
 
 def persist_slots(
     db,
@@ -41,6 +43,10 @@ def persist_slots(
     forecast_task_ids = forecast_task_ids or set()
 
     for task in tasks:
+        # Active execution slots are managed by task execution services; a new
+        # schedule run must not replace their state with scheduled slots.
+        if task.status in ACTIVE_EXECUTION_STATUSES:
+            continue
         assigned_instrument = _assigned_instrument(
             task,
             instruments,
@@ -86,7 +92,7 @@ def persist_slots(
             if is_working and chunk_start is None:
                 chunk_start = current
             elif not is_working and chunk_start is not None:
-                _create_slot(
+                created += _create_slot(
                     db,
                     task,
                     assigned_instrument,
@@ -97,14 +103,13 @@ def persist_slots(
                     schedule_run_id,
                     force_forecast=task.id in forecast_task_ids,
                 )
-                created += 1
                 chunk_start = None
 
         if chunk_start is not None:
             final_end = horizon_start + timedelta(
                 minutes=end_unit * TIME_UNIT_MINUTES
             )
-            _create_slot(
+            created += _create_slot(
                 db,
                 task,
                 assigned_instrument,
@@ -115,7 +120,6 @@ def persist_slots(
                 schedule_run_id,
                 force_forecast=task.id in forecast_task_ids,
             )
-            created += 1
         task.status = "scheduled"
 
     if commit:
@@ -153,7 +157,7 @@ def _persist_split_task_slots(
         if unit == previous_unit + 1:
             previous_unit = unit
             continue
-        _create_slot(
+        created += _create_slot(
             db,
             task,
             instrument,
@@ -164,11 +168,10 @@ def _persist_split_task_slots(
             schedule_run_id,
             force_forecast=force_forecast,
         )
-        created += 1
         chunk_start = unit
         previous_unit = unit
 
-    _create_slot(
+    created += _create_slot(
         db,
         task,
         instrument,
@@ -179,7 +182,7 @@ def _persist_split_task_slots(
         schedule_run_id,
         force_forecast=force_forecast,
     )
-    return created + 1
+    return created
 
 
 def _assigned_instrument(task, instruments, solver, presences):
@@ -202,7 +205,7 @@ def _create_slot(
     confirmed_boundary,
     schedule_run_id,
     force_forecast: bool = False,
-) -> None:
+) -> int:
     if force_forecast:
         tier = "forecast"
     elif start <= frozen_boundary:
@@ -211,6 +214,15 @@ def _create_slot(
         tier = "confirmed"
     else:
         tier = "forecast"
+    duplicate = db.query(TimeSlot.id).filter(
+        TimeSlot.task_id == task.id,
+        TimeSlot.instrument_id == (instrument.id if instrument else None),
+        TimeSlot.plan_start == start,
+        TimeSlot.plan_end == end,
+        TimeSlot.status.in_(["scheduled", "running", "paused", "blocked", "interrupted"]),
+    ).first()
+    if duplicate:
+        return 0
     db.add(
         TimeSlot(
             task_id=task.id,
@@ -222,3 +234,4 @@ def _create_slot(
             status="scheduled",
         )
     )
+    return 1

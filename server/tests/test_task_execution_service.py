@@ -194,6 +194,21 @@ class TaskExecutionServiceTest(unittest.TestCase):
         with self.assertRaisesRegex(TaskExecutionInvalidError, "已经开始"):
             start_task_execution(self.db, self.slot.id)
 
+    def test_start_repairs_stale_running_task_with_paused_slots(self):
+        self.predecessor.status = "done"
+        self.task.status = "running"
+        self.slot.status = "paused"
+        self.slot.actual_start = datetime.now() - timedelta(hours=1)
+        self.slot.actual_end = datetime.now() - timedelta(minutes=10)
+        self.db.commit()
+
+        start_task_execution(self.db, self.slot.id)
+
+        self.assertEqual("running", self.task.status)
+        self.assertEqual("running", self.slot.status)
+        self.assertIsNotNone(self.slot.actual_start)
+        self.assertIsNone(self.slot.actual_end)
+
 
 if __name__ == "__main__":
     unittest.main()

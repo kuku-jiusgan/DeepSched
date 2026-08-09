@@ -155,6 +155,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { CalendarOutlined, ClockCircleOutlined, DashboardOutlined, DownOutlined, ExperimentOutlined, ThunderboltOutlined, ToolOutlined, UserOutlined } from '@ant-design/icons-vue'
 import { getDashboard, getInstruments, getLabStatus, getTimeslots, getUtilization, type LabStatusInstrument } from '@/services/api'
 import type { DashboardData, Instrument, TimeSlot, UtilizationStats } from '@/types'
+import { isTaskCompleted, taskStatusLabel } from '@/utils/statusMeta'
 import './LabOperationsCockpit.css'
 
 interface CockpitInstrument extends LabStatusInstrument { model: string | null; availability_status: Instrument['availability_status'] }
@@ -178,7 +179,17 @@ const MAX_COCKPIT_SCALE = 1.35
 const WARNING_SCROLL_THRESHOLD = 1
 const WARNING_SCROLL_SECONDS_PER_ITEM = 6
 const WARNING_SCROLL_MIN_SECONDS = 18
-const COMPLETED_TASK_STATUSES = new Set(['done', 'completed'])
+const COCKPIT_INSTRUMENT_CODES = [
+  'ZBYY-002-0001',
+  'ZBYY-002-0002',
+  'ZBYY-002-0004',
+  'ZBYY-002-0005',
+  'ZBYY-002-0006',
+  'ZBYY-002-0007',
+  'ZBYY-002-0011',
+] as const
+const COCKPIT_INSTRUMENT_CODE_SET = new Set<string>(COCKPIT_INSTRUMENT_CODES)
+const COCKPIT_INSTRUMENT_ORDER = new Map<string, number>(COCKPIT_INSTRUMENT_CODES.map((code, index) => [code, index]))
 const INSTRUMENT_IMAGES: Record<string, string> = {
   'ZBYY-002-0001': '/assets/instruments/ab-api5500.webp',
   'ZBYY-002-0002': '/assets/instruments/agilent-7000b.webp',
@@ -208,7 +219,11 @@ const kpis = computed(() => [
   { label: '维护/故障', value: maintenanceCount.value, unit: '台', icon: ToolOutlined, tone: 'orange' },
   { label: '延期任务', value: delayedCount.value, unit: '项', icon: ClockCircleOutlined, tone: 'purple' },
 ])
-const topInstruments = computed(() => [...utilization.value].sort((a, b) => b.actual_utilization_rate - a.actual_utilization_rate).slice(0, 3))
+const cockpitInstrumentIds = computed(() => new Set(instruments.value.map(item => item.id)))
+const topInstruments = computed(() => utilization.value
+  .filter(item => cockpitInstrumentIds.value.has(item.instrument_id))
+  .sort((a, b) => b.actual_utilization_rate - a.actual_utilization_rate)
+  .slice(0, 3))
 const utilizationMap = computed(() => new Map(utilization.value.map(item => [item.instrument_id, roundedRate(item.actual_utilization_rate)])))
 const feedScrollDuration = computed(() => `${Math.max(instruments.value.length * 9, 42)}s`)
 const warningTasks = computed(() => {
@@ -229,7 +244,7 @@ const completion = computed(() => {
   const taskIds = new Set(recent.map(slot => slot.task_id))
   const completedTaskIds = new Set(
     recent
-      .filter(slot => COMPLETED_TASK_STATUSES.has(slot.task_status || slot.status))
+      .filter(slot => isTaskCompleted(slot.task_status || slot.status))
       .map(slot => slot.task_id),
   )
   const pendingTaskIds = new Set(
@@ -238,13 +253,8 @@ const completion = computed(() => {
       .map(slot => slot.task_id),
   )
   for (const taskId of completedTaskIds) pendingTaskIds.delete(taskId)
-  const lateTaskIds = new Set(
-    recent
-      .filter(slot => ['blocked', 'interrupted'].includes(slot.status) || Number(slot.delay_hours) > 0)
-      .map(slot => slot.task_id),
-  )
   const completedAtByTask = new Map<number, Dayjs>()
-  for (const slot of recent.filter(item => COMPLETED_TASK_STATUSES.has(item.task_status || item.status))) {
+  for (const slot of recent.filter(item => isTaskCompleted(item.task_status || item.status))) {
     const completedAt = dayjs(slot.actual_end || slot.plan_end)
     const current = completedAtByTask.get(slot.task_id)
     if (!current || completedAt.isAfter(current)) completedAtByTask.set(slot.task_id, completedAt)
@@ -253,7 +263,7 @@ const completion = computed(() => {
     const date = start.add(index, 'day')
     return { date: date.format('MM-DD'), value: [...completedAtByTask.values()].filter(value => value.isSame(date, 'day')).length }
   })
-  return { completed: completedTaskIds.size, pending: pendingTaskIds.size, late: lateTaskIds.size, total: taskIds.size, days }
+  return { completed: completedTaskIds.size, pending: pendingTaskIds.size, late: delayedCount.value, total: taskIds.size, days }
 })
 const completionRate = computed(() => completion.value.total ? Math.round(completion.value.completed / completion.value.total * 100) : 100)
 const completionRingStyle = computed(() => ({ background: `conic-gradient(#2878ef 0 ${completionRate.value}%, #e7eef8 ${completionRate.value}% 100%)` }))
@@ -280,22 +290,31 @@ function instrumentPhotoClass(code: string) {
 }
 function isWarningTask(slot: TimeSlot) {
   const executionStatus = slot.task_status || slot.status
-  return slot.delay_status === 'delayed' && !COMPLETED_TASK_STATUSES.has(executionStatus)
+  return slot.delay_status === 'delayed' && !isTaskCompleted(executionStatus)
 }
 function warningSortTime(slot: TimeSlot) { return dayjs(slot.delay_reported_at || slot.plan_end || slot.plan_start).valueOf() }
 function warningTaskStatus(slot: TimeSlot) { const delayText = slot.delay_hours && slot.delay_hours > 0 ? `延期 ${slot.delay_hours}h` : `延期 ${formatDelayDuration(slot)}`; return `${taskStatusText(slot.task_status || slot.status)} · ${delayText}` }
 function warningTaskReason(slot: TimeSlot) { return slot.delay_reason || `计划结束 ${formatDateTime(slot.plan_end)}，${taskStatusText(slot.task_status || slot.status)}` }
-function taskStatusText(status: string) { return ({ pending: '待进行', ready: '待进行', scheduled: '待进行', waiting_external: '待进行', running: '运行中', paused: '已暂停', done: '已完成', completed: '已完成', blocked: '已阻塞', interrupted: '已中断' } as Record<string, string>)[status] || status }
+function taskStatusText(status: string) { return taskStatusLabel(status) }
 function formatDelayDuration(slot: TimeSlot) { const end = slot.actual_end ? dayjs(slot.actual_end) : now.value; const minutes = Math.max(1, end.diff(dayjs(slot.plan_end), 'minute')); const hours = Math.floor(minutes / 60); const remainingMinutes = minutes % 60; return hours ? `${hours}小时${remainingMinutes ? `${remainingMinutes}分钟` : ''}` : `${minutes}分钟` }
 function barHeight(value: number) { const max = Math.max(...completion.value.days.map(item => item.value), 1); return Math.max(8, value / max * 78) }
 function handleUserMenu({ key }: { key: string }) { if (key === 'logout') { localStorage.removeItem('token'); localStorage.removeItem('user'); router.push('/login') } }
 function updateCockpitScale(width: number, height: number) {
   const widthScale = width / COCKPIT_DESIGN_WIDTH
   const nextScale = Math.max(MIN_COCKPIT_SCALE, Math.min(MAX_COCKPIT_SCALE, widthScale))
+  const nextPageHeight = Math.max(COCKPIT_DESIGN_HEIGHT, height / nextScale)
+  // Ignore sub-pixel observer noise so zoom changes cannot trigger a resize loop.
+  if (Math.abs(cockpitScale.value - nextScale) < 0.001 && Math.abs(cockpitPageHeight.value - nextPageHeight) < 1) return
   cockpitScale.value = nextScale
-  cockpitPageHeight.value = Math.max(COCKPIT_DESIGN_HEIGHT, height / nextScale)
+  cockpitPageHeight.value = nextPageHeight
 }
-function mergeInstruments(statusList: LabStatusInstrument[], baseList: Instrument[]) { const base = new Map(baseList.map(item => [item.id, item])); return statusList.filter(item => base.get(item.id)?.availability_status === 'available').map(item => ({ ...item, model: base.get(item.id)?.model || null, availability_status: 'available' as const })) }
+function mergeInstruments(statusList: LabStatusInstrument[], baseList: Instrument[]) {
+  const base = new Map(baseList.map(item => [item.id, item]))
+  return statusList
+    .filter(item => COCKPIT_INSTRUMENT_CODE_SET.has(item.code) && base.get(item.id)?.availability_status === 'available')
+    .map(item => ({ ...item, model: base.get(item.id)?.model || null, availability_status: 'available' as const }))
+    .sort((left, right) => (COCKPIT_INSTRUMENT_ORDER.get(left.code) ?? 0) - (COCKPIT_INSTRUMENT_ORDER.get(right.code) ?? 0))
+}
 async function loadData() {
   const requests = [
     getDashboard().then(value => { dashboard.value = value }),

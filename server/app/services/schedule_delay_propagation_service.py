@@ -11,11 +11,11 @@ from app.services.schedule_advance_notification_service import (
 from app.services.schedule_delay_service import (
     ScheduleDelayInvalidError,
     _advance_working_minutes,
-    _allocate_working_ranges,
     _ensure_within_project_end,
     _group_slot_snapshots,
     _load_working_options,
 )
+from app.services.schedule_forward_slot_service import build_forward_slots
 from app.services.task_delay_status_service import reset_task_delay
 
 
@@ -51,7 +51,11 @@ def propagate_actual_delay(
 
     options = _load_working_options(db, planned_end)
     delay_minutes = _rounded_delay_minutes(actual_end - planned_end)
-    for snapshots in snapshots_by_task.values():
+    ordered_snapshots = sorted(
+        snapshots_by_task.values(),
+        key=lambda snapshots: (snapshots[0]["plan_start"], snapshots[0]["task_id"]),
+    )
+    for snapshots in ordered_snapshots:
         _restore_shifted_task(db, snapshots, delay_minutes, options, actual_end)
 
     notify_rescheduled_tasks_delayed(
@@ -147,13 +151,18 @@ def _restore_shifted_task(
         int((slot["plan_end"] - slot["plan_start"]).total_seconds() / 60)
         for slot in snapshots
     )
+    shifted_task = db.query(Task).filter(Task.id == first_slot["task_id"]).first()
     shifted_start = _advance_working_minutes(
         first_slot["plan_start"],
         delay_minutes,
         options,
     )
-    ranges = _allocate_working_ranges(
+    dependency_ready = _dependency_ready_time(db, shifted_task)
+    if dependency_ready and dependency_ready > shifted_start:
+        shifted_start = dependency_ready
+    ranges = build_forward_slots(
         db,
+        shifted_task,
         first_slot["instrument_id"],
         duration_minutes,
         shifted_start,
@@ -161,7 +170,6 @@ def _restore_shifted_task(
     )
     if not ranges:
         raise ScheduleDelayInvalidError("延期后的排程超出可规划范围")
-    shifted_task = db.query(Task).filter(Task.id == first_slot["task_id"]).first()
     _ensure_within_project_end(shifted_task, ranges[-1][1])
     if (
         shifted_task
@@ -180,6 +188,17 @@ def _restore_shifted_task(
             status=first_slot["status"],
         ))
     db.flush()
+
+
+def _dependency_ready_time(db, task: Task | None) -> datetime | None:
+    if task is None:
+        return None
+    predecessor_ids = [dependency.predecessor_id for dependency in task.predecessors]
+    if not predecessor_ids:
+        return None
+    return db.query(TimeSlot.plan_end).filter(
+        TimeSlot.task_id.in_(predecessor_ids),
+    ).order_by(TimeSlot.plan_end.desc()).limit(1).scalar()
 
 
 def _rounded_delay_minutes(delay: timedelta) -> int:

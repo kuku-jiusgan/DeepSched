@@ -228,7 +228,7 @@ class ScheduleCustomInsertTest(unittest.TestCase):
         self.assertIn((queued.id, source.id), context["dependency_pairs"])
         self.assertEqual("shifted", context["impact_roles"][queued.id])
 
-    def test_custom_insert_pushes_frozen_resource_task_after_inserted_task(self):
+    def test_custom_insert_does_not_push_frozen_resource_task(self):
         instrument = Instrument(id=1, code="INST-1", name="测试仪器")
         self.db.add(instrument)
         anchor = self._task(self.target_project, "目标任务")
@@ -252,8 +252,8 @@ class ScheduleCustomInsertTest(unittest.TestCase):
 
         context = _build_custom_insert_context(self.db, anchor.id, [source])
 
-        self.assertIn(frozen.id, {task.id for task in context["replan_tasks"]})
-        self.assertIn((frozen.id, source.id), context["dependency_pairs"])
+        self.assertNotIn(frozen.id, {task.id for task in context["replan_tasks"]})
+        self.assertNotIn((frozen.id, source.id), context["dependency_pairs"])
 
     def test_custom_insert_allows_frozen_selected_task(self):
         anchor = self._task(self.target_project, "目标任务")

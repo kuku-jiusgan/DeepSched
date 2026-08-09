@@ -76,15 +76,15 @@ class AccessControlServiceTest(unittest.TestCase):
         with self.assertRaises(AccessDeniedError):
             require_task_editor(self.db, self.task.id, self.assignee)
 
-    def test_slot_operation_allows_assignee_project_owner_and_admin_only(self):
-        for user in [self.assignee, self.owner, self.admin]:
+    def test_slot_operation_only_allows_assignee(self):
+        self.assertEqual(
+            self.slot.id,
+            require_slot_operator(self.db, self.slot.id, self.assignee).id,
+        )
+        for user in [self.owner, self.admin, self.other]:
             with self.subTest(role=user.role, username=user.username):
-                self.assertEqual(
-                    self.slot.id,
-                    require_slot_operator(self.db, self.slot.id, user).id,
-                )
-        with self.assertRaises(AccessDeniedError):
-            require_slot_operator(self.db, self.slot.id, self.other)
+                with self.assertRaisesRegex(AccessDeniedError, "只能操作本人负责的任务"):
+                    require_slot_operator(self.db, self.slot.id, user)
 
     def test_notification_operation_is_scoped_to_owner(self):
         self.assertEqual(

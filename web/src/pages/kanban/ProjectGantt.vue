@@ -17,13 +17,18 @@
         {{ isFullscreen ? '退出全屏' : '全屏' }}
       </a-button>
       <a-input v-model:value="filterKeyword" placeholder="搜索项目编号/名称" allowClear style="width: 200px" />
-      
     </div>
+
+    <a-tabs v-model:activeKey="projectStatusTab" class="project-status-tabs">
+      <a-tab-pane key="active" :tab="`进行中 (${projectStatusCounts.active})`" />
+      <a-tab-pane key="pending" :tab="`未开始 (${projectStatusCounts.pending})`" />
+      <a-tab-pane key="completed" :tab="`已完成 (${projectStatusCounts.completed})`" />
+    </a-tabs>
 
     <a-spin v-if="loading" size="large" style="display: block; margin: 80px auto" />
 
     <div v-else-if="!filteredProjects.length" style="padding: 80px; text-align: center; color: #94a3b8">
-      暂无仪器数据，请先在「项目台账管理」中添加仪器并生成排程
+      当前页签暂无项目
     </div>
 
     <div v-else class="gantt-container" :class="{ 'is-week-view': viewMode === 'week' }" ref="containerRef">
@@ -101,6 +106,7 @@ import type { ApprovalGate, Project, TimeSlot } from '@/types'
 import dayjs from 'dayjs'
 import { centerGanttTimelineOnCurrentTime } from './ganttTimelineScroll'
 import { buildProjectDisplaySlots, buildProjectLaneLayout } from './projectGanttLayout'
+import { taskStatusLabel } from '@/utils/statusMeta'
 
 const loading = ref(true)
 const route = useRoute()
@@ -116,8 +122,8 @@ const tooltipStyle = computed(() => ({ left: tooltipX.value + 'px', top: tooltip
 const containerRef = ref<HTMLElement | null>(null)
 const colWidth = ref(140)
 const rowHeight = ref(200)
-const BASE_PROJECT_ROW_HEIGHT = 35
-const DAY_PROJECT_ROW_HEIGHT = 48
+const BASE_PROJECT_ROW_HEIGHT = 56
+const DAY_PROJECT_ROW_HEIGHT = 56
 const PROJECT_LANE_HEIGHT = 28
 const DELAY_PROBLEM_STATUSES = new Set(['blocked', 'interrupted'])
 const WEEK_SEGMENT_COUNT = 3
@@ -127,11 +133,21 @@ const taskTypeMap = ref<Record<string, string>>({})
 const laneMap = ref<Record<number, Record<number, number>>>({})
 const laneCounts = ref<Record<number, number>>({})
 const filterKeyword = ref('')
+type ProjectStatusTab = 'active' | 'pending' | 'completed'
+const projectStatusTab = ref<ProjectStatusTab>('active')
+
+const projectStatusCounts = computed(() => ({
+  active: projects.value.filter(project => project.status === 'active').length,
+  pending: projects.value.filter(project => project.status === 'pending').length,
+  completed: projects.value.filter(project => project.status === 'completed').length,
+}))
 
 const filteredProjects = computed(() => {
   const kw = filterKeyword.value.toLowerCase()
-  if (!kw) return projects.value
-  return projects.value.filter(p => p.code.toLowerCase().includes(kw) || p.name.toLowerCase().includes(kw))
+  return projects.value
+    .filter(project => project.status === projectStatusTab.value)
+    .filter(project => !kw || project.code.toLowerCase().includes(kw) || project.name.toLowerCase().includes(kw))
+    .sort((left, right) => left.code.localeCompare(right.code, 'zh-CN', { numeric: true, sensitivity: 'base' }))
 })
 
 const displaySlots = computed(() => buildProjectDisplaySlots(slots.value))
@@ -202,7 +218,7 @@ const timeColumns = computed<TimeCol[]>(() => {
 
 function computeLanes() {
   const layout = buildProjectLaneLayout(
-    filteredProjects.value.map(project => project.id),
+    projects.value.map(project => project.id),
     displaySlots.value,
   )
   laneMap.value = layout.laneMap
@@ -421,8 +437,12 @@ function getDelayText(slot: TimeSlot) {
 }
 
 function statusLabel(s: string) {
-  const m: Record<string, string> = { scheduled: '待处理', pending: '待处理', running: '运行中', completed: '已完成', blocked: '已延期', interrupted: '已延期', approval_waiting: '等待客户签批', approval_approved: '客户已同意', approval_risk: '签批已影响结题' }
-  return m[s] || s
+  const approvalStatusLabels: Record<string, string> = {
+    approval_waiting: '等待客户签批',
+    approval_approved: '客户已同意',
+    approval_risk: '签批已影响结题',
+  }
+  return approvalStatusLabels[s] || taskStatusLabel(s)
 }
 
 function approvalGateSlot(gate: ApprovalGate): TimeSlot | null {
@@ -514,7 +534,12 @@ async function fetchData(silent = false) {
     const requestedProjectId = Number(route.query.project_id)
     if (requestedProjectId) {
       const requestedProject = insts.find(project => project.id === requestedProjectId)
-      if (requestedProject) filterKeyword.value = requestedProject.code
+      if (requestedProject) {
+        filterKeyword.value = requestedProject.code
+        if (requestedProject.status === 'active' || requestedProject.status === 'pending' || requestedProject.status === 'completed') {
+          projectStatusTab.value = requestedProject.status
+        }
+      }
     }
     const gateSlots = gatePage.items.map(approvalGateSlot).filter((slot): slot is TimeSlot => slot !== null)
     slots.value = [...timeslots, ...gateSlots].filter((s: TimeSlot) => typeof s.project_id === 'number' && s.project_id > 0)

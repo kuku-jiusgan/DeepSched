@@ -47,6 +47,8 @@ from app.services.schedule_advance_notification_service import (
     notify_rescheduled_tasks_delayed,
     notify_rescheduled_tasks_advanced,
 )
+from app.services.calendar_service import ensure_calendar_range
+from app.services.schedule_calendar_snapshot_service import save_schedule_calendar_snapshot
 
 
 class SchedulerService:
@@ -98,6 +100,7 @@ class SchedulerService:
 
         constraints = get_solver_constraints(self.db)
         horizon_start, horizon_end, total_units = time_horizon()
+        ensure_calendar_range(self.db, horizon_start.date(), horizon_end.date())
         approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
 
         freezing_rule = constraints["freezing"]
@@ -438,6 +441,17 @@ class SchedulerService:
                         >= missing_pred_ends[predecessor_id]
                     )
 
+        # Keep dependent work close together when resources allow it. This is
+        # a soft objective: precedence and frozen/resource constraints remain
+        # authoritative, while unexplained multi-day gaps are discouraged.
+        dependency_gap_penalties = []
+        for task_id, predecessor_id in task_deps:
+            if task_id not in task_starts or predecessor_id not in task_ends:
+                continue
+            gap = model.NewIntVar(0, total_units, f"dependency_gap_{predecessor_id}_{task_id}")
+            model.Add(gap >= task_starts[task_id] - task_ends[predecessor_id])
+            dependency_gap_penalties.append(gap)
+
         # === Project split penalty: discourage spreading one project across many instruments ===
         project_to_tasks = {}
         for t in tasks:
@@ -498,6 +512,7 @@ class SchedulerService:
                 for parent_id, child_ids in task_children.items()
             },
             stability_penalties,
+            dependency_gap_penalties,
         )
 
         solver = cp_model.CpSolver()
@@ -538,6 +553,15 @@ class SchedulerService:
 
         # Persist results
         schedule_run_id = _new_schedule_run_id()
+        save_schedule_calendar_snapshot(
+            self.db,
+            schedule_run_id,
+            horizon_start,
+            horizon_end,
+            working_params,
+            calendar_days,
+            maint_windows,
+        )
         created = persist_slots(
             self.db,
             tasks,

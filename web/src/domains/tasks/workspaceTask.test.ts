@@ -42,6 +42,7 @@ function task(overrides: Partial<WorkspaceTask> = {}): WorkspaceTask {
     },
     segments: [],
     delay: { status: 'delayed', hours: null, reason: null, reported_at: null },
+    resume_priority: null,
     ...overrides,
   }
 }

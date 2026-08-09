@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.api import protected_router
 from app.api.access import (
+    _operation_permission,
     require_management_user,
     require_notification_owner,
     require_project_editor_by_proj_id,
@@ -41,6 +42,33 @@ def _api_routes(router):
 
 
 class ApiSecurityTest(unittest.TestCase):
+    def test_later_added_operations_use_their_own_button_permissions(self):
+        self.assertEqual(
+            ("/tasks/workspace", "pause"),
+            _operation_permission("POST", "/api/v1/schedules/timeslots/1/pause"),
+        )
+        self.assertEqual(
+            ("/projects/plan-breakdown", "save_draft"),
+            _operation_permission("POST", "/api/v1/projects/1/plan-drafts/commit"),
+        )
+        self.assertEqual(
+            ("/projects/resource-ledger", "manage_capabilities"),
+            _operation_permission("PUT", "/api/v1/instruments/1/capabilities"),
+        )
+        self.assertEqual(
+            ("/projects/resource-ledger", "manage_maintenance"),
+            _operation_permission("POST", "/api/v1/instruments/1/maintenance"),
+        )
+        self.assertEqual(
+            ("/schedule/rules", "toggle"),
+            _operation_permission("PUT", "/api/v1/schedule-rules/1/toggle"),
+        )
+        self.assertEqual(
+            ("/schedule/engine", "daily_roll"),
+            _operation_permission("POST", "/api/v1/schedules/daily-roll"),
+        )
+        self.assertIsNone(_operation_permission("PUT", "/api/v1/notifications/1/read"))
+
     def test_every_business_route_has_authentication_dependency(self):
         routes = list(_api_routes(protected_router))
         self.assertGreater(len(routes), 60)
@@ -60,7 +88,6 @@ class ApiSecurityTest(unittest.TestCase):
             ("POST", "/api/v1/schedules/timeslots/{slot_id}/start"): require_slot_operator,
             ("POST", "/api/v1/schedules/generate"): require_management_user,
             ("PUT", "/api/v1/notifications/{nid}/read"): require_notification_owner,
-            ("PUT", "/api/v1/calendar/{day_id}"): require_management_user,
         }
         routes = list(_api_routes(protected_router))
         route_by_operation = {
@@ -74,6 +101,16 @@ class ApiSecurityTest(unittest.TestCase):
                 route = route_by_operation[operation]
                 dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
                 self.assertIn(required_dependency, dependency_calls)
+
+    def test_calendar_api_is_read_only(self):
+        calendar_methods = {
+            method
+            for route in _api_routes(protected_router)
+            if route.path.startswith("/api/v1/calendar")
+            for method in route.methods
+        }
+
+        self.assertEqual({"GET"}, calendar_methods)
 
     def test_missing_authorization_header_is_rejected(self):
         with self.assertRaises(HTTPException) as context:

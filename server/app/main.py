@@ -1,13 +1,18 @@
 from fastapi import Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from app.core.database import engine, Base
+from app.core.database import engine, Base, SessionLocal
 from app.core.config import get_settings
 from app.core.schema_migrations import ensure_runtime_schema
 from app.models import models
 from app.services.wecom_delivery_service import (
     start_wecom_delivery_worker,
     stop_wecom_delivery_worker,
+)
+from app.services.calendar_service import ensure_calendar_year
+from app.services.calendar_sync_worker import (
+    start_calendar_sync_worker,
+    stop_calendar_sync_worker,
 )
 from app.api import protected_router, users, wecom_auth
 from app.api.exception_handlers import register_domain_exception_handlers
@@ -31,11 +36,20 @@ cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if
 
 @app.on_event("startup")
 def start_background_workers():
+    db = SessionLocal()
+    try:
+        current_year = __import__('datetime').date.today().year
+        for year in (current_year, current_year + 1):
+            ensure_calendar_year(db, year, commit=True)
+    finally:
+        db.close()
+    start_calendar_sync_worker()
     start_wecom_delivery_worker()
 
 
 @app.on_event("shutdown")
 def stop_background_workers():
+    stop_calendar_sync_worker()
     stop_wecom_delivery_worker()
 
 app.add_middleware(

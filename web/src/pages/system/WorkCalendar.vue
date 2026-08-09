@@ -9,8 +9,6 @@
         <a-button @click="nextMonth"><RightOutlined /></a-button>
         <a-button @click="goToday">本月</a-button>
       </a-space>
-      <a-button v-operation="'fill'" @click="handleBatchFill" :loading="filling" size="small">预填充 {{ viewYear }} 年</a-button>
-      <a-button v-operation="'sync'" @click="handleSync" :loading="syncing" type="primary" ghost size="small">同步 {{ viewYear }} 年节假日</a-button>
       <span style="margin-left: auto; font-size: 12px; color: #94a3b8">
         工作日 {{ workdayCount }} · 非工作日 {{ nonWorkdayCount }}
       </span>
@@ -23,19 +21,19 @@
       <div v-for="(cell, idx) in calendarCells" :key="idx"
         class="cal-cell"
         :class="{
-          'cal-readonly': !canEditDay,
           'cal-other': !cell.inMonth,
           'cal-today': cell.isToday,
           'cal-workday': cell.inMonth && cell.isWorkingDay && cell.dayType === 'workday',
           'cal-weekend': cell.inMonth && !cell.isWorkingDay && cell.dayType === 'weekend',
           'cal-holiday': cell.inMonth && !cell.isWorkingDay && cell.dayType === 'holiday',
           'cal-compensate': cell.inMonth && cell.isWorkingDay && cell.dayType === 'compensate',
-        }"
-        @click="canEditDay && cell.inMonth && toggleCell(cell)">
+        }">
         <div class="cal-date">{{ cell.day }}</div>
         <div v-if="cell.inMonth" class="cal-tag">
           <a-tag v-if="cell.dayType === 'holiday'" color="red" style="font-size: 10px; line-height: 16px; margin: 0">{{ cell.holidayName || '假日' }}</a-tag>
           <a-tag v-else-if="cell.dayType === 'compensate'" color="orange" style="font-size: 10px; line-height: 16px; margin: 0">调休</a-tag>
+          <a-tag v-else-if="!cell.isPersisted" color="red" style="font-size: 10px; line-height: 16px; margin: 0">未持久化</a-tag>
+          <span v-else-if="cell.source !== 'default'" class="cal-source">{{ sourceLabel(cell.source) }}</span>
         </div>
       </div>
     </div>
@@ -46,17 +44,15 @@
 import { ref, computed, onMounted } from 'vue'
 import { message } from 'ant-design-vue'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons-vue'
-import { canOperateAction, permissionState } from '@/services/permissions'
-import { getCalendar, upsertCalendarDate, batchFillCalendar, syncHolidays, type CalendarDay } from '@/services/api'
+import { getCalendar, type CalendarDay } from '@/services/api'
 
 interface CalCell {
   date: string; day: number; inMonth: boolean; isToday: boolean
   isWorkingDay: boolean; dayType: string; holidayName: string; id: number | null
+  isPersisted: boolean; source: CalendarDay['source'] | null
 }
 
 const loading = ref(true)
-const filling = ref(false)
-const syncing = ref(false)
 const calData = ref<CalendarDay[]>([])
 const now = new Date()
 const viewYear = ref(now.getFullYear())
@@ -76,7 +72,7 @@ const calendarCells = computed<CalCell[]>(() => {
   for (let i = startDow - 1; i >= 0; i--) {
     const d = prevLast.getDate() - i
     const ds = `${viewYear.value}-${String(viewMonth.value - 1 || 12).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-    cells.push({ date: ds, day: d, inMonth: false, isToday: ds === todayStr, isWorkingDay: true, dayType: 'workday', holidayName: '', id: null })
+    cells.push({ date: ds, day: d, inMonth: false, isToday: ds === todayStr, isWorkingDay: false, dayType: 'unknown', holidayName: '', id: null, isPersisted: false, source: null })
   }
 
   // Current month
@@ -85,10 +81,12 @@ const calendarCells = computed<CalCell[]>(() => {
     const found = calData.value.find(c => c.date === ds)
     cells.push({
       date: ds, day: d, inMonth: true, isToday: ds === todayStr,
-      isWorkingDay: found ? found.is_working_day : (new Date(ds).getDay() % 6 !== 0),
-      dayType: found ? found.day_type : (new Date(ds).getDay() % 6 !== 0 ? 'workday' : 'weekend'),
+      isWorkingDay: found?.is_working_day ?? false,
+      dayType: found?.day_type || 'unknown',
       holidayName: found?.holiday_name || '',
-      id: found?.id || null
+      id: found?.id || null,
+      isPersisted: Boolean(found),
+      source: found?.source || null,
     })
   }
 
@@ -97,17 +95,12 @@ const calendarCells = computed<CalCell[]>(() => {
   if (remaining < 7) {
     for (let d = 1; d <= remaining; d++) {
       const ds = `${viewYear.value}-${String(viewMonth.value + 1 || 12).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-      cells.push({ date: ds, day: d, inMonth: false, isToday: ds === todayStr, isWorkingDay: true, dayType: 'workday', holidayName: '', id: null })
+      cells.push({ date: ds, day: d, inMonth: false, isToday: ds === todayStr, isWorkingDay: false, dayType: 'unknown', holidayName: '', id: null, isPersisted: false, source: null })
     }
   }
 
   return cells
 })
-const canEditDay = computed(() => {
-  permissionState.permissions
-  return canOperateAction('/system/calendar', 'edit_day')
-})
-
 const workdayCount = computed(() => calendarCells.value.filter(c => c.inMonth && c.isWorkingDay).length)
 const nonWorkdayCount = computed(() => calendarCells.value.filter(c => c.inMonth && !c.isWorkingDay).length)
 
@@ -126,17 +119,8 @@ function goToday() {
   fetchData()
 }
 
-async function toggleCell(cell: CalCell) {
-  const newWork = !cell.isWorkingDay
-  const newType = newWork
-    ? (new Date(cell.date).getDay() % 6 === 0 ? 'compensate' : 'workday')
-    : (cell.dayType === 'compensate' ? 'weekend' : 'holiday')
-  try {
-    await upsertCalendarDate(cell.date, { is_working_day: newWork, day_type: newType })
-    cell.isWorkingDay = newWork
-    cell.dayType = newType
-    message.success(`${cell.date} 已${newWork ? '设为工作日' : '设为非工作日'}`)
-  } catch { message.error('更新失败') }
+function sourceLabel(source: CalendarDay['source'] | null) {
+  return source === 'sync' ? '节假日同步' : source === 'manual' ? '手工调整' : ''
 }
 
 async function fetchData() {
@@ -145,26 +129,6 @@ async function fetchData() {
     calData.value = await getCalendar(viewYear.value, viewMonth.value)
   } catch { message.error('加载日历失败') }
   finally { loading.value = false }
-}
-
-async function handleBatchFill() {
-  filling.value = true
-  try {
-    const r = await batchFillCalendar(viewYear.value)
-    message.success(r.detail || '填充完成')
-    await fetchData()
-  } catch { message.error('填充失败') }
-  finally { filling.value = false }
-}
-
-async function handleSync() {
-  syncing.value = true
-  try {
-    const r = await syncHolidays(viewYear.value)
-    message.success(r.detail || '同步完成')
-    await fetchData()
-  } catch (e: any) { message.error(e?.response?.data?.detail || '同步失败') }
-  finally { syncing.value = false }
 }
 
 onMounted(() => { fetchData() })
@@ -193,16 +157,11 @@ onMounted(() => { fetchData() })
   padding: 6px 8px;
   border-right: 1px solid #f1f5f9;
   border-bottom: 1px solid #f1f5f9;
-  cursor: pointer;
-  transition: background 0.15s;
+  cursor: default;
   position: relative;
 }
 .cal-cell:nth-child(7n) { border-right: none; }
-.cal-cell:hover { background: #eff6ff; }
 .cal-other { opacity: 0.35; cursor: default; }
-.cal-other:hover { background: transparent; }
-.cal-readonly { cursor: default; }
-.cal-readonly:hover { background: inherit; }
 .cal-today { box-shadow: inset 0 0 0 2px #3b82f6; }
 .cal-today .cal-date { color: #3b82f6; font-weight: 700; }
 .cal-workday { background: #fff; }
@@ -214,4 +173,5 @@ onMounted(() => { fetchData() })
 .cal-holiday .cal-date { color: #dc2626; }
 .cal-compensate .cal-date { color: #ea580c; }
 .cal-tag { margin-top: 2px; }
+.cal-source { color: #64748b; font-size: 10px; }
 </style>

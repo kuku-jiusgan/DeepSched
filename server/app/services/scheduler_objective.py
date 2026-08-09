@@ -17,8 +17,10 @@ def add_scheduler_objective(
     sibling_group_completion_weight: int,
     sibling_counts: dict[int, int],
     stability_penalties: list | None = None,
+    dependency_gap_penalties: list | None = None,
 ) -> None:
     stability_penalties = stability_penalties or []
+    dependency_gap_penalties = dependency_gap_penalties or []
     weighted_tardiness = [
         task_tardiness[task.id] * int(task.priority_weight * 10)
         for task in tasks
@@ -72,6 +74,7 @@ def add_scheduler_objective(
         + (sum(weighted_tardiness) + makespan) * 1000
         + sum(priority_completion) * 10
         + sum(parent_group_completions) * sibling_group_completion_weight
+        + sum(dependency_gap_penalties) * 500
         + sum(spans)
         + sum(switch_penalties) * 500
         + sum(project_inst_used_vars) * 30

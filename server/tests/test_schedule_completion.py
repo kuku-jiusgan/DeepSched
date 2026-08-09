@@ -51,7 +51,7 @@ class ScheduleCompletionTest(unittest.TestCase):
         end_time = datetime(2026, 7, 13, 9, 23)
 
         completed_slot = _select_completed_slot(slots, slots[0].id, end_time)
-        _mark_task_slots_completed(slots, completed_slot, end_time)
+        _mark_task_slots_completed(self.db, slots, completed_slot, end_time)
 
         self.assertEqual(slots[-1].id, completed_slot.id)
         self.assertEqual(original_ranges, [(slot.plan_start, slot.plan_end) for slot in slots])
@@ -60,7 +60,7 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.assertEqual(datetime(2026, 7, 10, 20, 0), slots[0].actual_end)
         self.assertEqual(datetime(2026, 7, 11, 20, 0), slots[1].actual_end)
 
-    def test_future_segments_complete_without_fake_actual_times(self):
+    def test_future_unexecuted_segments_are_deleted(self):
         slots = [
             TimeSlot(
                 id=1, task_id=1, instrument_id=1,
@@ -73,14 +73,17 @@ class ScheduleCompletionTest(unittest.TestCase):
                 plan_end=datetime(2026, 7, 14, 18, 30), status="scheduled",
             ),
         ]
+        self.db.add_all(slots)
+        self.db.commit()
         end_time = datetime(2026, 7, 13, 10, 0)
 
-        _mark_task_slots_completed(slots, slots[0], end_time)
+        _mark_task_slots_completed(self.db, slots, slots[0], end_time)
+        self.db.flush()
 
-        self.assertEqual("completed", slots[1].status)
-        self.assertIsNone(slots[1].actual_start)
-        self.assertIsNone(slots[1].actual_end)
-        self.assertEqual(datetime(2026, 7, 14, 18, 30), slots[1].plan_end)
+        remaining = self.db.query(TimeSlot).filter(TimeSlot.task_id == 1).all()
+        self.assertEqual([1], [slot.id for slot in remaining])
+        self.assertEqual("completed", remaining[0].status)
+        self.assertEqual(end_time, remaining[0].actual_end)
 
     def test_completed_future_segments_do_not_block_forward_shift(self):
         completed = Task(project_id=1, name="done", task_type="test", status="done")

@@ -83,6 +83,31 @@ class ScheduleDelayTest(unittest.TestCase):
         self.db.refresh(task)
         self.assertEqual("delayed", task.delay_status)
 
+    def test_delay_does_not_change_paused_execution_status(self):
+        task = Task(project_id=1, name="paused", task_type="test", status="paused")
+        self.db.add(task)
+        self.db.flush()
+        slot = TimeSlot(
+            task_id=task.id,
+            instrument_id=1,
+            plan_start=datetime(2026, 7, 13, 8, 30),
+            plan_end=datetime(2026, 7, 13, 18, 30),
+            status="paused",
+        )
+        self.db.add(slot)
+        self.db.commit()
+
+        report_task_delay(self.db, slot.id, 2, "等待样品")
+
+        self.db.refresh(task)
+        delayed_slots = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == task.id,
+        ).all()
+        self.assertEqual("paused", task.status)
+        self.assertEqual("delayed", task.delay_status)
+        self.assertTrue(delayed_slots)
+        self.assertEqual({"paused"}, {item.status for item in delayed_slots})
+
     def test_following_task_delay_respects_working_hours(self):
         delayed_task = Task(project_id=1, name="delayed", task_type="test", status="scheduled")
         following_task = Task(project_id=1, name="following", task_type="test", status="scheduled")
@@ -147,6 +172,34 @@ class ScheduleDelayTest(unittest.TestCase):
         self.assertEqual(datetime(2026, 7, 13, 10, 30), shifted.plan_start)
         self.assertEqual(datetime(2026, 7, 13, 18, 30), shifted.plan_end)
 
+    def test_delay_does_not_shift_parallel_task_in_same_project(self):
+        delayed_task = Task(
+            project_id=1, name="GCMS方法开发", task_type="test", status="scheduled",
+        )
+        parallel_task = Task(
+            project_id=1, name="LCMS方法开发", task_type="test", status="scheduled",
+        )
+        self.db.add_all([delayed_task, parallel_task])
+        self.db.flush()
+        delayed_slot = TimeSlot(
+            task_id=delayed_task.id, instrument_id=1,
+            plan_start=datetime(2026, 7, 13, 8, 30),
+            plan_end=datetime(2026, 7, 13, 18, 30), status="scheduled",
+        )
+        parallel_slot = TimeSlot(
+            task_id=parallel_task.id, instrument_id=2,
+            plan_start=datetime(2026, 7, 13, 8, 30),
+            plan_end=datetime(2026, 7, 13, 18, 30), status="scheduled",
+        )
+        self.db.add_all([delayed_slot, parallel_slot])
+        self.db.commit()
+
+        report_task_delay(self.db, delayed_slot.id, 2, "仪器故障")
+
+        self.db.refresh(parallel_slot)
+        self.assertEqual(datetime(2026, 7, 13, 8, 30), parallel_slot.plan_start)
+        self.assertEqual(datetime(2026, 7, 13, 18, 30), parallel_slot.plan_end)
+
     def test_delay_rejects_delayed_task_past_project_end(self):
         project = Project(
             name="截止项目",
@@ -173,7 +226,7 @@ class ScheduleDelayTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ScheduleDelayInvalidError,
-            "项目【截止项目】任务【方法开发】.*超过项目结题时间",
+            "此次延期会导致项目【DELAY-END-1 截止项目】任务【方法开发】无法在规定时间内完成，禁止延期！",
         ):
             report_task_delay(self.db, slot.id, 2, "实验延迟")
 
@@ -232,7 +285,7 @@ class ScheduleDelayTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ScheduleDelayInvalidError,
-            "项目【被影响项目】任务【后续任务】.*超过项目结题时间",
+            "此次延期会导致项目【DELAY-END-3 被影响项目】任务【后续任务】无法在规定时间内完成，禁止延期！",
         ):
             report_task_delay(self.db, delayed_slot.id, 2, "实验延迟")
 

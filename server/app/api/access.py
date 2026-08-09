@@ -40,24 +40,25 @@ def _operation_permission(method: str, path: str) -> tuple[str, str] | None:
     if path.startswith("/api/v1/task-types"):
         action = "create" if method == "POST" else "delete" if method == "DELETE" else "toggle" if "/toggle" in path else "edit"
         return "/system/basic", action
-    if path.startswith("/api/v1/calendar"):
-        action = "sync" if "sync" in path else "fill" if "fill" in path else "edit_day"
-        return "/system/calendar", action
     if path.startswith("/api/v1/alert-rules"):
         return "/system/alerts", "edit_channel" if "push-config" in path else "edit_rule"
-    if path.startswith("/api/v1/notifications"):
-        return "/system/alerts", "edit_rule"
     if path.startswith("/api/v1/schedule-rules"):
-        return "/schedule/rules", "edit"
+        return "/schedule/rules", "toggle" if "/toggle" in path else "edit"
     if path.startswith("/api/v1/approval-gates"):
         action = "confirm_impact" if "confirm" in path else "approve" if "approve" in path else "submit"
         return "/tasks/workspace", action
     if path.startswith("/api/v1/instruments/faults") or "/fault" in path:
         return "/tasks/faults", "resolve" if "resolve" in path else "create"
     if path.startswith("/api/v1/instruments"):
+        if "/capabilities" in path:
+            return "/projects/resource-ledger", "manage_capabilities"
+        if "/maintenance" in path:
+            return "/projects/resource-ledger", "manage_maintenance"
         action = "create" if method == "POST" else "delete" if method == "DELETE" else "edit"
         return "/projects/resource-ledger", action
     if path.startswith("/api/v1/projects"):
+        if "/plan-drafts/commit" in path:
+            return "/projects/plan-breakdown", "save_draft"
         if "/tasks" in path:
             action = "edit_task" if "/reorder" in path else "create_task" if method == "POST" else "delete_task" if method == "DELETE" else "edit_task"
             return "/projects/plan-breakdown", action
@@ -73,8 +74,10 @@ def _operation_permission(method: str, path: str) -> tuple[str, str] | None:
         return "/schedule/insert-order", "confirm" if "confirm" in path else "preview"
     if path.startswith("/api/v1/schedules/apply-project-plan"):
         return "/projects/plan-breakdown", "schedule"
+    if path.startswith("/api/v1/schedules/daily-roll"):
+        return "/schedule/engine", "daily_roll"
     if path.startswith("/api/v1/schedules/timeslots"):
-        action = next((key for key in ("complete", "interrupt", "delay", "night-run", "start") if key in path), "manual_edit")
+        action = next((key for key in ("complete", "pause", "interrupt", "delay", "night-run", "start") if key in path), "manual_edit")
         return ("/tasks/workspace", action.replace("night-run", "night_run")) if action != "manual_edit" else ("/schedule/engine", action)
     if path.startswith("/api/v1/schedules"):
         return "/schedule/engine", "reschedule" if "reschedule" in path else "generate"

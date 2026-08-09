@@ -11,6 +11,7 @@
 .gantt-page.is-fullscreen .action-bar { margin-bottom: 0; padding-bottom: 12px; }
 .gantt-page.is-fullscreen .gantt-container { flex: 1; min-height: 0; margin-top: 0; }
 .action-bar.is-screen-toolbar { align-items: center; }
+.project-status-tabs { margin: 0 0 8px; }
 
 .gantt-container { position: relative; display: flex; flex: 1; border: 1px solid #e5e7eb; border-radius: 8px; overflow: auto; margin-top: 12px; min-height: 0; background: #fff; }
 
@@ -19,7 +20,17 @@
 .gantt-header-cell { position: sticky; top: 0; z-index: 6; height: 50px; display: flex; align-items: center; padding: 0 12px; font-weight: 600; font-size: 13px; color: #475569; border-bottom: 2px solid #c0c7cf; background: #f1f5f9; }
 .gantt-left-row { display: flex; flex-direction: column; justify-content: center; padding: 0 12px; border-bottom: none; overflow: hidden; }
 .gantt-left-row.is-last { border-bottom: 2px solid #b0bec5; }
-.proj-name { font-size: 13px; font-weight: 500; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proj-name {
+  display: -webkit-box;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 .proj-code { font-size: 11px; color: #94a3b8; }
 
 .gantt-right { flex: 1; }

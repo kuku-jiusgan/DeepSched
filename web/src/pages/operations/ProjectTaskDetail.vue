@@ -39,7 +39,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { LeftOutlined } from '@ant-design/icons-vue'
-import { getProject, getTaskTypes, getUsers, type Project, type TaskTypeConfig } from '@/services/api'
+import { getProject, getTaskTypes, getUserDirectory } from '@/services/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -66,11 +66,11 @@ function goBack() { router.push('/operations/reports') }
 
 async function loadUsers() {
   try {
-    const users = await getUsers()
+    const users = await getUserDirectory()
     const m = new Map<number, string>()
     users.forEach(u => { m.set(u.id, u.display_name) })
     userMap.value = m
-  } catch { console.error('loadUsers failed') }
+  } catch { message.warning('人员目录加载失败，将使用任务中的负责人信息') }
 }
 
 async function loadTaskTypes() {

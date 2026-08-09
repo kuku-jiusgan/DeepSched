@@ -78,7 +78,7 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
 
         self.assertEqual([unstarted_task.id], [task.id for task in movable])
 
-    def test_priority_insert_can_move_frozen_task(self):
+    def test_priority_insert_does_not_move_partly_frozen_task(self):
         _, frozen_task = self._scheduled_project("B", 3, 1)
         self.db.flush()
         frozen_slot = self.db.query(TimeSlot).filter(
@@ -94,7 +94,7 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
             selected_instrument_ids={1},
         )
 
-        self.assertEqual([frozen_task.id], [task.id for task in movable])
+        self.assertEqual([], [task.id for task in movable])
 
     def test_project_impact_reports_delay_and_deadline_risk(self):
         project, task = self._scheduled_project("B", 3, 1)
@@ -103,6 +103,7 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
 
         impacts = _build_project_impacts(
             [task],
+            [],
             {project.id: original},
             {project.id: delayed},
         )

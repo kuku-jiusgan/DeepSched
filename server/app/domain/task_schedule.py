@@ -34,6 +34,18 @@ def actual_task_window(segments: Iterable[ScheduleSegment]) -> tuple[datetime | 
 
 def select_actionable_segment(segments: Iterable[SegmentT], now: datetime) -> SegmentT | None:
     items = sorted(segments, key=lambda item: (item.plan_start, item.id))
+    actual_running = next(
+        (
+            item for item in items
+            if item.status == "running"
+            and item.actual_start is not None
+            and item.actual_end is None
+        ),
+        None,
+    )
+    if actual_running:
+        return actual_running
+
     running = next(
         (
             item for item in items

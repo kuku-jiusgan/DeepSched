@@ -92,7 +92,7 @@
 import { ref, computed, onMounted, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { getProjects, getUsers, getTaskTypes, type Project, type User, type TaskTypeConfig } from '@/services/api'
+import { getProjects, getUserDirectory, getTaskTypes } from '@/services/api'
 import dayjs from 'dayjs'
 
 interface UserStat {
@@ -185,7 +185,7 @@ function onFilterChange() { buildStats() }
 async function buildStats() {
   loading.value = true
   try {
-    const [projects, users, types] = await Promise.all([getProjects(), getUsers(), getTaskTypes()])
+    const [projects, users, types] = await Promise.all([getProjects(), getUserDirectory(), getTaskTypes()])
     const userMap = new Map<number, string>()
     users.forEach(u => { userMap.set(u.id, u.display_name) })
     const typeMap: Record<string, string> = {}

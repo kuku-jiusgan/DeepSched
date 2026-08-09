@@ -9,8 +9,9 @@
         <a-tab-pane key="active" tab="进行中" />
         <a-tab-pane key="pending" tab="待开始" />
         <a-tab-pane key="completed" tab="已完成" />
+        <a-tab-pane key="approved" tab="已签批" />
       </a-tabs>
-      <div v-if="activeTab === 'pending' || activeTab === 'completed'" class="workspace-project-search">
+      <div v-if="activeTab === 'pending' || activeTab === 'completed' || activeTab === 'approved'" class="workspace-project-search">
         <a-input
           v-model:value="projectKeyword"
           allow-clear
@@ -37,7 +38,7 @@
         </template>
       </TodayTaskCards>
 
-      <a-table v-if="activeTab !== 'active'" :dataSource="filtered" :columns="columns" rowKey="task_id" size="middle"
+      <a-table v-if="activeTab === 'pending' || activeTab === 'completed'" :dataSource="filtered" :columns="columns" rowKey="task_id" size="middle"
         :pagination="{ pageSize: 20, showSizeChanger: true }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'status'">
@@ -48,7 +49,7 @@
             <span v-else style="color: #ccc">-</span>
           </template>
           <template v-else-if="column.key === 'task_name'">
-            <span style="font-weight: 500">{{ record.task_name }}</span>
+            <span style="font-weight: 500">{{ formatTaskName(record) }}</span>
           </template>
           <template v-else-if="column.key === 'project'">
             <span style="font-family: monospace; font-size: 12px; color: #2563eb">{{ record.project_code }}</span>
@@ -82,7 +83,7 @@
             <a-space v-else :size="4">
               <a-button
                 v-operation="'start'"
-                v-if="record.execution_status === 'scheduled' || record.execution_status === 'pending'"
+                v-if="canStartWorkspaceTask(record)"
                 type="primary"
                 size="small"
                 class="task-action-button task-action-button-start"
@@ -93,7 +94,7 @@
               </a-button>
               <a-button
                 v-operation="'complete'"
-                v-if="record.execution_status === 'running'"
+                v-if="canCompleteWorkspaceTask(record)"
                 size="small"
                 class="task-action-button task-action-button-complete"
                 :loading="actingId === record.actionable_slot?.id"
@@ -105,6 +106,37 @@
             </a-space>
           </template>
         </template>
+      </a-table>
+
+      <a-table
+        v-else-if="activeTab === 'approved'"
+        :dataSource="filteredApprovedGates"
+        :columns="approvedColumns"
+        rowKey="id"
+        size="middle"
+        :scroll="{ x: 1080 }"
+        :pagination="{ pageSize: 20, showSizeChanger: true }"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'project'">
+            <span class="approved-project-code">{{ record.project_code }}</span>
+            <span class="approved-project-name">{{ record.project_name }}</span>
+          </template>
+          <template v-else-if="column.key === 'approved_at'">
+            {{ formatApprovedDateTime(record.approved_at) }}
+          </template>
+          <template v-else-if="column.key === 'schedule_result'">
+            <a-tooltip :title="record.schedule_message || scheduleLabel(record.schedule_status)">
+              <span class="approved-cell-ellipsis">{{ record.schedule_message || scheduleLabel(record.schedule_status) }}</span>
+            </a-tooltip>
+          </template>
+          <template v-else-if="column.key === 'approval_note'">
+            <a-tooltip :title="record.approval_note || '-'">
+              <span class="approved-cell-ellipsis">{{ record.approval_note || '-' }}</span>
+            </a-tooltip>
+          </template>
+        </template>
+        <template #emptyText><a-empty description="暂无已签批方案" /></template>
       </a-table>
     </template>
 
@@ -146,9 +178,13 @@ import type { ApprovalGate } from '@/types'
 import type { WorkspaceTask } from '@/domains/tasks/workspaceTask'
 import {
   actionableSlotId,
+  canCompleteWorkspaceTask,
+  canStartWorkspaceTask,
   isWorkspaceActiveTask,
   isWorkspacePendingTask,
+  workspaceActionStatus,
 } from '@/domains/tasks/workspaceTask'
+import { isTaskCompleted, taskStatusColor, taskStatusLabel } from '@/utils/statusMeta'
 import TodayTaskCards from './TodayTaskCards.vue'
 import ApprovalConfirmationGroup from './ApprovalConfirmationGroup.vue'
 import PauseTaskModal from './PauseTaskModal.vue'
@@ -157,6 +193,7 @@ import dayjs from 'dayjs'
 
 const tasks = ref<WorkspaceTask[]>([])
 const approvalGates = ref<ApprovalGate[]>([])
+const approvedGates = ref<ApprovalGate[]>([])
 const loading = ref(true)
 const activeTab = ref<string>('active')
 const projectKeyword = ref('')
@@ -185,13 +222,21 @@ const cardTasks = computed(() => {
 const filtered = computed(() => {
   let result: WorkspaceTask[]
   if (activeTab.value === 'completed') {
-    result = tasks.value.filter(task => ['done', 'completed'].includes(task.execution_status))
+    result = tasks.value.filter(task => isTaskCompleted(task.execution_status))
   } else {
     result = cardTasks.value
   }
   const keyword = appliedProjectKeyword.value.trim().toLowerCase()
   if (!keyword) return result
   return result.filter(task => `${task.project_code || ''} ${task.project_name || ''}`.toLowerCase().includes(keyword))
+})
+
+const filteredApprovedGates = computed(() => {
+  const keyword = appliedProjectKeyword.value.trim().toLowerCase()
+  if (!keyword) return approvedGates.value
+  return approvedGates.value.filter(gate =>
+    `${gate.project_code || ''} ${gate.project_name || ''}`.toLowerCase().includes(keyword),
+  )
 })
 
 function applyProjectSearch() {
@@ -211,8 +256,7 @@ async function loadTaskTypes() {
 }
 
 function statusColor(s: string) {
-  const m: Record<string, string> = { pending: '#94a3b8', scheduled: '#2563eb', running: '#16a34a', paused: '#d97706', completed: '#7c3aed', done: '#7c3aed', blocked: '#dc2626', interrupted: '#ea580c' }
-  return m[s] || '#94a3b8'
+  return taskStatusColor(s)
 }
 
 function taskTypeLabel(code: string | null) { return code ? (taskTypeMap.value[code] || code) : '' }
@@ -222,8 +266,7 @@ function taskTypeColor(code: string | null) {
   return m[code] || '#94a3b8'
 }
 function statusLabel(s: string) {
-  const m: Record<string, string> = { pending: '待处理', scheduled: '待执行', running: '运行中', paused: '已暂停', completed: '已完成', done: '已完成', blocked: '已延期', interrupted: '已中断' }
-  return m[s] || s
+  return taskStatusLabel(s)
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -236,6 +279,12 @@ function formatInstrument(record: WorkspaceTask) {
     return `${slot.instrument_code} · ${slot.instrument_name}`
   }
   return slot?.instrument_code || slot?.instrument_name || '-'
+}
+
+function formatTaskName(record: WorkspaceTask) {
+  return record.top_level_task_name && record.top_level_task_name !== record.task_name
+    ? `${record.top_level_task_name}·${record.task_name || '未命名任务'}`
+    : (record.task_name || '未命名任务')
 }
 
 function formatTaskPlanStart(record: WorkspaceTask) {
@@ -276,16 +325,28 @@ const columns = computed(() => [
   { title: '操作', key: 'actions', width: 160 },
 ])
 
+const approvedColumns = [
+  { title: '方案', dataIndex: 'name', key: 'name', width: 190, ellipsis: true },
+  { title: '所属项目', key: 'project', width: 260 },
+  { title: '负责人', dataIndex: 'assignee_name', key: 'assignee_name', width: 90 },
+  { title: '实际签批', key: 'approved_at', width: 130 },
+  { title: '记录人', dataIndex: 'approved_by_name', key: 'approved_by_name', width: 90 },
+  { title: '排程结果', key: 'schedule_result', width: 210 },
+  { title: '备注', key: 'approval_note', width: 180 },
+]
+
 async function fetchData(isSilent = false) {
   if (isFetching) return
   isFetching = true
   try {
-    const [taskResult, approvalResult] = await Promise.all([
+    const [taskResult, approvalResult, approvedResult] = await Promise.all([
       getMyTasks(),
-      getApprovalGates({ page_size: 500, workspace_only: true }),
+      getApprovalGates({ status: 'pending', page_size: 500, workspace_only: true }),
+      getApprovalGates({ status: 'approved', page_size: 500, workspace_only: true }),
     ])
     tasks.value = taskResult
     approvalGates.value = approvalResult.items
+    approvedGates.value = approvedResult.items
     loadTaskTypes()
   } catch {
     if (!isSilent) message.error('加载工作台失败')
@@ -305,7 +366,7 @@ async function handleStart(record: WorkspaceTask) {
   actingId.value = slotId
   try {
     await startTask(slotId)
-    message.success('任务已开始')
+    message.success(workspaceActionStatus(record) === 'paused' ? '任务已恢复' : '任务已开始')
     fetchData()
   } catch (error: unknown) { message.error(errorDetail(error, '开始任务失败')) }
   finally { actingId.value = null }
@@ -320,7 +381,11 @@ const releaseConfirmContent = computed(() => {
   const record = releaseConfirmTask.value
   if (!record) return ''
   const earlyMinutes = getEarlyCompletionMinutes(record)
-  return `当前完成时间比计划完成时间 ${formatTaskPlanEnd(record)} 提前约 ${earlyMinutes} 分钟。释放仪器后，同项目同仪器的后续任务可按约束前移。`
+  const timing = `当前完成时间比计划完成时间 ${formatTaskPlanEnd(record)} 提前约 ${earlyMinutes} 分钟。`
+  const priority = record.resume_priority
+  if (!priority) return `${timing}释放仪器后，同项目同仪器的后续任务可按约束前移。`
+  const project = [priority.project_code, priority.project_name].filter(Boolean).join(' · ')
+  return `${timing}释放仪器后，项目【${project || '未命名项目'}】任务【${priority.task_name}】将优先恢复并开始。`
 })
 
 async function handleComplete(record: WorkspaceTask) {
@@ -383,6 +448,20 @@ function errorDetail(error: unknown, fallback: string) {
   return candidate.response?.data?.detail || fallback
 }
 
+function formatApprovedDateTime(value?: string | null) {
+  return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
+}
+
+function scheduleLabel(status?: string | null) {
+  if (!status) return '-'
+  return {
+    forecast: '预测排程已更新',
+    applied: '正式排程已更新',
+    confirmation_required: '待确认排程影响',
+    deadline_risk: '结题日期不可满足',
+  }[status] || status
+}
+
 onMounted(() => {
   void fetchData()
   window.addEventListener('focus', refreshWorkspaceWhenActive)
@@ -437,6 +516,25 @@ onBeforeUnmount(() => {
 }
 
 .workspace-project-search .ant-input-affix-wrapper { width: 240px; }
+
+.approved-project-code {
+  color: var(--color-accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.approved-project-name {
+  margin-left: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.approved-cell-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 @media (max-width: 720px) {
   .workspace-project-search { width: 100%; }

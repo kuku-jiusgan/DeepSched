@@ -1,0 +1,26 @@
+.project-arrangement { border-top: 1px solid #cbd5e1; color: #334155; }
+.project-arrangement-day { display: grid; grid-template-columns: 126px minmax(0, 1fr); border-bottom: 1px solid #cbd5e1; }
+.project-arrangement-history-toggle { width: 100%; padding: 9px 12px; color: #475569; font-size: 12px; cursor: pointer; background: #f8fafc; border: 0; border-bottom: 1px solid #cbd5e1; }
+.project-arrangement-history-toggle:hover { color: #1677ff; background: #f1f5f9; }
+.project-arrangement-day-header { display: flex; align-content: flex-start; align-items: baseline; justify-content: center; gap: 5px; flex-wrap: wrap; padding: 14px 10px; background: #f8fafc; border-right: 1px solid #e2e8f0; }
+.project-arrangement-day-header strong { color: #0f172a; font-size: 14px; }
+.project-arrangement-day-header span { color: #64748b; font-size: 12px; }
+.project-arrangement-day-header.is-unscheduled { background: #fffbeb; }
+.project-arrangement-list { display: flex; flex-direction: column; min-width: 0; }
+.project-arrangement-item { display: grid; grid-template-columns: 112px minmax(160px, 1fr) 120px 190px 240px; gap: 12px; align-items: center; min-height: 66px; padding: 9px 12px; border-bottom: 1px solid #e2e8f0; background: #fff; }
+.project-arrangement-item:last-child { border-bottom: 0; }
+.project-arrangement-item.is-overdue { background: #fff7f7; }
+.project-arrangement-time, .project-arrangement-task, .project-arrangement-assignee, .project-arrangement-resource, .project-arrangement-result { min-width: 0; }
+.project-arrangement-time strong, .project-arrangement-task strong { display: block; overflow: hidden; color: #1e293b; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.project-arrangement-time small, .project-arrangement-task small { display: block; margin-top: 4px; color: #64748b; font-size: 11px; }
+.project-arrangement-assignee, .project-arrangement-resource { display: flex; align-items: center; gap: 6px; overflow: hidden; color: #475569; font-size: 12px; }
+.project-arrangement-assignee span, .project-arrangement-resource span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-arrangement-result { display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
+.project-arrangement-actual { overflow: hidden; color: #475569; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.project-arrangement-status { display: flex; gap: 4px; flex-wrap: wrap; }
+@media (max-width: 900px) {
+  .project-arrangement-day { grid-template-columns: 1fr; }
+  .project-arrangement-day-header { border-right: 0; border-bottom: 1px solid #e2e8f0; }
+  .project-arrangement-item { grid-template-columns: 100px minmax(0, 1fr); }
+  .project-arrangement-assignee, .project-arrangement-resource, .project-arrangement-result { grid-column: 2; }
+}

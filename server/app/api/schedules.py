@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import json
-from datetime import datetime
+from datetime import date, datetime
 from app.core.database import get_db
 from app.models import TimeSlot, Task, Instrument, Project, AuditLog, User
 from app.schemas.schemas import (
@@ -36,12 +36,17 @@ from app.services.approval_gate_service import scan_approval_deadlines
 from app.services.task_execution_service import (
     start_task_execution,
 )
-from app.services.workspace_service import get_workspace_tasks
+from app.services.workspace_service import (
+    WorkspaceAgendaInvalidError,
+    WorkspaceAgendaPermissionError,
+    get_workspace_agenda,
+    get_workspace_tasks,
+)
 from app.services.audit_log_service import record_audit_log
 from app.services.workspace_command_service import complete_workspace_task, interrupt_workspace_task
 from app.services.task_pause_service import list_switch_candidates, pause_and_switch_task
 from app.api.transactions import execute_transaction
-from app.schemas.workspace_schemas import WorkspaceTaskOut
+from app.schemas.workspace_schemas import AgendaOut, WorkspaceTaskOut
 from app.domain.task_schedule import (
     actual_task_window as _task_actual_window,
     select_actionable_segment as _select_workspace_slot,
@@ -165,11 +170,13 @@ def night_run(
     slot_id: int,
     data: NightRunRequest,
     db: Session = Depends(get_db),
-    _user=Depends(require_slot_operator),
+    user=Depends(require_slot_operator),
 ):
     slot = execute_transaction(
         db,
-        lambda: record_night_run(db, slot_id, data.duration_hours, data.earliest_start, data.latest_end),
+        lambda: record_night_run(
+            db, slot_id, data.duration_hours, data.earliest_start, data.latest_end, user.id,
+        ),
     )
     return _enrich_slot(slot, db)
 
@@ -252,11 +259,28 @@ def my_tasks(
 ):
     return get_workspace_tasks(db, user)
 
+
+@router.get("/my-agenda", response_model=AgendaOut)
+def my_agenda(
+    start_date: date,
+    end_date: date,
+    assignee_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
+):
+    try:
+        return get_workspace_agenda(db, user, start_date, end_date, assignee_id)
+    except WorkspaceAgendaPermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except WorkspaceAgendaInvalidError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 def _empty_delay_fields() -> dict:
     return {
         "delay_hours": None,
         "delay_reason": None,
         "delay_reported_at": None,
+        "delay_started_at": None,
     }
 
 def _should_include_delay_fields(slot: TimeSlot) -> bool:
@@ -273,12 +297,13 @@ def _enrich_slot(slot: TimeSlot, db: Session) -> TimeSlotOut:
         if task and (task.delay_status == "delayed" or _should_include_delay_fields(slot))
         else _empty_delay_fields()
     )
+    actual_start, actual_end = _slot_actual_window(task, slot)
     return TimeSlotOut(
         id=slot.id, schedule_run_id=slot.schedule_run_id,
         task_id=slot.task_id, instrument_id=slot.instrument_id,
         plan_start=slot.plan_start, plan_end=slot.plan_end,
-        actual_start=slot.actual_start, actual_end=slot.actual_end,
-        tier=slot.tier, status=slot.status,
+        actual_start=actual_start, actual_end=actual_end,
+        tier=slot.tier, status=slot.status, execution_status=slot.status,
         task_name=task.name if task else None,
         task_type=task.task_type if task else None,
         task_status=task.status if task else None,
@@ -292,6 +317,16 @@ def _enrich_slot(slot: TimeSlot, db: Session) -> TimeSlotOut:
         project_id=task.project_id if task else None,
         **delay_fields,
     )
+
+
+def _slot_actual_window(task: Task | None, slot: TimeSlot):
+    if slot.actual_start and slot.actual_end:
+        return slot.actual_start, slot.actual_end
+    if task:
+        for segment in task.execution_segments:
+            if segment.slot_id == slot.id and segment.started_at and segment.ended_at:
+                return segment.started_at, segment.ended_at
+    return slot.actual_start, slot.actual_end
 
 def _latest_delay_fields(task_id: int, db: Session, slot: TimeSlot) -> dict:
     logs = (
@@ -312,10 +347,12 @@ def _latest_delay_fields(task_id: int, db: Session, slot: TimeSlot) -> dict:
         return _empty_delay_fields()
     total_hours = sum(float(detail.get("delay_hours") or 0) for _log, detail in matched_logs)
     reasons = [str(detail["reason"]) for _log, detail in reversed(matched_logs) if detail.get("reason")]
+    delay_starts = [detail.get("delay_started_at") for _log, detail in matched_logs if detail.get("delay_started_at")]
     return {
         "delay_hours": total_hours,
         "delay_reason": "；".join(dict.fromkeys(reasons)) or None,
         "delay_reported_at": matched_logs[0][0].created_at,
+        "delay_started_at": min(delay_starts) if delay_starts else None,
     }
 
 def _audit_detail_dict(detail) -> dict:

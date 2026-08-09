@@ -51,6 +51,7 @@ def delete_task_plan(db, task_id: int, allow_completed: bool = False) -> None:
         raise PlanChangeNotFoundError("任务不存在")
     if not allow_completed and _task_tree_has_completed_task(task):
         raise PlanChangeInvalidError("已完成任务不允许删除")
+    released_resources = _released_task_resources(task)
     project_id = task.project_id
     bridge_pairs: set[tuple[int, int]] = set()
     affected_tasks: list[Task] = []
@@ -73,7 +74,33 @@ def delete_task_plan(db, task_id: int, allow_completed: bool = False) -> None:
             affected_task.status = "pending"
         affected_task.schedule_dirty = True
     recalculate_project_parent_hours(db, project_id)
+    _compact_released_resource_queues(db, released_resources)
     db.commit()
+
+
+def _released_task_resources(task: Task) -> set[tuple[int, int | None]]:
+    resources: set[tuple[int, int | None]] = set()
+    pending = [task]
+    while pending:
+        current = pending.pop()
+        pending.extend(current.children)
+        for slot in current.time_slots:
+            if slot.instrument_id is not None:
+                resources.add((slot.instrument_id, current.assignee_id))
+    return resources
+
+
+def _compact_released_resource_queues(
+    db,
+    resources: set[tuple[int, int | None]],
+) -> None:
+    if not resources:
+        return
+    from app.services.schedule_completion_service import _forward_shift_instrument_queue
+
+    released_at = datetime.now()
+    for instrument_id, assignee_id in sorted(resources, key=lambda item: (item[0], item[1] or 0)):
+        _forward_shift_instrument_queue(db, instrument_id, released_at, assignee_id)
 
 
 def _task_tree_has_completed_task(task: Task) -> bool:

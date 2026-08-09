@@ -6,7 +6,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
-from app.models import Task, TaskExecutionSegment, TimeSlot
+from app.models import AuditLog, Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_status_service import refresh_instrument_status
 from app.services.schedule_advance_notification_service import notify_advanced_task_assignees
 from app.services.schedule_forward_slot_service import build_forward_slots
@@ -21,6 +21,7 @@ from app.services.project_status_service import calculate_project_status
 from app.services.task_delay_status_service import mark_task_delayed
 from app.services.schedule_delay_propagation_service import propagate_actual_delay
 from app.services.schedule_delay_service import ScheduleDelayInvalidError
+from app.services.task_execution_service import start_task_execution
 
 def complete_task_and_shift(
     db: Session,
@@ -50,7 +51,7 @@ def complete_task_and_shift(
         mark_task_delayed(task)
     completed_slot = _select_completed_slot(task_slots, completed_slot_id, end_time)
     affected_instrument_ids = {slot.instrument_id for slot in task_slots if slot.instrument_id}
-    _mark_task_slots_completed(task_slots, completed_slot, end_time)
+    _mark_task_slots_completed(db, task_slots, completed_slot, end_time)
     delay_result = _propagate_delay_safely(db, task, planned_end, end_time)
     if task.project:
         task.project.status = calculate_project_status(task.project)
@@ -81,7 +82,22 @@ def complete_task_and_shift(
             "delayed_slots": delay_result["shifted_slots"],
             "delay_affected_tasks": delay_result["affected_tasks"],
         }
-    result = _forward_shift_instrument_queue(db, completed_slot.instrument_id, end_time)
+    resumed_task = _resume_paused_source_task(db, task.id)
+    if resumed_task:
+        db.flush()
+        return {
+            "status": "ok",
+            "message": f"任务已完成，已恢复原暂停任务【{resumed_task.name}】",
+            "moved_tasks": 0,
+            "released_instrument": True,
+            "resumed_task_id": resumed_task.id,
+            "resumed_task_name": resumed_task.name,
+            "delayed_slots": delay_result["shifted_slots"],
+            "delay_affected_tasks": delay_result["affected_tasks"],
+        }
+    result = _forward_shift_instrument_queue(
+        db, completed_slot.instrument_id, end_time, task.assignee_id
+    )
     moved_task_details = result.pop("moved_task_details", [])
     notify_advanced_task_assignees(db, task, end_time, planned_end, moved_task_details)
     db.flush()
@@ -89,6 +105,30 @@ def complete_task_and_shift(
     result["delayed_slots"] = delay_result["shifted_slots"]
     result["delay_affected_tasks"] = delay_result["affected_tasks"]
     return result
+
+
+def _resume_paused_source_task(db: Session, completed_task_id: int) -> Task | None:
+    for log in _recent_pause_switch_logs(db):
+        detail = log.detail if isinstance(log.detail, dict) else {}
+        if detail.get("target_task_id") != completed_task_id:
+            continue
+        source_task = db.query(Task).filter(Task.id == detail.get("source_task_id", log.target_id)).first()
+        source_slot_id = detail.get("source_slot_id")
+        if not source_task or source_task.status != "paused" or not source_slot_id:
+            continue
+        start_task_execution(db, int(source_slot_id))
+        return source_task
+    return None
+
+
+def _recent_pause_switch_logs(db: Session) -> list[AuditLog]:
+    return (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "task_paused")
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(100)
+        .all()
+    )
 
 
 def _close_running_execution_segment(db, task_id: int, ended_at: datetime) -> None:
@@ -147,16 +187,16 @@ def _select_completed_slot(
 
 
 def _mark_task_slots_completed(
+    db: Session,
     slots: list[TimeSlot],
     completed_slot: TimeSlot,
     end_time: datetime,
 ) -> None:
     for slot in slots:
-        slot.status = "completed"
         if slot.plan_start > end_time:
-            slot.actual_start = None
-            slot.actual_end = None
+            db.delete(slot)
             continue
+        slot.status = "completed"
         if slot.actual_start is None:
             slot.actual_start = slot.plan_start
         slot.actual_end = end_time if slot.id == completed_slot.id else min(slot.plan_end, end_time)
@@ -166,6 +206,7 @@ def _forward_shift_instrument_queue(
     db: Session,
     instrument_id: int | None,
     released_at: datetime,
+    assignee_id: int | None = None,
 ) -> dict:
     if not instrument_id:
         return {
@@ -174,11 +215,7 @@ def _forward_shift_instrument_queue(
             "moved_tasks": 0,
         }
 
-    candidate_tasks = _load_forward_shift_candidates(
-        db,
-        instrument_id,
-        released_at,
-    )
+    candidate_tasks = _load_forward_shift_candidates(db, instrument_id, released_at, assignee_id)
     if not candidate_tasks:
         return {
             "status": "ok",
@@ -210,7 +247,7 @@ def _forward_shift_instrument_queue(
 
     moved = 0
     moved_task_details = []
-    cursor = released_at
+    cursors: dict[int | None, datetime] = {}
     for task in candidate_tasks:
         snapshots = slot_snapshots[task.id]
         if not snapshots:
@@ -223,8 +260,9 @@ def _forward_shift_instrument_queue(
             for slot in snapshots
         )
         slot_instrument_id = snapshots[0]["instrument_id"]
+        slot_cursor = cursors.get(slot_instrument_id, released_at)
         earliest_start = max(
-            cursor,
+            slot_cursor,
             _dependency_ready_time(db, task, released_at),
             task.earliest_start or released_at,
             task.project.start_date if task.project and task.project.start_date else released_at,
@@ -240,7 +278,7 @@ def _forward_shift_instrument_queue(
 
         if not new_slots or new_slots[0][0] >= original_start:
             _restore_slot_snapshots(db, snapshots)
-            cursor = max(cursor, original_end)
+            cursors[slot_instrument_id] = max(slot_cursor, original_end)
             continue
 
         for start, end in new_slots:
@@ -255,7 +293,7 @@ def _forward_shift_instrument_queue(
                     status="scheduled",
                 )
             )
-        cursor = new_slots[-1][1]
+        cursors[slot_instrument_id] = new_slots[-1][1]
         moved += 1
         moved_task_details.append({
             "task_id": task.id,
@@ -278,17 +316,24 @@ def _load_forward_shift_candidates(
     db: Session,
     instrument_id: int,
     released_at: datetime,
+    assignee_id: int | None = None,
 ) -> list[Task]:
     first_start = func.min(TimeSlot.plan_start).label("first_start")
+    resource_filter = TimeSlot.instrument_id == instrument_id
+    if assignee_id is not None:
+        resource_filter = resource_filter | (
+            Task.requires_human.is_(True) & (Task.assignee_id == assignee_id)
+        )
     candidate_rows = (
         db.query(Task.id, first_start)
         .join(TimeSlot, TimeSlot.task_id == Task.id)
         .filter(
             Task.status == "scheduled",
-            TimeSlot.instrument_id == instrument_id,
             TimeSlot.status == "scheduled",
             TimeSlot.plan_start >= released_at,
+            TimeSlot.actual_start.is_(None),
         )
+        .filter(resource_filter)
         .group_by(Task.id)
         .order_by(first_start, Task.id)
         .all()
@@ -305,7 +350,7 @@ def _load_forward_shift_candidates(
         tasks_by_id[task_id]
         for task_id in candidate_ids
         if task_id in tasks_by_id
-        and _is_movable_instrument_task(db, tasks_by_id[task_id], instrument_id, released_at)
+        and _is_movable_instrument_task(db, tasks_by_id[task_id], instrument_id, released_at, assignee_id)
     ]
 
 
@@ -314,11 +359,26 @@ def _is_movable_instrument_task(
     task: Task,
     instrument_id: int,
     released_at: datetime,
+    assignee_id: int | None = None,
 ) -> bool:
-    slots = db.query(TimeSlot).filter(TimeSlot.task_id == task.id).all()
+    if db.query(TimeSlot.id).filter(
+        TimeSlot.task_id == task.id,
+        (TimeSlot.status == "running") | TimeSlot.actual_start.isnot(None),
+    ).first():
+        return False
+    slots = db.query(TimeSlot).filter(
+        TimeSlot.task_id == task.id,
+        TimeSlot.status == "scheduled",
+        TimeSlot.plan_start >= released_at,
+        TimeSlot.actual_start.is_(None),
+    ).all()
     return bool(slots) and all(
         slot.status == "scheduled"
-        and slot.instrument_id == instrument_id
+        and (slot.instrument_id == instrument_id or (
+            assignee_id is not None
+            and task.requires_human
+            and task.assignee_id == assignee_id
+        ))
         and slot.plan_start >= released_at
         and slot.actual_start is None
         for slot in slots

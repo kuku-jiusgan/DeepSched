@@ -61,10 +61,6 @@ def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operato
     passive_task_ids = affected_task_ids - {task.id}
     original_windows = capture_task_schedule_windows(db, passive_task_ids)
 
-    if task.status != "running" and slot.status != "running":
-        slot.status = "blocked"
-        task.status = "blocked"
-
     shifted_count = _apply_delay_with_working_hours(
         db,
         slot,
@@ -77,7 +73,9 @@ def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operato
         original_windows,
         f"任务“{task.name}”延期",
     )
-    _write_audit_log(db, task.id, slot, delay_hours, clean_reason, shifted_count, operator_name)
+    _write_audit_log(
+        db, task.id, slot, cutoff, delay_hours, clean_reason, shifted_count, operator_name,
+    )
 
     return {
         "status": "ok",
@@ -104,25 +102,12 @@ def _final_task_slot(db, task_id: int) -> TimeSlot | None:
 
 def _affected_slot_ids(db, task: Task, slot: TimeSlot, cutoff: datetime) -> Set[int]:
     slot_ids = {slot.id}
-    slot_ids.update(_ids(_same_project_slots(db, task, cutoff)))
     if slot.instrument_id:
         slot_ids.update(_ids(_same_instrument_slots(db, slot, cutoff)))
     if task.requires_human and task.assignee_id is not None:
         slot_ids.update(_ids(_same_assignee_slots(db, task, cutoff)))
     slot_ids.update(_dependency_slot_ids(db, slot_ids, cutoff))
     return slot_ids
-
-
-def _same_project_slots(db, task: Task, cutoff: datetime) -> Iterable[TimeSlot]:
-    task_ids = db.query(Task.id).filter(
-        Task.project_id == task.project_id,
-        Task.status.in_(ACTIVE_TASK_STATUSES),
-    )
-    return db.query(TimeSlot).filter(
-        TimeSlot.task_id.in_(task_ids),
-        TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
-        TimeSlot.plan_start >= cutoff,
-    ).all()
 
 
 def _same_instrument_slots(db, slot: TimeSlot, cutoff: datetime) -> Iterable[TimeSlot]:
@@ -282,11 +267,13 @@ def _ensure_within_project_end(task: Task | None, planned_end: datetime) -> None
         return
     if planned_end <= task.project.end_date:
         return
+    project_label = " ".join(
+        part for part in [task.project.code, task.project.name] if part
+    ) or task.project.name
+    assignee_name = task.assignee_name or "未指定负责人"
     raise ScheduleDelayInvalidError(
-        f"延期失败：项目【{task.project.name}】任务【{task.name}】顺延后预计结束时间 "
-        f"{planned_end:%Y-%m-%d %H:%M}，超过项目结题时间 "
-        f"{task.project.end_date:%Y-%m-%d %H:%M}。"
-        "请缩短延期时长或先调整项目结题日期。"
+        f"此次延期会导致项目【{project_label}】任务【{task.name}】"
+        f"无法在规定时间内完成，禁止延期！请联系该任务负责人【{assignee_name}】协调处理。"
     )
 
 
@@ -411,6 +398,7 @@ def _write_audit_log(
     db,
     task_id: int,
     slot: TimeSlot,
+    delay_started_at: datetime,
     delay_hours: float,
     reason: str,
     shifted_count: int,
@@ -427,6 +415,7 @@ def _write_audit_log(
             "task_id": task_id,
             "task_display": task_display,
             "schedule_run_id": slot.schedule_run_id,
+            "delay_started_at": delay_started_at.isoformat(),
             "delay_hours": delay_hours,
             "reason": reason,
             "shifted_slots": shifted_count,

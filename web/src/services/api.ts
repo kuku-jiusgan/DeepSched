@@ -29,6 +29,39 @@ export const updateProject = (id: number, data: Partial<Project>): Promise<Proje
 export const getProject = (id: number): Promise<Project> =>
   api.get<Project>(`/projects/${id}`).then(r => r.data);
 
+export interface ProjectHealthTask { task_id: number; task_name: string; status: string; plan_start: string | null; plan_end: string | null; actual_start: string | null; actual_end: string | null; delay_days: number; delay_reason: string | null; assignee_name: string | null }
+export interface ProjectHealthBlocker extends ProjectHealthTask { blocker_type: 'delayed' | 'unscheduled' | 'waiting_external' }
+export interface ProjectHealthPoint { date: string; ideal: number; actual: number; forecast: number }
+export interface ProjectHealthAnnotation { date: string; title: string; detail: string; task_id: number | null }
+export interface ProjectHealthTimelineTask { task_id: number; task_name: string; status: string; plan_start: string | null; plan_end: string | null; actual_start: string | null; actual_end: string | null; assignee_name: string | null; is_external_gate: boolean; expected_approval_at: string | null }
+export interface ProjectArrangementItem {
+  slot_id: number | null; task_id: number; task_name: string; top_level_task_name: string | null; plan_order: number
+  task_status: string; slot_status: string | null; delay_status: string; assignee_id: number | null; assignee_name: string | null
+  instrument_id: number | null; instrument_code: string | null; instrument_name: string | null
+  plan_start: string | null; plan_end: string | null; actual_start: string | null; actual_end: string | null
+  is_external_gate: boolean; expected_approval_at: string | null
+}
+export interface ProjectHealth {
+  project_id: number; project_code: string; project_name: string; client_name: string | null; manager_name: string | null; start_date: string | null; end_date: string | null
+  summary: { project_status: string; health_score: number; health_level: 'green' | 'yellow' | 'red'; delivery_status: 'on_time' | 'at_risk' | 'overdue'; due_date: string | null; predicted_end: string | null; days_delta: number; schedule_state: 'not_scheduled' | 'scheduled' | 'dirty' | 'executing' | 'completed'; metric_mode: 'estimated_hours' | 'task_count'; task_counts: Record<string, number> }
+  due_this_week_open: ProjectHealthTask[]; delayed_over_three_days: ProjectHealthTask[]; blockers: ProjectHealthBlocker[]
+  timeline: { total_value: number; points: ProjectHealthPoint[]; annotations: ProjectHealthAnnotation[]; tasks: ProjectHealthTimelineTask[] }
+  arrangement_items: ProjectArrangementItem[]
+}
+export const getProjectHealth = (id: number): Promise<ProjectHealth> => api.get<ProjectHealth>(`/projects/${id}/health`).then(r => r.data)
+
+export type ProjectDeliveryStatus = 'on_time' | 'at_risk' | 'overdue'
+export interface ProjectProgressOverview {
+  project_id: number; project_code: string; project_name: string; client_name: string | null; manager_name: string | null
+  project_status: string; delivery_status: ProjectDeliveryStatus; health_level: 'green' | 'yellow' | 'red'
+  plan_start: string | null; plan_end: string | null; actual_start: string | null; actual_end: string | null
+  actual_started_at: string | null; due_date: string | null; predicted_end: string | null; days_delta: number
+  completed_tasks: number; total_tasks: number
+}
+export interface ProjectProgressList { generated_at: string; items: ProjectProgressOverview[] }
+export const getProjectProgress = (): Promise<ProjectProgressList> =>
+  api.get<ProjectProgressList>('/stats/project-progress').then(response => response.data)
+
 export const deleteProject = (id: number): Promise<void> =>
   api.delete(`/projects/${id}`)
 
@@ -595,18 +628,18 @@ export const confirmNotification = (id: number): Promise<{ status: string }> =>
   api.post<{ status: string }>(`/notifications/${id}/confirm`).then(r => r.data)
 
 export interface CalendarDay {
-  id: number; date: string; is_working_day: boolean; holiday_name: string | null; day_type: string;
+  id: number
+  date: string
+  is_working_day: boolean
+  holiday_name: string | null
+  day_type: string
+  source: 'default' | 'sync' | 'manual'
+  affected_task_count?: number
+  affected_project_count?: number
+  needs_reschedule?: boolean
 }
 export const getCalendar = (year?: number, month?: number): Promise<CalendarDay[]> =>
   api.get<CalendarDay[]>('/calendar', { params: { year, month } }).then(r => r.data)
-export const updateCalendarDay = (id: number, data: Partial<CalendarDay>): Promise<CalendarDay> =>
-  api.put<CalendarDay>(`/calendar/${id}`, data).then(r => r.data)
-export const upsertCalendarDate = (dt: string, data: Partial<CalendarDay>): Promise<CalendarDay> =>
-  api.put<CalendarDay>(`/calendar/date/${dt}`, data).then(r => r.data)
-export const batchFillCalendar = (year: number): Promise<{ detail: string }> =>
-  api.post<{ detail: string }>('/calendar/batch-fill', { year }).then(r => r.data)
-export const syncHolidays = (year: number): Promise<{ detail: string }> =>
-  api.post<{ detail: string }>(`/calendar/sync/${year}`).then(r => r.data)
 
 export interface AuditLogRecord {
   id: number

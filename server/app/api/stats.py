@@ -7,11 +7,15 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models import Instrument, TimeSlot, Task, Project, InstrumentFault
+from app.models import Instrument, TimeSlot, Task, Project
 from app.schemas.schemas import DashboardData, UtilizationStats
 from app.services.project_status_service import calculate_project_status
 from app.services.lab_status_service import list_lab_status
 from app.services.task_delay_status_service import DELAYED_STATUS
+from app.services.instrument_utilization_service import calculate_instrument_utilization
+from app.api.users import auth_token, get_current_user
+from app.schemas.project_progress_schemas import ProjectProgressList
+from app.services.project_progress_service import list_project_progress
 
 router = APIRouter(prefix="/api/v1/stats", tags=["stats"])
 
@@ -30,7 +34,6 @@ def dashboard(
         .filter(Instrument.availability_status == "available")
         .all()
     )
-    available_instrument_ids = [instrument.id for instrument in available_instruments]
     total_inst = len(available_instruments)
     active_inst = db.query(Instrument).filter(Instrument.availability_status == "available").count()
     project_window_filter = (
@@ -57,20 +60,9 @@ def dashboard(
         .count()
     )
 
-    slots = db.query(TimeSlot).filter(
-        TimeSlot.plan_end > window_start,
-        TimeSlot.plan_start < window_end,
-        TimeSlot.status.in_(["completed", "running"]),
-    ).all()
-    if available_instrument_ids:
-        slots = [slot for slot in slots if slot.instrument_id in available_instrument_ids]
-    else:
-        slots = []
-    total_hours = sum(_actual_run_hours(slot, window_start, window_end) for slot in slots)
-    total_available = sum(
-        _available_hours(db, instrument.id, window_start, window_end)
-        for instrument in available_instruments
-    )
+    utilization_rows = calculate_instrument_utilization(db, window_start, window_end, settings.PERCENT_SCALE)
+    total_hours = sum(row.actual_run_hours for row in utilization_rows)
+    total_available = sum(row.total_available_hours for row in utilization_rows)
     avg_util = round(total_hours / total_available * settings.PERCENT_SCALE, 1) if total_available > 0 else 0
 
     return DashboardData(
@@ -92,34 +84,8 @@ def utilization(
     db: Session = Depends(get_db),
 ):
     settings = get_settings()
-    instruments = db.query(Instrument).filter(Instrument.availability_status == "available").all()
     window_start, window_end = _stats_window(start_date, end_date, settings)
-    window_hours = (window_end - window_start).total_seconds() / 3600
-    result = []
-    for inst in instruments:
-        slots = db.query(TimeSlot).filter(
-            TimeSlot.instrument_id == inst.id,
-            TimeSlot.plan_end > window_start,
-            TimeSlot.plan_start < window_end,
-        ).all()
-        scheduled = sum(_overlap_hours(slot.plan_start, slot.plan_end, window_start, window_end) for slot in slots)
-        actual = sum(_actual_run_hours(slot, window_start, window_end) for slot in slots)
-        available = _available_hours(db, inst.id, window_start, window_end)
-        expected_rate = round(available / window_hours * settings.PERCENT_SCALE, 1) if window_hours > 0 else 0
-        actual_rate = round(actual / available * settings.PERCENT_SCALE, 1) if available > 0 else 0
-        result.append(UtilizationStats(
-            instrument_id=inst.id,
-            instrument_name=inst.name,
-            instrument_code=inst.code,
-            total_available_hours=available,
-            scheduled_hours=round(scheduled, 1),
-            actual_run_hours=round(actual, 1),
-            expected_utilization_rate=expected_rate,
-            actual_utilization_rate=actual_rate,
-            utilization_rate=actual_rate,
-            buffer_consumed_rate=0,
-        ))
-    return result
+    return calculate_instrument_utilization(db, window_start, window_end, settings.PERCENT_SCALE)
 
 
 def _stats_window(start_date: datetime | None, end_date: datetime | None, settings) -> tuple[datetime, datetime]:
@@ -135,38 +101,14 @@ def _stats_window(start_date: datetime | None, end_date: datetime | None, settin
     return window_start, window_end
 
 
-def _available_hours(db: Session, instrument_id: int, window_start: datetime, window_end: datetime) -> float:
-    total_hours = (window_end - window_start).total_seconds() / 3600
-    faults = db.query(InstrumentFault).filter(
-        InstrumentFault.instrument_id == instrument_id,
-        InstrumentFault.reported_at < window_end,
-    ).all()
-    fault_hours = sum(_fault_overlap_hours(fault, window_start, window_end) for fault in faults)
-    return max(0, round(total_hours - fault_hours, 1))
-
-
-def _fault_overlap_hours(fault: InstrumentFault, window_start: datetime, window_end: datetime) -> float:
-    fault_end = fault.resolved_at if fault.resolved_at else window_end
-    if fault_end > window_end:
-        fault_end = window_end
-    return _overlap_hours(fault.reported_at, fault_end, window_start, window_end)
-
-
-def _actual_run_hours(slot: TimeSlot, window_start: datetime, window_end: datetime) -> float:
-    if slot.status not in ["completed", "running"] or not slot.actual_start:
-        return 0
-    end_time = slot.actual_end if slot.actual_end else window_end
-    return _overlap_hours(slot.actual_start, end_time, window_start, window_end)
-
-
-def _overlap_hours(start_time: datetime, end_time: datetime, window_start: datetime, window_end: datetime) -> float:
-    start = max(start_time, window_start)
-    end = min(end_time, window_end)
-    if end <= start:
-        return 0
-    return (end - start).total_seconds() / 3600
-
-
 @router.get("/lab-status")
 def lab_status(db: Session = Depends(get_db)):
     return list_lab_status(db)
+
+
+@router.get("/project-progress", response_model=ProjectProgressList)
+def project_progress(
+    token: str = Depends(auth_token),
+    db: Session = Depends(get_db),
+):
+    return list_project_progress(db, get_current_user(token, db))

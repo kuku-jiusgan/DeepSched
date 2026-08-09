@@ -52,13 +52,16 @@ def load_fixed_slots(
     query = db.query(TimeSlot).filter(
         TimeSlot.status.in_(FIXED_SLOT_STATUSES),
     )
-    if excluded_task_ids:
-        query = query.filter(~TimeSlot.task_id.in_(excluded_task_ids))
     slots = query.order_by(TimeSlot.instrument_id, TimeSlot.plan_start, TimeSlot.id).all()
     fixed_slots = [
         slot for slot in slots
         if slot.status != "completed" or (slot.actual_start and slot.actual_end)
     ]
+    if excluded_task_ids:
+        fixed_slots = [
+            slot for slot in fixed_slots
+            if slot.task_id not in excluded_task_ids or _is_protected_slot(slot)
+        ]
     if relevant_instrument_ids is None and relevant_assignee_ids is None:
         return fixed_slots
 

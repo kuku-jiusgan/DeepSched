@@ -40,17 +40,17 @@
             <div class="today-card-actions">
               <a-button
                 v-if="canStartTask(card.task)"
-                v-operation="'start'"
+                v-operation.readonly="'start'"
                 size="small"
                 class="workspace-action-button workspace-action-button-primary"
                 @click="emit('start', card.task)"
               >
-                <PlayCircleOutlined /> {{ card.task.execution_status === 'paused' ? '恢复任务' : '开始任务' }}
+                <PlayCircleOutlined /> {{ card.actionStatus === 'paused' ? '恢复任务' : '开始任务' }}
               </a-button>
-              <a-button v-if="canCompleteTask(card.task)" v-operation="'complete'" size="small" class="workspace-action-button workspace-action-button-success" @click="emit('complete', card.task)">确认完成</a-button>
+              <a-button v-if="canCompleteTask(card.task)" v-operation.readonly="'complete'" size="small" class="workspace-action-button workspace-action-button-success" @click="emit('complete', card.task)">确认完成</a-button>
               <a-button
-                v-if="card.task.execution_status === 'running'"
-                v-operation="'complete'"
+                v-if="canPauseTask(card.task)"
+                v-operation.readonly="'pause'"
                 size="small"
                 class="workspace-action-button workspace-action-button-warning"
                 @click="emit('pause', card.task)"
@@ -58,11 +58,9 @@
                 <PauseCircleOutlined /> 暂停
               </a-button>
               <a-tooltip :title="card.nightRunDisabledReason">
-                <span v-operation="'night_run'">
-                  <a-button size="small" class="workspace-action-button workspace-action-button-primary" :loading="card.isNightRunLoading" :disabled="!card.canNightRun" @click="openAutoSequence(card)">夜间运行</a-button>
-                </span>
+                <a-button v-operation.readonly="'night_run'" size="small" class="workspace-action-button workspace-action-button-primary" :loading="card.isNightRunLoading" :disabled="!card.canNightRun" @click="openAutoSequence(card)">夜间运行</a-button>
               </a-tooltip>
-              <a-button v-operation="'delay'" size="small" class="workspace-action-button workspace-action-button-danger" @click="openDelayReport(card)">延期使用</a-button>
+              <a-button v-operation.readonly="'delay'" size="small" class="workspace-action-button workspace-action-button-danger" @click="openDelayReport(card)">延期使用</a-button>
             </div>
           </article>
         </div>
@@ -165,7 +163,7 @@ import type { WorkspaceTask } from '@/domains/tasks/workspaceTask'
 import { actionableSlotId } from '@/domains/tasks/workspaceTask'
 import dayjs from 'dayjs'
 import {
-  actualText, canCompleteTask, canStartTask, currentUserName, formatHours,
+  actualText, canCompleteTask, canPauseTask, canStartTask, currentUserName, formatHours,
   formatInstrumentText, formatProjectText, formatTaskTime, getDelayText, getNightRunEligibility,
   isCompletionConfirmTask, isHalfHourDuration, isWorkspaceExceptionConfirmTask, maxNightRunHours,
   nightRunEndTime, normalizeWorkdayEndTime, parseNightClock, scheduleText, statusLabel,
@@ -191,6 +189,7 @@ interface TodayTaskCard {
   tagText: string
   tagColor: string
   statusText: string
+  actionStatus: string
   earliestStart: string
   latestEnd: string
   nightRunSummary: string
@@ -359,7 +358,7 @@ function buildTodayCard(task: WorkspaceTask, category: TodayCardCategory): Today
     category,
     task,
     projectText: formatProjectText(task),
-    taskText: task.task_name || '未命名任务',
+    taskText: formatTaskName(task),
     instrumentText: formatInstrumentText(task),
     ownerText: task.assignee_name || currentUserName(),
     scheduleText: scheduleText(task),
@@ -367,6 +366,7 @@ function buildTodayCard(task: WorkspaceTask, category: TodayCardCategory): Today
     tagText: tagTextMap[category],
     tagColor: tagColorMap[category],
     statusText: statusLabel(task.execution_status),
+    actionStatus: task.actionable_slot?.status || task.execution_status,
     earliestStart: nightStart,
     latestEnd: NIGHT_RESERVE_END,
     nightRunSummary: storedNightRun ? formatNightRunSummary(storedNightRun) : '',
@@ -375,6 +375,12 @@ function buildTodayCard(task: WorkspaceTask, category: TodayCardCategory): Today
     isNightRunLoading: isWorkingHoursLoading.value,
     nightRunDisabledReason: nightRunDisabledReason(task, storedNightRun),
   }
+}
+
+function formatTaskName(task: WorkspaceTask) {
+  return task.top_level_task_name && task.top_level_task_name !== task.task_name
+    ? `${task.top_level_task_name}·${task.task_name || '未命名任务'}`
+    : (task.task_name || '未命名任务')
 }
 
 function openAutoSequence(card: TodayTaskCard) {
@@ -547,6 +553,16 @@ function formatStoredEndTime(value: string, startTime?: dayjs.Dayjs) {
   return end.format('HH:mm')
 }
 
+function apiErrorMessage(error: unknown) {
+  if (typeof error !== 'object' || error === null || !('response' in error)) return ''
+  const response = (error as { response?: unknown }).response
+  if (typeof response !== 'object' || response === null || !('data' in response)) return ''
+  const data = (response as { data?: unknown }).data
+  if (typeof data !== 'object' || data === null || !('detail' in data)) return ''
+  const detail = (data as { detail?: unknown }).detail
+  return typeof detail === 'string' ? detail : ''
+}
+
 async function submitDelayReport() {
   if (!selectedCard.value) return
   const slotId = actionableSlotId(selectedCard.value.task)
@@ -567,8 +583,8 @@ async function submitDelayReport() {
     message.success(`已顺延排程，影响 ${result.shifted_slots} 个时间槽`)
     delayReportOpen.value = false
     emit('refreshed')
-  } catch {
-    message.error('异常延期提交失败')
+  } catch (error: unknown) {
+    message.error(apiErrorMessage(error) || '异常延期提交失败')
   } finally {
     delaySubmitting.value = false
   }

@@ -138,6 +138,7 @@ import {
 import dayjs from 'dayjs'
 import { getTaskTypes, getTimeslots, getUserDirectory, type TaskTypeConfig, type UserDirectoryEntry } from '@/services/api'
 import type { TimeSlot } from '@/types'
+import { taskStatusLabel } from '@/utils/statusMeta'
 import { useHumanGantt, type HumanGanttViewMode } from './useHumanGantt'
 import { centerGanttTimelineOnCurrentTime, scrollGanttTimelineToStart } from './ganttTimelineScroll'
 
@@ -278,15 +279,7 @@ function getTaskTypeLabel(code?: string | null) {
 }
 
 function getStatusLabel(status: string) {
-  const labels: Record<string, string> = {
-    scheduled: '待处理',
-    pending: '待处理',
-    running: '运行中',
-    completed: '已完成',
-    blocked: '阻塞',
-    paused: '已暂停', interrupted: '已中断',
-  }
-  return labels[status] || status
+  return taskStatusLabel(status)
 }
 
 function hasDelay(slot: TimeSlot) {

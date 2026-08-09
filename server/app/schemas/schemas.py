@@ -76,6 +76,9 @@ class TaskOut(BaseModel):
     schedule_dirty: bool = False
     schedule_lock_status: Literal["none", "frozen", "running", "completed"] = "none"
     can_edit_schedule_fields: bool = True
+    can_edit_basic_fields: bool = True
+    can_edit_schedule_window: bool = True
+    can_edit_resource_fields: bool = True
     earliest_start: Optional[datetime]
     latest_due: Optional[datetime]
     priority_weight: float
@@ -83,7 +86,6 @@ class TaskOut(BaseModel):
     predecessor_ids: List[int] = []
     assignee_id: Optional[int] = None
     assignee_name: Optional[str] = None
-    project_id: Optional[int] = None
     delay_hours: Optional[float] = None
     delay_reason: Optional[str] = None
     delay_reported_at: Optional[datetime] = None
@@ -116,6 +118,7 @@ class ProjectOut(BaseModel):
     code: str
     client_name: Optional[str]
     estimated_hours: Optional[float] = None
+    actual_hours: float = 0
     priority: int
     status: str
     manager_id: Optional[int] = None
@@ -156,6 +159,7 @@ class DetectionTaskOut(BaseModel):
     start_date: datetime
     end_date: datetime
     task: TaskOut
+    actual_hours: float = 0
     schedule_status: Optional[str] = None
     schedule_message: Optional[str] = None
     preview_token: Optional[str] = None
@@ -242,6 +246,7 @@ class TimeSlotOut(BaseModel):
     actual_end: Optional[datetime]
     tier: str
     status: str
+    execution_status: str
     task_name: Optional[str] = None
     task_type: Optional[str] = None
     task_status: Optional[str] = None
@@ -256,6 +261,7 @@ class TimeSlotOut(BaseModel):
     delay_hours: Optional[float] = None
     delay_reason: Optional[str] = None
     delay_reported_at: Optional[datetime] = None
+    delay_started_at: Optional[datetime] = None
     parent_id: Optional[int] = None
     children: List["TaskOut"] = []
     is_external_gate: bool = False
@@ -321,6 +327,8 @@ class ProjectScheduleImpact(BaseModel):
     project_code: str
     project_name: str
     project_end_date: Optional[datetime] = None
+    original_start: Optional[datetime] = None
+    new_start: Optional[datetime] = None
     original_completion: Optional[datetime] = None
     new_completion: Optional[datetime] = None
     delay_hours: float = 0

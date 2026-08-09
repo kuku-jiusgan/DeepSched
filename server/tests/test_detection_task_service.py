@@ -7,13 +7,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Instrument, Project, Task, User
+from app.models import Instrument, Project, Task, TimeSlot, User
 from app.services.detection_task_service import (
     DetectionTaskInvalidError,
     create_detection_task,
     delete_detection_task,
     list_detection_tasks,
     update_detection_task,
+    DetectionTaskNotFoundError,
 )
 
 
@@ -65,8 +66,9 @@ class DetectionTaskServiceTest(unittest.TestCase):
 
         self.assertEqual(["JC-001"], [item.code for item in result])
 
-    def test_non_admin_only_sees_own_detection_tasks(self):
-        other = User(username="other", display_name="其他负责人", role="项目管理员", is_active=True)
+    def test_technician_only_sees_own_detection_tasks(self):
+        self.user.role = "技术员"
+        other = User(username="other", display_name="其他负责人", role="技术员", is_active=True)
         own_detection = Project(code="JC-OWN", name="本人检测", project_kind="detection")
         other_detection = Project(code="JC-OTHER", name="他人检测", project_kind="detection")
         self.db.add_all([other, own_detection, other_detection])
@@ -80,6 +82,32 @@ class DetectionTaskServiceTest(unittest.TestCase):
         result = list_detection_tasks(self.db, self.user)
 
         self.assertEqual(["JC-OWN"], [item.code for item in result])
+
+    def test_project_manager_cannot_update_another_assignees_detection_task(self):
+        assignee = User(username="assignee", display_name="执行人", role="技术员", is_active=True)
+        project = Project(
+            code="JC-MANAGED", name="项目管理员维护的检测", project_kind="detection",
+            start_date=datetime(2026, 8, 6), end_date=datetime(2026, 8, 7),
+        )
+        self.db.add_all([assignee, project])
+        self.db.flush()
+        task = Task(
+            project_id=project.id, name=project.name, task_type="instrument",
+            est_duration_hours=2, assignee_id=assignee.id,
+            instrument_ids=[self.instrument.id], requires_instrument=True,
+        )
+        self.db.add(task)
+        self.db.commit()
+        data = SimpleNamespace(
+            code=project.code, name=project.name, client_name=None, priority=3,
+            manager_id=assignee.id, start_date=project.start_date, end_date=project.end_date,
+            task_type=task.task_type, est_duration_hours=2, switchover_hours=0,
+            requires_instrument=True, requires_human=False, allow_split=False,
+            allow_transfer=False, instrument_ids=[self.instrument.id], assignee_id=assignee.id,
+        )
+
+        with self.assertRaises(DetectionTaskNotFoundError):
+            update_detection_task(self.db, project.id, data, self.user)
 
     @patch("app.services.detection_task_service.apply_project_plan")
     def test_completed_detection_task_cannot_be_deleted(self, apply_plan):
@@ -140,6 +168,87 @@ class DetectionTaskServiceTest(unittest.TestCase):
         self.assertEqual("pending", project.tasks[0].status)
         self.assertEqual("ok", result["status"])
         apply_plan.assert_called_once_with(self.db, project.id)
+
+    @patch("app.services.detection_task_service.apply_project_plan")
+    def test_updates_frozen_detection_task_name_and_end_date_without_reschedule(self, apply_plan):
+        project = Project(
+            code="JC-FROZEN", name="原检测", project_kind="detection",
+            start_date=datetime(2026, 8, 6), end_date=datetime(2026, 8, 7, 23, 59, 59),
+            priority=3, manager_id=self.user.id,
+        )
+        task = Task(
+            project=project, name="原检测", task_type="instrument",
+            status="scheduled", est_duration_hours=4, switchover_hours=0,
+            requires_instrument=True, requires_human=True, allow_split=False,
+            allow_transfer=False, instrument_ids=[self.instrument.id],
+            assignee_id=self.user.id,
+        )
+        self.db.add_all([project, task])
+        self.db.flush()
+        self.db.add(TimeSlot(
+            task_id=task.id, instrument_id=self.instrument.id,
+            plan_start=datetime(2026, 8, 6, 13, 30),
+            plan_end=datetime(2026, 8, 6, 17, 30),
+            tier="frozen", status="scheduled",
+        ))
+        self.db.commit()
+        data = SimpleNamespace(
+            code=project.code, name="调整后的检测", client_name=project.client_name,
+            priority=project.priority, manager_id=project.manager_id,
+            start_date=project.start_date, end_date=datetime(2026, 8, 8),
+            task_type=task.task_type, est_duration_hours=task.est_duration_hours,
+            switchover_hours=task.switchover_hours,
+            requires_instrument=task.requires_instrument,
+            requires_human=task.requires_human, allow_split=task.allow_split,
+            allow_transfer=task.allow_transfer,
+            instrument_ids=[self.instrument.id], assignee_id=self.user.id,
+        )
+
+        project, result = update_detection_task(self.db, project.id, data, self.user)
+
+        self.assertEqual("调整后的检测", project.name)
+        self.assertEqual("调整后的检测", project.tasks[0].name)
+        self.assertEqual(datetime(2026, 8, 8, 23, 59, 59, 999999), project.end_date)
+        self.assertEqual("ok", result["status"])
+        apply_plan.assert_not_called()
+
+    def test_rejects_resource_change_for_frozen_detection_task(self):
+        other_instrument = Instrument(code="LC-02", name="备用仪器")
+        project = Project(
+            code="JC-FROZEN-RESOURCE", name="冻结检测", project_kind="detection",
+            start_date=datetime(2026, 8, 6), end_date=datetime(2026, 8, 7, 23, 59, 59),
+            priority=3, manager_id=self.user.id,
+        )
+        task = Task(
+            project=project, name="冻结检测", task_type="instrument",
+            status="scheduled", est_duration_hours=4, switchover_hours=0,
+            requires_instrument=True, requires_human=True, allow_split=False,
+            allow_transfer=False, instrument_ids=[self.instrument.id],
+            assignee_id=self.user.id,
+        )
+        self.db.add_all([other_instrument, project, task])
+        self.db.flush()
+        self.db.add(TimeSlot(
+            task_id=task.id, instrument_id=self.instrument.id,
+            plan_start=datetime(2026, 8, 6, 13, 30),
+            plan_end=datetime(2026, 8, 6, 17, 30),
+            tier="frozen", status="scheduled",
+        ))
+        self.db.commit()
+        data = SimpleNamespace(
+            code=project.code, name=project.name, client_name=project.client_name,
+            priority=project.priority, manager_id=project.manager_id,
+            start_date=project.start_date, end_date=project.end_date,
+            task_type=task.task_type, est_duration_hours=task.est_duration_hours,
+            switchover_hours=task.switchover_hours,
+            requires_instrument=task.requires_instrument,
+            requires_human=task.requires_human, allow_split=task.allow_split,
+            allow_transfer=task.allow_transfer,
+            instrument_ids=[other_instrument.id], assignee_id=self.user.id,
+        )
+
+        with self.assertRaisesRegex(DetectionTaskInvalidError, "不能修改指定仪器"):
+            update_detection_task(self.db, project.id, data, self.user)
 
 
 if __name__ == "__main__":

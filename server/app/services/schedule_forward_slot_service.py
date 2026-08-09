@@ -20,6 +20,11 @@ def build_forward_slots(
     earliest_start: datetime,
     working_options: dict,
 ) -> list[tuple[datetime, datetime]]:
+    if not task.allow_split:
+        return _build_contiguous_forward_slots(
+            db, task, instrument_id, duration_minutes, earliest_start, working_options
+        )
+
     remaining = duration_minutes
     slots: list[tuple[datetime, datetime]] = []
     chunk_start: datetime | None = None
@@ -42,6 +47,67 @@ def build_forward_slots(
     if remaining > 0:
         return []
     return slots
+
+
+def _build_contiguous_forward_slots(
+    db: Session,
+    task: Task,
+    instrument_id: int,
+    duration_minutes: int,
+    earliest_start: datetime,
+    working_options: dict,
+) -> list[tuple[datetime, datetime]]:
+    """Find one continuous logical execution window for a non-splittable task.
+
+    Non-working periods (overnight/weekends) are allowed inside the window and
+    are emitted as separate display ranges. Resource conflicts, however,
+    invalidate the whole candidate window instead of splitting the task.
+    """
+    cursor = _ceil_to_schedule_unit(earliest_start)
+    horizon_end = working_options["horizon_end"]
+    while cursor < horizon_end:
+        candidate = cursor
+        remaining = duration_minutes
+        ranges: list[tuple[datetime, datetime]] = []
+        range_start: datetime | None = None
+        conflict = False
+
+        while remaining > 0 and candidate < horizon_end:
+            next_candidate = candidate + timedelta(minutes=SCHEDULE_UNIT_MINUTES)
+            if _is_working_unit(candidate, working_options):
+                if not _can_use_unit(db, task, instrument_id, candidate, next_candidate, working_options):
+                    conflict = True
+                    cursor = next_candidate
+                    break
+                if range_start is None:
+                    range_start = candidate
+                remaining -= SCHEDULE_UNIT_MINUTES
+            elif range_start is not None:
+                ranges.append((range_start, candidate))
+                range_start = None
+            candidate = next_candidate
+
+        if conflict:
+            continue
+        if remaining > 0:
+            return []
+        if range_start is not None:
+            ranges.append((range_start, candidate))
+        return ranges
+    return []
+
+
+def _is_working_unit(start: datetime, working_options: dict) -> bool:
+    current_minutes = start.hour * 60 + start.minute
+    return (
+        working_options["day_start_minutes"] <= current_minutes < working_options["day_end_minutes"]
+        and is_allowed_calendar_day(
+            start.date(),
+            working_options["calendar_days"],
+            working_options["include_weekends"],
+            working_options["include_holidays"],
+        )
+    )
 
 
 def _can_use_unit(
