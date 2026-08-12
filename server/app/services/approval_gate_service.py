@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.models import AuditLog, Project, Task, TaskDependency, TimeSlot, User
+from app.domain.task_status import resolve_task_execution_status
 from app.schemas.approval_gate_schemas import (
     ApprovalGateActionOut,
     ApprovalGateCreate,
@@ -11,6 +12,7 @@ from app.schemas.approval_gate_schemas import (
     ApprovalGateSubmit,
     ApprovalGateTaskRef,
 )
+from app.services.approval_gate_schedule_context import approval_top_level_task_name
 from app.schemas.schemas import ProjectPlanInsertConfirmRequest
 from app.services.instrument_status_service import delete_time_slots_and_refresh
 from app.services.project_access_service import FULL_PROJECT_ACCESS_ROLES, can_view_project
@@ -218,7 +220,7 @@ def approve_approval_gate(db, gate_id: int, note: str | None, user: User) -> App
     previous_status = gate.gate_status
     approved_at = datetime.now()
     gate.gate_status = "approved"
-    gate.status = "done"
+    gate.status = "completed"
     gate.submitted_at = gate.submitted_at or approved_at
     gate.approved_at = approved_at
     gate.approved_by = user.id
@@ -249,11 +251,12 @@ def confirm_approval_schedule(db, gate_id: int, preview_token: str, user: User) 
     if gate.approval_schedule_status != "confirmation_required":
         raise ApprovalGateInvalidError("当前签批没有待确认的跨项目排程")
     from app.services.project_plan_apply_service import confirm_project_plan_insert
+    from app.services.approval_gate_schedule_context import build_approval_schedule_context
 
     result = confirm_project_plan_insert(db, ProjectPlanInsertConfirmRequest(
         project_id=gate.project_id,
         preview_token=preview_token,
-    ))
+    ), approval_context=build_approval_schedule_context(db, gate))
     _store_schedule_result(db, gate, result, is_forecast=False)
     _audit(db, user, "approval_schedule_impact_confirmed", gate, {
         "schedule_run_id": result.schedule_run_id,
@@ -327,8 +330,13 @@ def scan_approval_deadlines(db) -> int:
 
 def _apply_gate_schedule(db, gate: Task, is_forecast: bool):
     from app.services.project_plan_apply_service import apply_project_plan
+    from app.services.approval_gate_schedule_context import build_approval_schedule_context
 
-    result = apply_project_plan(db, gate.project_id)
+    result = apply_project_plan(
+        db,
+        gate.project_id,
+        approval_context=build_approval_schedule_context(db, gate),
+    )
     gate = _gate_or_404(db, gate.id)
     _store_schedule_result(db, gate, result, is_forecast)
     db.commit()
@@ -362,7 +370,7 @@ def _gate_out(db, gate: Task, user: User) -> ApprovalGateOut:
         ApprovalGateTaskRef(
             id=dependency.predecessor.id,
             name=dependency.predecessor.name,
-            status=dependency.predecessor.status,
+            status=resolve_task_execution_status(dependency.predecessor),
             completed_at=_task_completed_at(dependency.predecessor),
         )
         for dependency in gate.predecessors
@@ -400,6 +408,7 @@ def _gate_out(db, gate: Task, user: User) -> ApprovalGateOut:
         assignee_name=gate.assignee.display_name if gate.assignee else None,
         project_end_date=project.end_date,
         name=gate.name,
+        top_level_task_name=approval_top_level_task_name(db, gate),
         gate_status=gate.gate_status or "not_submitted",
         expected_approval_at=gate.expected_approval_at,
         submitted_at=gate.submitted_at,

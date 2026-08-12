@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from app.models import Task, TimeSlot
+from app.models import Instrument, InstrumentFault, MaintenanceWindow, Task, TimeSlot
 from app.services.scheduler_helpers import is_allowed_calendar_day
 
 
@@ -19,10 +19,17 @@ def build_forward_slots(
     duration_minutes: int,
     earliest_start: datetime,
     working_options: dict,
+    ignore_instrument_free_human_conflicts: bool = False,
 ) -> list[tuple[datetime, datetime]]:
     if not task.allow_split:
         return _build_contiguous_forward_slots(
-            db, task, instrument_id, duration_minutes, earliest_start, working_options
+            db,
+            task,
+            instrument_id,
+            duration_minutes,
+            earliest_start,
+            working_options,
+            ignore_instrument_free_human_conflicts,
         )
 
     remaining = duration_minutes
@@ -32,7 +39,15 @@ def build_forward_slots(
 
     while remaining > 0 and cursor < working_options["horizon_end"]:
         next_cursor = cursor + timedelta(minutes=SCHEDULE_UNIT_MINUTES)
-        if _can_use_unit(db, task, instrument_id, cursor, next_cursor, working_options):
+        if _can_use_unit(
+            db,
+            task,
+            instrument_id,
+            cursor,
+            next_cursor,
+            working_options,
+            ignore_instrument_free_human_conflicts,
+        ):
             if chunk_start is None:
                 chunk_start = cursor
             remaining -= SCHEDULE_UNIT_MINUTES
@@ -56,6 +71,7 @@ def _build_contiguous_forward_slots(
     duration_minutes: int,
     earliest_start: datetime,
     working_options: dict,
+    ignore_instrument_free_human_conflicts: bool,
 ) -> list[tuple[datetime, datetime]]:
     """Find one continuous logical execution window for a non-splittable task.
 
@@ -75,7 +91,15 @@ def _build_contiguous_forward_slots(
         while remaining > 0 and candidate < horizon_end:
             next_candidate = candidate + timedelta(minutes=SCHEDULE_UNIT_MINUTES)
             if _is_working_unit(candidate, working_options):
-                if not _can_use_unit(db, task, instrument_id, candidate, next_candidate, working_options):
+                if not _can_use_unit(
+                    db,
+                    task,
+                    instrument_id,
+                    candidate,
+                    next_candidate,
+                    working_options,
+                    ignore_instrument_free_human_conflicts,
+                ):
                     conflict = True
                     cursor = next_candidate
                     break
@@ -117,6 +141,7 @@ def _can_use_unit(
     start: datetime,
     end: datetime,
     working_options: dict,
+    ignore_instrument_free_human_conflicts: bool = False,
 ) -> bool:
     current_minutes = start.hour * 60 + start.minute
     if (
@@ -128,6 +153,14 @@ def _can_use_unit(
             working_options["include_weekends"],
             working_options["include_holidays"],
         )
+    ):
+        return False
+    if _instrument_is_unavailable(
+        db,
+        instrument_id,
+        start,
+        end,
+        working_options,
     ):
         return False
     instrument_conflict = (
@@ -155,7 +188,7 @@ def _can_use_unit(
         return False
     if not task.requires_human or task.assignee_id is None:
         return True
-    human_conflict = (
+    human_conflict_query = (
         db.query(TimeSlot.id)
         .join(Task, Task.id == TimeSlot.task_id)
         .filter(
@@ -177,9 +210,59 @@ def _can_use_unit(
                 ),
             ),
         )
-        .first()
     )
+    if ignore_instrument_free_human_conflicts:
+        human_conflict_query = human_conflict_query.filter(
+            Task.requires_instrument.is_(True),
+        )
+    human_conflict = human_conflict_query.first()
     return human_conflict is None
+
+
+def _instrument_is_unavailable(
+    db: Session,
+    instrument_id: int,
+    start: datetime,
+    end: datetime,
+    working_options: dict,
+) -> bool:
+    cache = working_options.setdefault("instrument_unavailable_windows", {})
+    if instrument_id not in cache:
+        cache[instrument_id] = _load_instrument_unavailable_windows(db, instrument_id)
+    return any(
+        unavailable_start < end and unavailable_end > start
+        for unavailable_start, unavailable_end in cache[instrument_id]
+    )
+
+
+def _load_instrument_unavailable_windows(
+    db: Session,
+    instrument_id: int,
+) -> list[tuple[datetime, datetime]]:
+    windows = [
+        (window.start_time, window.end_time)
+        for window in db.query(MaintenanceWindow).filter(
+            MaintenanceWindow.instrument_id == instrument_id,
+        ).all()
+    ]
+    faults = db.query(InstrumentFault).filter(
+        InstrumentFault.instrument_id == instrument_id,
+        InstrumentFault.status == "open",
+    ).all()
+    windows.extend(
+        (
+            fault.reported_at or datetime.min,
+            fault.estimated_resolved_at or datetime.max,
+        )
+        for fault in faults
+    )
+    instrument_is_faulted = db.query(Instrument.id).filter(
+        Instrument.id == instrument_id,
+        Instrument.status == "fault",
+    ).first() is not None
+    if instrument_is_faulted and not faults:
+        windows.append((datetime.min, datetime.max))
+    return windows
 
 
 def _ceil_to_schedule_unit(value: datetime) -> datetime:

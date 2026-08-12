@@ -45,7 +45,7 @@ def complete_task_and_shift(
         return {"status": "error", "message": "任务没有排程时段"}
 
     planned_end = max(slot.plan_end for slot in task_slots)
-    task.status = "done"
+    task.status = "completed"
     _close_running_execution_segment(db, task.id, end_time)
     if end_time > planned_end:
         mark_task_delayed(task)
@@ -293,6 +293,7 @@ def _forward_shift_instrument_queue(
                     status="scheduled",
                 )
             )
+        db.flush()
         cursors[slot_instrument_id] = new_slots[-1][1]
         moved += 1
         moved_task_details.append({

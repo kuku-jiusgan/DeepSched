@@ -58,11 +58,11 @@ class TaskActionReminderServiceTest(unittest.TestCase):
             self.task,
             self.slot,
             AlertRule(
-                name="任务开始延迟",
+                name="任务开始前提醒",
                 rule_type="task_start_delay",
                 enabled=True,
-                notify_roles='["项目负责人","分析员"]',
-                threshold_minutes=0,
+                notify_roles='["任务负责人"]',
+                threshold_minutes=15,
             ),
             AlertRule(
                 name="任务结束延期",
@@ -77,17 +77,17 @@ class TaskActionReminderServiceTest(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def test_start_time_sends_once_to_assignee_and_manager(self):
-        first = scan_task_action_reminders(self.db, self.now)
-        second = scan_task_action_reminders(self.db, self.now + timedelta(minutes=1))
+    def test_notifies_assignee_once_fifteen_minutes_before_start(self):
+        first = scan_task_action_reminders(self.db, self.now - timedelta(minutes=15))
+        second = scan_task_action_reminders(self.db, self.now - timedelta(minutes=14))
 
         site_notifications = self._site_notifications("task_start_delay")
-        self.assertEqual(2, first["start_reminders"])
+        self.assertEqual(1, first["start_reminders"])
         self.assertEqual(0, second["start_reminders"])
         self.db.refresh(self.task)
-        self.assertEqual("delayed", self.task.delay_status)
-        self.assertEqual({"analyst", "manager"}, {item.user_name for item in site_notifications})
-        self.assertTrue(all("请点击开始" in item.title for item in site_notifications))
+        self.assertEqual("not_delayed", self.task.delay_status)
+        self.assertEqual(["analyst"], [item.user_name for item in site_notifications])
+        self.assertIn("15 分钟后开始", site_notifications[0].title)
 
     def test_start_threshold_is_honored(self):
         self.db.query(AlertRule).filter(
@@ -95,11 +95,11 @@ class TaskActionReminderServiceTest(unittest.TestCase):
         ).one().threshold_minutes = 30
         self.db.commit()
 
-        before = scan_task_action_reminders(self.db, self.now + timedelta(minutes=29))
-        due = scan_task_action_reminders(self.db, self.now + timedelta(minutes=30))
+        before = scan_task_action_reminders(self.db, self.now - timedelta(minutes=31))
+        due = scan_task_action_reminders(self.db, self.now - timedelta(minutes=30))
 
         self.assertEqual(0, before["start_reminders"])
-        self.assertEqual(2, due["start_reminders"])
+        self.assertEqual(1, due["start_reminders"])
 
     def test_started_task_only_receives_end_reminder_at_plan_end(self):
         self.task.status = "running"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.models import Task, TimeSlot
 from app.services.push_notification_service import push_by_rule
@@ -9,6 +9,22 @@ from app.services.push_notification_service import push_by_rule
 ADVANCE_NOTIFICATION_RULE_TYPE = "task_schedule_advanced"
 DELAYED_NOTIFICATION_RULE_TYPE = "task_schedule_delayed"
 ScheduleWindow = tuple[datetime, datetime]
+EXTERNAL_NOTIFICATION_LOOKAHEAD = timedelta(hours=48)
+URGENT_TASK_STATUSES = {"blocked", "interrupted"}
+
+
+def _should_deliver_externally(
+    task: Task,
+    new_window: ScheduleWindow,
+    now: datetime | None = None,
+) -> bool:
+    current = now or datetime.now()
+    if new_window[0] <= current + EXTERNAL_NOTIFICATION_LOOKAHEAD:
+        return True
+    if task.status in URGENT_TASK_STATUSES:
+        return True
+    project_end = task.project.end_date if task.project else None
+    return bool(project_end and new_window[1] > project_end)
 
 
 def _format_time_change(total_seconds: float) -> str:
@@ -17,6 +33,37 @@ def _format_time_change(total_seconds: float) -> str:
         days = round(hours / 24, 1)
         return f"{days:g} 天"
     return f"{hours:g} 小时"
+
+
+def _format_window(window: ScheduleWindow) -> str:
+    start, end = window
+    date_label = f"{start.month}/{start.day}（周{'一二三四五六日'[start.weekday()]}）"
+    duration = (end - start).total_seconds() / 3600
+    return f"{date_label}{start:%H:%M}–{end:%H:%M}（{duration:g}小时）"
+
+
+def _format_original_window(window: ScheduleWindow, change: str) -> str:
+    start, end = window
+    if start.date() == end.date():
+        period = f"{start.month}/{start.day} {start:%H:%M}–{end:%H:%M}"
+    else:
+        period = f"{start.month}/{start.day}–{end.month}/{end.day}"
+    return f"{period}（{change}）"
+
+
+def _schedule_notification_content(
+    task_label: str,
+    new_window: ScheduleWindow,
+    original_window: ScheduleWindow,
+    change: str,
+    reason: str,
+) -> str:
+    return (
+        f"您的任务：{task_label}\n\n"
+        f"新时间：{_format_window(new_window)}\n\n"
+        f"原时间：{_format_original_window(original_window, change)}\n\n"
+        f"原因：{reason}"
+    )
 
 
 def capture_task_schedule_windows(
@@ -65,23 +112,18 @@ def notify_rescheduled_tasks_advanced(
             continue
         project_code = task.project.code if task.project else ""
         task_label = f"{project_code} · {task.name}" if project_code else task.name
-        advanced_duration = _format_time_change(
-            (original_window[0] - new_window[0]).total_seconds(),
-        )
         sent += push_by_rule(
             db,
             ADVANCE_NOTIFICATION_RULE_TYPE,
             [task.assignee],
-            "排程调整后，您的任务已前移",
-            (
-                f"因{reason}，您的任务“{task_label}”计划开始时间由 "
-                f"{original_window[0]:%Y-%m-%d %H:%M} 调整为 "
-                f"{new_window[0]:%Y-%m-%d %H:%M}，"
-                f"计划开始时间提前约 {advanced_duration}，请按新时间安排。"
+            "任务前移通知",
+            _schedule_notification_content(
+                task_label, new_window, original_window, "已提前", f"排程调整：{reason}。",
             ),
             related_entity_type="task",
             related_entity_id=task.id,
             context_roles=["任务负责人"],
+            external_delivery=_should_deliver_externally(task, new_window),
         )
     return sent
 
@@ -100,13 +142,13 @@ def notify_rescheduled_tasks_delayed(db, original_windows: dict[int, ScheduleWin
             continue
         project_code = task.project.code if task.project else ""
         task_label = f"{project_code} · {task.name}" if project_code else task.name
-        delayed_duration = _format_time_change(
-            (new_window[0] - original_window[0]).total_seconds(),
-        )
         sent += push_by_rule(
-            db, DELAYED_NOTIFICATION_RULE_TYPE, [task.assignee], "排程调整后，您的任务被动后移",
-            f"因{reason}，您的任务“{task_label}”计划开始时间由 {original_window[0]:%Y-%m-%d %H:%M} 调整为 {new_window[0]:%Y-%m-%d %H:%M}，计划开始时间推迟约 {delayed_duration}，请按新时间安排。",
+            db, DELAYED_NOTIFICATION_RULE_TYPE, [task.assignee], "任务后移通知",
+            _schedule_notification_content(
+                task_label, new_window, original_window, "已后移", f"排程调整：{reason}。",
+            ),
             related_entity_type="task", related_entity_id=task.id, context_roles=["任务负责人"],
+            external_delivery=_should_deliver_externally(task, new_window),
         )
     return sent
 
@@ -128,22 +170,30 @@ def notify_advanced_task_assignees(
             continue
         project_code = task.project.code if task.project else ""
         task_label = f"{project_code} · {task.name}" if project_code else task.name
+        completed_project_code = completed_task.project.code if completed_task.project else ""
+        completed_label = (
+            f"{completed_project_code} · {completed_task.name}"
+            if completed_project_code else completed_task.name
+        )
         sent += push_by_rule(
             db,
             ADVANCE_NOTIFICATION_RULE_TYPE,
             [task.assignee],
-            "前序任务提前完成，您的任务已前移",
-            (
-                f"仪器前序任务“{completed_task.name}”已于 {completed_at:%Y-%m-%d %H:%M} "
-                f"提前完成（原计划完成时间 {planned_end:%Y-%m-%d %H:%M}）。"
-                f"您的任务“{task_label}”已由 "
-                f"{detail['original_start']:%Y-%m-%d %H:%M}–"
-                f"{detail['original_end']:%Y-%m-%d %H:%M} 前移至 "
-                f"{detail['new_start']:%Y-%m-%d %H:%M}–"
-                f"{detail['new_end']:%Y-%m-%d %H:%M}，请按新时间安排。"
+            "任务前移通知",
+            _schedule_notification_content(
+                task_label,
+                (detail["new_start"], detail["new_end"]),
+                (detail["original_start"], detail["original_end"]),
+                "已提前",
+                f"前序任务“{completed_label}”今日已提前完成。",
             ),
             related_entity_type="task",
             related_entity_id=task.id,
             context_roles=["任务负责人"],
+            external_delivery=_should_deliver_externally(
+                task,
+                (detail["new_start"], detail["new_end"]),
+                completed_at,
+            ),
         )
     return sent

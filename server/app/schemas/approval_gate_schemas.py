@@ -43,6 +43,7 @@ class ApprovalGateOut(BaseModel):
     assignee_name: str | None = None
     project_end_date: datetime | None = None
     name: str
+    top_level_task_name: str | None = None
     gate_status: GateStatus
     expected_approval_at: datetime | None = None
     submitted_at: datetime | None = None

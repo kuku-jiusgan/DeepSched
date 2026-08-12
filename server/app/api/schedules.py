@@ -51,6 +51,7 @@ from app.domain.task_schedule import (
     actual_task_window as _task_actual_window,
     select_actionable_segment as _select_workspace_slot,
 )
+from app.domain.task_status import resolve_task_execution_status
 from app.repositories.workspace_repository import (
     filter_workspace_tasks_by_user as _filter_workspace_tasks_by_user,
     latest_open_task_slot as _latest_open_task_slot,
@@ -303,7 +304,7 @@ def _enrich_slot(slot: TimeSlot, db: Session) -> TimeSlotOut:
         task_id=slot.task_id, instrument_id=slot.instrument_id,
         plan_start=slot.plan_start, plan_end=slot.plan_end,
         actual_start=actual_start, actual_end=actual_end,
-        tier=slot.tier, status=slot.status, execution_status=slot.status,
+        tier=slot.tier, status=slot.status, execution_status=resolve_task_execution_status(task),
         task_name=task.name if task else None,
         task_type=task.task_type if task else None,
         task_status=task.status if task else None,

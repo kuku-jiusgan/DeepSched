@@ -244,17 +244,17 @@ const completion = computed(() => {
   const taskIds = new Set(recent.map(slot => slot.task_id))
   const completedTaskIds = new Set(
     recent
-      .filter(slot => isTaskCompleted(slot.task_status || slot.status))
+      .filter(slot => isTaskCompleted(displayTaskStatus(slot)))
       .map(slot => slot.task_id),
   )
   const pendingTaskIds = new Set(
     recent
-      .filter(slot => ['pending', 'ready', 'scheduled', 'running', 'frozen', 'waiting_external'].includes(slot.task_status || slot.status))
+      .filter(slot => ['pending', 'ready', 'scheduled', 'running', 'frozen', 'waiting_external'].includes(displayTaskStatus(slot)))
       .map(slot => slot.task_id),
   )
   for (const taskId of completedTaskIds) pendingTaskIds.delete(taskId)
   const completedAtByTask = new Map<number, Dayjs>()
-  for (const slot of recent.filter(item => isTaskCompleted(item.task_status || item.status))) {
+  for (const slot of recent.filter(item => isTaskCompleted(displayTaskStatus(item)))) {
     const completedAt = dayjs(slot.actual_end || slot.plan_end)
     const current = completedAtByTask.get(slot.task_id)
     if (!current || completedAt.isAfter(current)) completedAtByTask.set(slot.task_id, completedAt)
@@ -289,13 +289,14 @@ function instrumentPhotoClass(code: string) {
   return classes
 }
 function isWarningTask(slot: TimeSlot) {
-  const executionStatus = slot.task_status || slot.status
+  const executionStatus = displayTaskStatus(slot)
   return slot.delay_status === 'delayed' && !isTaskCompleted(executionStatus)
 }
 function warningSortTime(slot: TimeSlot) { return dayjs(slot.delay_reported_at || slot.plan_end || slot.plan_start).valueOf() }
-function warningTaskStatus(slot: TimeSlot) { const delayText = slot.delay_hours && slot.delay_hours > 0 ? `延期 ${slot.delay_hours}h` : `延期 ${formatDelayDuration(slot)}`; return `${taskStatusText(slot.task_status || slot.status)} · ${delayText}` }
-function warningTaskReason(slot: TimeSlot) { return slot.delay_reason || `计划结束 ${formatDateTime(slot.plan_end)}，${taskStatusText(slot.task_status || slot.status)}` }
+function warningTaskStatus(slot: TimeSlot) { const delayText = slot.delay_hours && slot.delay_hours > 0 ? `延期 ${slot.delay_hours}h` : `延期 ${formatDelayDuration(slot)}`; return `${taskStatusText(displayTaskStatus(slot))} · ${delayText}` }
+function warningTaskReason(slot: TimeSlot) { return slot.delay_reason || `计划结束 ${formatDateTime(slot.plan_end)}，${taskStatusText(displayTaskStatus(slot))}` }
 function taskStatusText(status: string) { return taskStatusLabel(status) }
+function displayTaskStatus(slot: TimeSlot) { return slot.execution_status || slot.task_status || slot.status }
 function formatDelayDuration(slot: TimeSlot) { const end = slot.actual_end ? dayjs(slot.actual_end) : now.value; const minutes = Math.max(1, end.diff(dayjs(slot.plan_end), 'minute')); const hours = Math.floor(minutes / 60); const remainingMinutes = minutes % 60; return hours ? `${hours}小时${remainingMinutes ? `${remainingMinutes}分钟` : ''}` : `${minutes}分钟` }
 function barHeight(value: number) { const max = Math.max(...completion.value.days.map(item => item.value), 1); return Math.max(8, value / max * 78) }
 function handleUserMenu({ key }: { key: string }) { if (key === 'logout') { localStorage.removeItem('token'); localStorage.removeItem('user'); router.push('/login') } }

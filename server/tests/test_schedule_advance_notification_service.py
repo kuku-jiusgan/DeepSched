@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -9,6 +9,7 @@ from app.core.database import Base
 from app.models import AlertRule, Notification, Task, TimeSlot, User
 from app.services.schedule_advance_notification_service import (
     _format_time_change,
+    _should_deliver_externally,
     capture_task_schedule_windows,
     notify_rescheduled_tasks_advanced,
 )
@@ -75,12 +76,11 @@ class ScheduleAdvanceNotificationServiceTest(unittest.TestCase):
         self.assertEqual(1, sent)
         self.assertEqual(["site", "wecom"], [item.channel for item in notifications])
         self.assertTrue(all(item.user_name == "analyst" for item in notifications))
-        self.assertIn("全局重排", notifications[0].content)
-        self.assertIn("2026-07-20 09:00", notifications[0].content)
-        self.assertIn("2026-07-18 09:00", notifications[0].content)
-        self.assertNotIn("2026-07-20 11:00", notifications[0].content)
-        self.assertNotIn("2026-07-18 11:00", notifications[0].content)
-        self.assertIn("提前约 2 天", notifications[0].content)
+        self.assertEqual("任务前移通知", notifications[0].title)
+        self.assertIn("您的任务：LCMS方法开发", notifications[0].content)
+        self.assertIn("新时间：7/18（周六）09:00–11:00（2小时）", notifications[0].content)
+        self.assertIn("原时间：7/20 09:00–11:00（已提前）", notifications[0].content)
+        self.assertIn("原因：排程调整：全局重排。", notifications[0].content)
         enqueue.assert_called_once()
 
     @patch("app.services.push_notification_service.enqueue_wecom_delivery")
@@ -95,6 +95,34 @@ class ScheduleAdvanceNotificationServiceTest(unittest.TestCase):
         self.assertEqual(0, sent)
         self.assertEqual(0, self.db.query(Notification).count())
         enqueue.assert_not_called()
+
+    @patch("app.services.push_notification_service.enqueue_wecom_delivery")
+    def test_far_future_adjustment_is_kept_on_site_without_external_push(self, enqueue):
+        original_windows = capture_task_schedule_windows(self.db, {self.task.id})
+        future_start = datetime.now() + timedelta(days=10)
+        self.slot.plan_start = future_start
+        self.slot.plan_end = future_start + timedelta(hours=2)
+        original_windows[self.task.id] = (
+            future_start + timedelta(days=1),
+            future_start + timedelta(days=1, hours=2),
+        )
+        self.db.flush()
+
+        sent = notify_rescheduled_tasks_advanced(self.db, original_windows, "远期重排")
+        notifications = self.db.query(Notification).all()
+
+        self.assertEqual(1, sent)
+        self.assertEqual(["site"], [item.channel for item in notifications])
+        enqueue.assert_not_called()
+
+    def test_blocked_task_is_pushed_even_outside_48_hour_window(self):
+        self.task.status = "blocked"
+        start = datetime.now() + timedelta(days=10)
+
+        self.assertTrue(_should_deliver_externally(
+            self.task,
+            (start, start + timedelta(hours=2)),
+        ))
 
 
 if __name__ == "__main__":

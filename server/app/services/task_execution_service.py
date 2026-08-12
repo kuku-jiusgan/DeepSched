@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.models import Task, TaskExecutionSegment, TimeSlot
+from app.models import Instrument, Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_status_service import mark_instrument_running
 from app.services.instrument_occupancy_service import current_occupying_slot
 from app.services.task_delay_status_service import mark_task_delayed
@@ -134,6 +134,11 @@ def _ensure_can_start(db, task: Task, slot: TimeSlot, allow_queue_insert: bool =
         return
     if not slot.instrument_id:
         raise TaskExecutionInvalidError("仪器任务尚未分配仪器，不能启动")
+    instrument = db.query(Instrument).filter(Instrument.id == slot.instrument_id).first()
+    if instrument and instrument.status == "fault":
+        raise TaskExecutionInvalidError(
+            f"仪器【{instrument.code} {instrument.name}】当前处于故障状态，不能启动任务"
+        )
     if not allow_queue_insert:
         _ensure_earlier_instrument_tasks_completed(db, task, slot)
     occupying_slot = current_occupying_slot(
@@ -162,8 +167,13 @@ def _ensure_earlier_instrument_tasks_completed(db, task: Task, slot: TimeSlot) -
         .first()
     )
     if earlier_slot and earlier_slot.task:
+        project = earlier_slot.task.project
+        project_label = " · ".join(
+            value for value in [project.code, project.name] if value
+        ) if project else "未归属项目"
         raise TaskExecutionInvalidError(
-            f"仪器前序任务【{earlier_slot.task.name}】尚未完成，不能启动【{task.name}】"
+            f"仪器前序项目【{project_label}】任务【{earlier_slot.task.name}】"
+            f"尚未完成，不能启动【{task.name}】"
         )
 
 

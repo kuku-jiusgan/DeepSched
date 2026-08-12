@@ -52,6 +52,7 @@ def push_by_rule(
     related_entity_type: str | None = None,
     related_entity_id: int | None = None,
     context_roles: Iterable[str] | None = None,
+    external_delivery: bool = True,
 ) -> int:
     rule = db.query(AlertRule).filter(AlertRule.rule_type == rule_type).first()
     if rule and not rule.enabled:
@@ -73,18 +74,19 @@ def push_by_rule(
         ))
         sent_count += 1
 
-        db.add(_notification(
-            user=user,
-            rule_type=rule_type,
-            title=title,
-            content=content,
-            channel="wecom",
-            delivery_status="pending",
-            related_entity_type=related_entity_type,
-            related_entity_id=related_entity_id,
-        ))
+        if external_delivery:
+            db.add(_notification(
+                user=user,
+                rule_type=rule_type,
+                title=title,
+                content=content,
+                channel="wecom",
+                delivery_status="pending",
+                related_entity_type=related_entity_type,
+                related_entity_id=related_entity_id,
+            ))
 
-    if unique_users:
+    if unique_users and external_delivery:
         enqueue_wecom_delivery()
 
     return sent_count

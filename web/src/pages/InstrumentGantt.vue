@@ -111,12 +111,15 @@
 
     <div v-if="hoveredSlot" class="gantt-tooltip" :style="tooltipStyle">
       <div class="tooltip-title">{{ hoveredSlot.task_name }}</div>
-      <div class="tooltip-row"><span>工序</span>{{ getTaskTypeLabel(hoveredSlot.task_type) }}</div>
+      <div class="tooltip-row"><span>类型</span>{{ hoveredSlot.status === 'fault' ? '仪器故障' : getTaskTypeLabel(hoveredSlot.task_type) }}</div>
       <div class="tooltip-row"><span>项目</span>{{ getBarProjectText(hoveredSlot) }}</div>
       <div class="tooltip-row"><span>负责人</span>{{ hoveredSlot.assignee_name || '-' }}</div>
       <div class="tooltip-row"><span>开始</span>{{ dayjs(hoveredSlot.plan_start).format('MM-DD HH:mm') }}</div>
       <div class="tooltip-row"><span>结束</span>{{ dayjs(hoveredSlot.plan_end).format('MM-DD HH:mm') }}</div>
       <div class="tooltip-row"><span>状态</span>{{ statusLabel(hoveredSlot) }}</div>
+      <div v-if="hoveredSlot.status === 'fault' && hoveredSlot.faultDescription" class="tooltip-row">
+        <span>原因</span>{{ hoveredSlot.faultDescription }}
+      </div>
       <div v-if="hasDelay(hoveredSlot)" class="tooltip-row is-delay"><span>延期</span>{{ getDelayText(hoveredSlot) }}</div>
     </div>
   </div>

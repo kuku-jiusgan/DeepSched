@@ -89,7 +89,7 @@
               v-for="slot in getSlotsForRow(row)"
               :key="slot.id"
               class="gantt-bar"
-              :class="[`status-${slot.status}`, { 'has-delay': hasDelay(slot) }]"
+              :class="[`status-${displayStatus(slot)}`, { 'has-delay': hasDelay(slot) }]"
               :style="getBarStyle(slot, row)"
               @mouseenter="showTooltip(slot, $event)"
               @mouseleave="hideTooltip"
@@ -116,7 +116,7 @@
       <div class="tooltip-row"><span>仪器</span>{{ getInstrumentText(hoveredSlot) }}</div>
       <div class="tooltip-row"><span>开始</span>{{ formatDateTime(hoveredSlot.plan_start) }}</div>
       <div class="tooltip-row"><span>结束</span>{{ formatDateTime(hoveredSlot.plan_end) }}</div>
-      <div class="tooltip-row"><span>状态</span>{{ getStatusLabel(hoveredSlot.status) }}</div>
+      <div class="tooltip-row"><span>状态</span>{{ getStatusLabel(displayStatus(hoveredSlot)) }}</div>
       <div v-if="hasDelay(hoveredSlot)" class="tooltip-row is-delay">
         <span>延期</span>{{ getDelayText(hoveredSlot) }}
       </div>
@@ -280,6 +280,10 @@ function getTaskTypeLabel(code?: string | null) {
 
 function getStatusLabel(status: string) {
   return taskStatusLabel(status)
+}
+
+function displayStatus(slot: TimeSlot) {
+  return slot.execution_status || slot.task_status || slot.status
 }
 
 function hasDelay(slot: TimeSlot) {

@@ -23,6 +23,17 @@ def project_actual_hours_map(db, projects) -> dict[int, float]:
         return totals
 
     task_ids = set(task_project)
+    task_totals = task_actual_hours_map(db, task_ids)
+    for task_id, hours in task_totals.items():
+        totals[task_project[task_id]] += hours
+    return {project_id: round(hours, 2) for project_id, hours in totals.items()}
+
+
+def task_actual_hours_map(db, task_ids) -> dict[int, float]:
+    task_ids = set(task_ids)
+    totals = {task_id: 0.0 for task_id in task_ids}
+    if not task_ids:
+        return totals
     segments = db.query(TaskExecutionSegment).filter(TaskExecutionSegment.task_id.in_(task_ids)).all()
     slots = db.query(TimeSlot).filter(TimeSlot.task_id.in_(task_ids)).all()
     night_runs = db.query(TaskNightRun).filter(TaskNightRun.task_id.in_(task_ids)).all()
@@ -39,8 +50,8 @@ def project_actual_hours_map(db, projects) -> dict[int, float]:
     night_ranges_by_task = _night_ranges_by_task(night_runs)
     for task_id, actual_ranges in ranges_by_task.items():
         allowed_ranges = working_ranges + night_ranges_by_task.get(task_id, [])
-        totals[task_project[task_id]] += _hours_within(actual_ranges, allowed_ranges)
-    return {project_id: round(hours, 2) for project_id, hours in totals.items()}
+        totals[task_id] = _hours_within(actual_ranges, allowed_ranges)
+    return {task_id: round(hours, 2) for task_id, hours in totals.items()}
 
 
 def _actual_ranges_by_task(task_ids, segments, slots) -> dict[int, list[TimeRange]]:

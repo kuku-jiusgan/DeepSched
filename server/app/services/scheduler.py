@@ -65,6 +65,7 @@ class SchedulerService:
         original_schedule_windows: dict[int, tuple[datetime, datetime]] | None = None,
         stability_task_ids: set[int] | None = None,
         additional_dependencies: list[tuple[int, int]] | None = None,
+        earliest_start_bounds: dict[int, datetime] | None = None,
         advance_notification_reason: str = "重新排程",
         emit_advance_notifications: bool = True,
     ) -> dict:
@@ -102,6 +103,11 @@ class SchedulerService:
         horizon_start, horizon_end, total_units = time_horizon()
         ensure_calendar_range(self.db, horizon_start.date(), horizon_end.date())
         approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
+        if earliest_start_bounds:
+            for task_id, bound in earliest_start_bounds.items():
+                current = approval_bounds.get(task_id)
+                if current is None or bound > current:
+                    approval_bounds[task_id] = bound
 
         freezing_rule = constraints["freezing"]
         freeze_days = (freezing_rule.params or {}).get(

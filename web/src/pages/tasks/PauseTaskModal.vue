@@ -29,12 +29,12 @@
           placeholder="填写等待样品、等待反应或临时插单等原因"
         />
       </a-form-item>
-      <a-form-item label="接替任务（可选）" extra="仅显示同一仪器且前置任务均已完成的任务">
+      <a-form-item label="接替任务" required extra="仅显示同一仪器且前置任务均已完成的任务">
         <a-select
           v-model:value="targetSlotId"
           allow-clear
           :loading="isLoadingCandidates"
-          placeholder="不选择则只暂停并释放仪器"
+          placeholder="请选择接替任务"
           option-label-prop="label"
         >
           <a-select-option
@@ -62,8 +62,7 @@
     </a-form>
     <div class="pause-task-actions">
       <a-button :disabled="isSubmitting" @click="close">取消</a-button>
-      <a-button :loading="isSubmitting && !targetSlotId" @click="submit(false)">暂停并释放</a-button>
-      <a-button type="primary" :disabled="!targetSlotId" :loading="isSubmitting && Boolean(targetSlotId)" @click="submit(true)">
+      <a-button type="primary" :disabled="!targetSlotId" :loading="isSubmitting" @click="submit">
         暂停并切换
       </a-button>
     </div>
@@ -124,15 +123,15 @@ async function loadCandidates() {
   }
 }
 
-async function submit(shouldSwitch: boolean) {
+async function submit() {
   const slotId = props.task ? actionableSlotId(props.task) : null
   const cleanReason = reason.value.trim()
   if (!slotId || isSubmitting.value) return
   if (!cleanReason) return void message.warning('请填写暂停原因')
-  if (shouldSwitch && !targetSlotId.value) return
+  if (!targetSlotId.value) return void message.warning('请选择接替任务')
   isSubmitting.value = true
   try {
-    const result = await pauseTask(slotId, cleanReason, shouldSwitch ? targetSlotId.value : undefined)
+    const result = await pauseTask(slotId, cleanReason, targetSlotId.value)
     message.success(result.message || '任务已暂停')
     emit('update:open', false)
     emit('completed')

@@ -17,6 +17,7 @@ from app.services.approval_gate_service import (
     submit_approval_gate,
     unapproved_gate_context,
 )
+from app.services.approval_gate_schedule_context import build_approval_schedule_context
 
 
 class ApprovalGateServiceTest(unittest.TestCase):
@@ -60,7 +61,31 @@ class ApprovalGateServiceTest(unittest.TestCase):
         self.assertEqual(self.manager.id, stored.assignee_id)
         self.assertEqual(self.manager.id, gate.assignee_id)
         self.assertEqual(self.manager.display_name, gate.assignee_name)
+        self.assertEqual("方案编写", gate.top_level_task_name)
         self.assertEqual(0, self.db.query(TimeSlot).count())
+
+    def test_gate_output_shows_predecessor_top_level_task_name(self):
+        top_level_task = Task(
+            id=4,
+            project_id=1,
+            name="LCMS方法开发",
+            task_type="manual",
+            requires_instrument=False,
+            assignee_id=1,
+            status="pending",
+        )
+        self.plan.parent_id = top_level_task.id
+        self.db.add(top_level_task)
+        self.db.commit()
+
+        gate = create_approval_gate(
+            self.db,
+            1,
+            ApprovalGateCreate(predecessor_task_id=1, unlock_task_ids=[2]),
+            self.manager,
+        )
+
+        self.assertEqual("LCMS方法开发", gate.top_level_task_name)
 
     def test_non_manager_cannot_operate_gate(self):
         with self.assertRaises(ApprovalGatePermissionError):
@@ -90,6 +115,54 @@ class ApprovalGateServiceTest(unittest.TestCase):
 
         self.assertEqual(datetime(2026, 7, 20, 9, 0), bounds[2])
         self.assertEqual({2}, forecast_ids)
+
+    def test_schedule_context_uses_current_branch_anchor_only(self):
+        gate_out = create_approval_gate(
+            self.db,
+            1,
+            ApprovalGateCreate(predecessor_task_id=1, unlock_task_ids=[2]),
+            self.manager,
+        )
+        branch_done_at = datetime(2026, 7, 1, 10, 0)
+        other_branch_end = datetime(2026, 7, 5, 10, 0)
+        other_branch_task = Task(
+            id=4,
+            project_id=1,
+            name="其他顶级任务",
+            task_type="manual",
+            requires_instrument=False,
+            assignee_id=1,
+            status="scheduled",
+        )
+        self.plan.status = "done"
+        self.db.add(other_branch_task)
+        self.db.add_all([
+            TimeSlot(
+                schedule_run_id="run-branch",
+                task_id=1,
+                plan_start=branch_done_at - timedelta(hours=1),
+                plan_end=branch_done_at,
+                actual_start=branch_done_at - timedelta(hours=1),
+                actual_end=branch_done_at,
+                status="completed",
+            ),
+            TimeSlot(
+                schedule_run_id="run-other",
+                task_id=4,
+                plan_start=other_branch_end - timedelta(hours=1),
+                plan_end=other_branch_end,
+                status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        context = build_approval_schedule_context(self.db, self.db.get(Task, gate_out.id))
+
+        self.assertEqual({2}, context.downstream_task_ids)
+        self.assertIn(1, context.branch_task_ids)
+        self.assertIn(gate_out.id, context.branch_task_ids)
+        self.assertNotIn(4, context.branch_task_ids)
+        self.assertEqual(branch_done_at, context.anchor_at)
 
     @patch("app.services.project_plan_apply_service.apply_project_plan")
     def test_submit_records_expected_date(self, apply_project_plan):
@@ -197,7 +270,7 @@ class ApprovalGateServiceTest(unittest.TestCase):
         result = list_approval_gates(self.db, self.manager, workspace_only=True)
 
         predecessor = result.items[0].predecessor_tasks[0]
-        self.assertEqual("done", predecessor.status)
+        self.assertEqual("completed", predecessor.status)
         self.assertEqual(completed_at, predecessor.completed_at)
 
     @patch("app.services.project_plan_apply_service.apply_project_plan")

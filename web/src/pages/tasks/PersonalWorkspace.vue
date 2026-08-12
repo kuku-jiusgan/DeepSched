@@ -90,7 +90,7 @@
                 @click="handleStart(record)"
                 :loading="actingId === record.actionable_slot?.id"
               >
-                <PlayCircleOutlined /> 开始
+                <PlayCircleOutlined /> {{ workspaceActionStatus(record) === 'paused' ? '恢复' : '开始' }}
               </a-button>
               <a-button
                 v-operation="'complete'"

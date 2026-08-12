@@ -8,7 +8,7 @@ from app.services.user_role_service import has_any_role
 
 
 WORKSPACE_ALL_TASK_ROLES = {"系统管理员", "项目管理员"}
-WORKSPACE_TASK_STATUSES = {"pending", "running", "paused", "blocked", "scheduled", "done", "interrupted"}
+WORKSPACE_TASK_STATUSES = {"pending", "running", "paused", "blocked", "scheduled", "completed", "done", "interrupted"}
 WORKSPACE_SLOT_STATUSES = {"scheduled", "running", "paused", "interrupted", "blocked", "completed"}
 AGENDA_OVERDUE_SLOT_STATUSES = WORKSPACE_SLOT_STATUSES - {"completed"}
 AGENDA_CURRENT_ACTIVITY_SLOT_STATUSES = {"running", "paused", "interrupted"}

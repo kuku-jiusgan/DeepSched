@@ -76,7 +76,7 @@
                 type="primary"
                 :disabled="!isOwnAgenda"
                 @click="startAgendaItem(item)"
-              ><PlayCircleOutlined /> 开始</a-button>
+              ><PlayCircleOutlined /> {{ startActionLabel(item) }}</a-button>
               <a-button
                 v-if="canComplete(item)"
                 v-operation.readonly="'complete'"
@@ -183,7 +183,7 @@ const currentUserId = storedCurrentUserId()
 const canSelectAssignee = computed(() => Boolean(result.value?.can_select_assignee))
 const isOwnAgenda = computed(() => result.value?.assignee.id === currentUserId)
 const userOptions = computed(() => users.value
-  .filter(user => user.is_active)
+  .filter(isSelectableAgendaUser)
   .map(user => ({ value: user.id, label: user.display_name })))
 const agendaDays = computed(() => buildAgendaDays(result.value?.items || [], dateRange.value[0], dateRange.value[1]))
 const rangeLabel = computed(() => `${dateRange.value[0].format('YYYY-MM-DD')} 至 ${dateRange.value[1].format('YYYY-MM-DD')}`)
@@ -195,6 +195,16 @@ function storedCurrentUserId() {
   } catch {
     return null
   }
+}
+
+function userRoles(user: UserDirectoryEntry) {
+  return user.roles?.length ? user.roles : [user.role]
+}
+
+function isSelectableAgendaUser(user: UserDirectoryEntry) {
+  if (!user.is_active) return false
+  const roles = userRoles(user)
+  return roles.includes('系统管理员') || !roles.includes('项目管理员')
 }
 
 function applyPreset(value: string | number) {
@@ -273,7 +283,12 @@ function canReportDelay(item: AgendaDisplayItem) {
 }
 
 async function startAgendaItem(item: AgendaDisplayItem) {
-  await runAction(() => startTask(item.slot_id), '任务已开始')
+  const isPaused = item.execution_status === 'paused'
+  await runAction(() => startTask(item.slot_id), isPaused ? '任务已恢复' : '任务已开始')
+}
+
+function startActionLabel(item: AgendaDisplayItem) {
+  return item.execution_status === 'paused' ? '恢复' : '开始'
 }
 
 function openComplete(item: AgendaDisplayItem) {

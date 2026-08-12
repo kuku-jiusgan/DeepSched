@@ -33,9 +33,10 @@ def load_scheduler_data(
 
     instruments = db.query(Instrument).filter(
         Instrument.availability_status == "available",
-        Instrument.status.in_(["idle", "running"]),
+        Instrument.status.in_(["idle", "running", "fault"]),
     ).options(
         selectinload(Instrument.capabilities),
+        selectinload(Instrument.faults),
         selectinload(Instrument.maintenance_windows),
     ).all()
     return tasks, instruments

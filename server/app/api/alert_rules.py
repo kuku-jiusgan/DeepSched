@@ -50,11 +50,11 @@ class PushChannelConfigUpdate(BaseModel):
 
 DEFAULT_ALERT_RULES = [
     {
-        "name": "任务开始延迟",
+        "name": "任务开始前提醒",
         "rule_type": "task_start_delay",
         "enabled": True,
-        "notify_roles": '["项目负责人","技术员"]',
-        "threshold_minutes": 0,
+        "notify_roles": '["任务负责人"]',
+        "threshold_minutes": 15,
         "threshold_percent": 0,
     },
     {

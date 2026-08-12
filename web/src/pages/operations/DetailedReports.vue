@@ -1,283 +1,264 @@
-﻿<template>
-  <div>
-    <div class="page-header"><h2>精细化运营报表</h2></div>
-
-    <a-spin v-if="loading" size="large" style="display: block; margin: 50px auto" />
-
-    <template v-else>
-      <div class="action-bar">
-        <a-range-picker v-model:value="dateRange" :placeholder="['开始日期', '结束日期']" allowClear style="width: 240px" @change="onFilterChange" />
-        <a-radio-group v-model:value="viewMode" @change="onFilterChange" style="margin-left: 12px">
-          <a-radio-button value="project">按项目</a-radio-button>
-          <a-radio-button value="user">按人员</a-radio-button>
-        </a-radio-group>
-        <span style="margin-left: auto; font-size: 12px; color: #94a3b8">
-          {{ viewMode === 'project' ? projectStats.length + ' 个项目' : userStats.length + ' 人' }}，总工时 {{ totalHours.toFixed(1) }}h
-        </span>
+<template>
+  <div class="hours-report-page">
+    <header class="page-header">
+      <div>
+        <h2>项目工时统计报表</h2>
+        <p>汇总项目总工时与实际工时，展开项目可查看任务明细。</p>
       </div>
+    </header>
 
-      <!-- 按项目视图 -->
-      <template v-if="viewMode === 'project'">
-        <a-table :dataSource="projectStats" rowKey="projectId" size="small" :pagination="{ pageSize: 20, showSizeChanger: true }" :expandable="{ expandedRowRender }">
-          <a-table-column title="项目编号" dataIndex="projectCode" key="code" width="130" />
-          <a-table-column title="项目名称" dataIndex="projectName" key="name" ellipsis />
-          <a-table-column title="客户" dataIndex="clientName" key="client" width="120" />
-          <a-table-column title="负责人" dataIndex="manager" key="manager" width="90" />
-          <a-table-column title="任务数" dataIndex="taskCount" key="count" width="80" align="center" />
-          <a-table-column title="总工时(h)" dataIndex="totalHours" key="hours" width="110" align="center" sortable>
-            <template #default="{ record }">{{ record.totalHours.toFixed(1) }}</template>
-          </a-table-column>
-          <a-table-column title="人工工时(h)" dataIndex="humanHours" key="human" width="110" align="center">
-            <template #default="{ record }">{{ record.humanHours.toFixed(1) }}</template>
-          </a-table-column>
-          <a-table-column title="仪器工时(h)" dataIndex="instrumentHours" key="inst" width="110" align="center">
-            <template #default="{ record }">{{ record.instrumentHours.toFixed(1) }}</template>
-          </a-table-column>
-          <a-table-column title="操作" key="actions" width="80" align="center">
-          <template #default="{ record }">
-            <a-button type="link" size="small" @click="openDetail(record)">详情</a-button>
+    <div class="report-toolbar">
+      <a-input
+        v-model:value="keywordInput"
+        class="keyword-input"
+        placeholder="项目编号、名称、客户或负责人"
+        allow-clear
+        @press-enter="searchReport"
+      >
+        <template #prefix><SearchOutlined /></template>
+      </a-input>
+      <a-range-picker
+        v-model:value="dateRange"
+        :placeholder="['项目开始日期起', '项目开始日期止']"
+        allow-clear
+      />
+      <a-button type="primary" :loading="loading" @click="searchReport">
+        <template #icon><SearchOutlined /></template>
+        查询
+      </a-button>
+      <a-button :disabled="loading" @click="resetFilters">重置</a-button>
+      <a-button class="export-button" :loading="exporting" @click="exportExcel">
+        <template #icon><DownloadOutlined /></template>
+        导出 Excel
+      </a-button>
+    </div>
+
+    <a-spin :spinning="loading">
+      <section class="metric-strip" aria-label="工时汇总">
+        <div class="metric-item">
+          <span>项目数</span>
+          <strong>{{ report?.project_count ?? 0 }}</strong>
+        </div>
+        <div class="metric-item">
+          <span>总工时</span>
+          <strong>{{ formatHours(report?.planned_hours) }}</strong>
+        </div>
+        <div class="metric-item">
+          <span>实际工时</span>
+          <strong>{{ formatHours(report?.actual_hours) }}</strong>
+        </div>
+        <div class="metric-item">
+          <span>工时差异</span>
+          <strong :class="varianceClass(totalVariance)">{{ formatSignedHours(totalVariance) }}</strong>
+        </div>
+      </section>
+
+      <a-table
+        class="project-hours-table"
+        :columns="projectColumns"
+        :data-source="report?.items ?? []"
+        :pagination="{ pageSize: 10, showSizeChanger: true, showTotal: (total: number) => `共 ${total} 个项目` }"
+        row-key="project_id"
+        size="middle"
+        :scroll="{ x: 1040 }"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'project'">
+            <div class="project-identity">
+              <strong>{{ record.project_code }}</strong>
+              <span>{{ record.project_name }}</span>
+            </div>
           </template>
-        </a-table-column>
-        <a-table-column title="工时占比" key="pct" width="180">
-            <template #default="{ record }">
-              <div style="display: flex; align-items: center; gap: 8px">
-                <div style="flex: 1; height: 8px; background: #f1f5f9; border-radius: 4px; overflow: hidden">
-                  <div :style="{ width: pct(record.totalHours) + '%', height: '100%', background: '#3b82f6', borderRadius: '4px' }" />
-                </div>
-                <span style="font-size: 12px; color: #94a3b8; white-space: nowrap">{{ pct(record.totalHours).toFixed(1) }}%</span>
-              </div>
-            </template>
-          </a-table-column>
-        </a-table>
-      </template>
+          <template v-else-if="column.key === 'planned_hours'">
+            {{ formatHours(record.planned_hours) }}
+          </template>
+          <template v-else-if="column.key === 'actual_hours'">
+            {{ formatHours(record.actual_hours) }}
+          </template>
+          <template v-else-if="column.key === 'variance_hours'">
+            <span :class="varianceClass(record.variance_hours)">{{ formatSignedHours(record.variance_hours) }}</span>
+          </template>
+        </template>
 
-      <!-- 按人员视图 -->
-      <template v-else>
-        <a-table :dataSource="userStats" rowKey="userId" size="small" :pagination="{ pageSize: 20, showSizeChanger: true }">
-          <a-table-column title="负责人" dataIndex="userName" key="name" />
-          <a-table-column title="任务数" dataIndex="taskCount" key="count" width="100" align="center" />
-          <a-table-column title="总工时(h)" dataIndex="totalHours" key="hours" width="120" align="center" sortable>
-            <template #default="{ record }">{{ record.totalHours.toFixed(1) }}</template>
-          </a-table-column>
-          <a-table-column title="溶液配制(h)" key="sol" width="110" align="center">
-            <template #default>0.0</template>
-          </a-table-column>
-          <a-table-column title="样品前处理(h)" key="samp" width="110" align="center">
-            <template #default>0.0</template>
-          </a-table-column>
-          <a-table-column title="序列运行(h)" key="run" width="110" align="center">
-            <template #default>0.0</template>
-          </a-table-column>
-          <a-table-column title="出具报告(h)" key="rep" width="110" align="center">
-            <template #default>0.0</template>
-          </a-table-column>
-          <a-table-column title="工时占比" key="pct" width="200">
-            <template #default="{ record }">
-              <div style="display: flex; align-items: center; gap: 8px">
-                <div style="flex: 1; height: 8px; background: #f1f5f9; border-radius: 4px; overflow: hidden">
-                  <div :style="{ width: pct(record.totalHours) + '%', height: '100%', background: '#3b82f6', borderRadius: '4px' }" />
-                </div>
-                <span style="font-size: 12px; color: #94a3b8; white-space: nowrap">{{ pct(record.totalHours).toFixed(1) }}%</span>
-              </div>
-            </template>
-          </a-table-column>
-        </a-table>
-      </template>
-    </template>
+        <template #expandedRowRender="{ record }">
+          <div class="task-detail-band">
+            <div class="task-detail-title">任务工时明细</div>
+            <a-table
+              :columns="taskColumns"
+              :data-source="record.tasks"
+              :pagination="false"
+              row-key="task_id"
+              size="small"
+              :scroll="{ x: 900 }"
+            >
+              <template #bodyCell="{ column, record: task }">
+                <template v-if="column.key === 'task_name'">
+                  <span class="task-name" :style="{ paddingLeft: `${task.depth * 20}px` }">
+                    <span v-if="task.depth" class="task-branch">└</span>{{ task.task_name }}
+                  </span>
+                </template>
+                <template v-else-if="column.key === 'status'">
+                  <a-tag :color="taskStatusColor(task.status)">{{ taskStatusLabel(task.status) }}</a-tag>
+                </template>
+                <template v-else-if="column.key === 'planned_hours'">
+                  {{ formatHours(task.planned_hours) }}
+                </template>
+                <template v-else-if="column.key === 'actual_hours'">
+                  {{ formatHours(task.actual_hours) }}
+                </template>
+              </template>
+            </a-table>
+          </div>
+        </template>
 
+        <template #emptyText>
+          <a-empty description="当前筛选条件下暂无项目工时数据" />
+        </template>
+      </a-table>
+    </a-spin>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, h } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import type { Dayjs } from 'dayjs'
+import type { TableColumnsType } from 'ant-design-vue'
 import { message } from 'ant-design-vue'
-import { getProjects, getUserDirectory, getTaskTypes } from '@/services/api'
-import dayjs from 'dayjs'
+import { DownloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { exportProjectHoursReport, getProjectHoursReport } from '@/services/api'
+import type { ProjectHoursItem, ProjectHoursReport, ProjectHoursTask } from '@/types'
+import { taskStatusColor, taskStatusLabel } from '@/utils/statusMeta'
 
-interface UserStat {
-  userId: number
-  userName: string
-  taskCount: number
-  totalHours: number
-  typeHours: Record<string, number>
+type DateRange = [Dayjs, Dayjs] | null
+
+const loading = ref(false)
+const exporting = ref(false)
+const dateRange = ref<DateRange>(null)
+const appliedDateRange = ref<DateRange>(null)
+const keywordInput = ref('')
+const appliedKeyword = ref('')
+const report = ref<ProjectHoursReport | null>(null)
+
+const projectColumns: TableColumnsType<ProjectHoursItem> = [
+  { title: '项目', key: 'project', width: 250, fixed: 'left' },
+  { title: '客户', dataIndex: 'client_name', key: 'client_name', width: 150, ellipsis: true },
+  { title: '负责人', dataIndex: 'manager_name', key: 'manager_name', width: 120 },
+  { title: '任务数', dataIndex: 'task_count', key: 'task_count', width: 90, align: 'right' },
+  { title: '总工时(h)', dataIndex: 'planned_hours', key: 'planned_hours', width: 130, align: 'right', sorter: (a, b) => a.planned_hours - b.planned_hours },
+  { title: '实际工时(h)', dataIndex: 'actual_hours', key: 'actual_hours', width: 140, align: 'right', sorter: (a, b) => a.actual_hours - b.actual_hours },
+  { title: '差异(h)', dataIndex: 'variance_hours', key: 'variance_hours', width: 120, align: 'right', sorter: (a, b) => a.variance_hours - b.variance_hours },
+]
+
+const taskColumns: TableColumnsType<ProjectHoursTask> = [
+  { title: '顶级任务', dataIndex: 'top_level_task_name', key: 'top_level_task_name', width: 210, ellipsis: true },
+  { title: '任务名称', dataIndex: 'task_name', key: 'task_name', width: 280 },
+  { title: '负责人', dataIndex: 'assignee_name', key: 'assignee_name', width: 120 },
+  { title: '状态', dataIndex: 'status', key: 'status', width: 120 },
+  { title: '总工时(h)', dataIndex: 'planned_hours', key: 'planned_hours', width: 120, align: 'right' },
+  { title: '实际工时(h)', dataIndex: 'actual_hours', key: 'actual_hours', width: 130, align: 'right' },
+]
+
+const totalVariance = computed(() => (report.value?.actual_hours ?? 0) - (report.value?.planned_hours ?? 0))
+
+function queryParams() {
+  const params: { start_date?: string; end_date?: string; keyword?: string } = {}
+  if (appliedDateRange.value) {
+    params.start_date = appliedDateRange.value[0].format('YYYY-MM-DD')
+    params.end_date = appliedDateRange.value[1].format('YYYY-MM-DD')
+  }
+  if (appliedKeyword.value) params.keyword = appliedKeyword.value
+  return Object.keys(params).length ? params : undefined
 }
 
-interface ProjectStat {
-  projectId: number
-  projectCode: string
-  projectName: string
-  clientName: string
-  manager: string
-  taskCount: number
-  totalHours: number
-  humanHours: number
-  instrumentHours: number
-  users: { userName: string; taskCount: number; hours: number; typeHours: Record<string, number> }[]
-  taskDetails: { taskId: number; taskName: string; taskType: string; assigneeName: string; hours: number; isHuman: boolean; isInstrument: boolean }[]
+function searchReport() {
+  appliedKeyword.value = keywordInput.value.trim()
+  appliedDateRange.value = dateRange.value
+  loadReport()
 }
 
-const loading = ref(true)
-const viewMode = ref('project')
-const projectStats = ref<ProjectStat[]>([])
-const userStats = ref<UserStat[]>([])
-const router = useRouter()
-const dateRange = ref<any>(null)
-const maxProjectHours = ref(0)
-const maxUserHours = ref(0)
-const taskTypeMap = ref<Record<string, string>>({})
-
-const totalHours = computed(() => {
-  if (viewMode.value === 'project') return projectStats.value.reduce((s, p) => s + p.totalHours, 0)
-  return userStats.value.reduce((s, u) => s + u.totalHours, 0)
-})
-
-function pct(hours: number) {
-  const max = viewMode.value === 'project' ? maxProjectHours.value : maxUserHours.value
-  return max > 0 ? (hours / max) * 100 : 0
+function resetFilters() {
+  keywordInput.value = ''
+  appliedKeyword.value = ''
+  dateRange.value = null
+  appliedDateRange.value = null
+  loadReport()
 }
 
-function expandedRowRender(record: ProjectStat) {
-  const cols = [
-    { title: '人员', dataIndex: 'userName', key: 'name' },
-    { title: '任务数', dataIndex: 'taskCount', key: 'count', width: 80, align: 'center' as const },
-    { title: '工时(h)', dataIndex: 'hours', key: 'hours', width: 100, align: 'center' as const, customRender: ({ text }: any) => text.toFixed(1) },
-    { title: '溶液配制(h)', key: 'sol', width: 110, align: 'center' as const, customRender: ({ record: r }: any) => (r.typeHours.solution_prep || 0).toFixed(1) },
-    { title: '样品前处理(h)', key: 'samp', width: 110, align: 'center' as const, customRender: ({ record: r }: any) => (r.typeHours.sample_prep || 0).toFixed(1) },
-    { title: '序列运行(h)', key: 'run', width: 110, align: 'center' as const, customRender: ({ record: r }: any) => (r.typeHours.instrument_run || 0).toFixed(1) },
-    { title: '出具报告(h)', key: 'rep', width: 110, align: 'center' as const, customRender: ({ record: r }: any) => (r.typeHours.report || 0).toFixed(1) },
-  ]
-  // Use a simple div-based table since we can't use a-table inside expandedRowRender easily
-  return h('div', { style: 'padding: 8px 0' }, [
-    h('table', { style: 'width: 100%; border-collapse: collapse; font-size: 13px' }, [
-      h('thead', {}, [
-        h('tr', { style: 'background: #f8fafc' }, cols.map(c =>
-          h('th', { style: 'padding: 6px 12px; text-align: ' + (c.align || 'left') + '; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #475569' }, c.title)
-        ))
-      ]),
-      h('tbody', {}, record.users.map(u =>
-        h('tr', { style: 'border-bottom: 1px solid #f1f5f9' }, [
-          h('td', { style: 'padding: 6px 12px' }, u.userName),
-          h('td', { style: 'padding: 6px 12px; text-align: center' }, String(u.taskCount)),
-          h('td', { style: 'padding: 6px 12px; text-align: center' }, u.hours.toFixed(1)),
-          h('td', { style: 'padding: 6px 12px; text-align: center' }, '0.0'),
-          h('td', { style: 'padding: 6px 12px; text-align: center' }, '0.0'),
-          h('td', { style: 'padding: 6px 12px; text-align: center' }, '0.0'),
-          h('td', { style: 'padding: 6px 12px; text-align: center' }, '0.0'),
-        ])
-      ))
-    ])
-  ])
-}
-
-function getTypeName(code: string) { return taskTypeMap.value[code] || code }
-function getTypeColor(code: string) {
-      const m: Record<string, string> = { FFKF_001: '#8b5cf6', QCFA_001: '#f59e0b', FFYZ_001: '#10b981', SJCL_001: '#3b82f6', ZXBG_001: '#ef4444' }
-  return m[code] || '#94a3b8'
-}
-
-function openDetail(record: ProjectStat) {
-  router.push(`/operations/project-tasks?id=${record.projectId}&name=${encodeURIComponent(record.projectName)}`)
-}
-
-function onFilterChange() { buildStats() }
-
-async function buildStats() {
+async function loadReport() {
   loading.value = true
   try {
-    const [projects, users, types] = await Promise.all([getProjects(), getUserDirectory(), getTaskTypes()])
-    const userMap = new Map<number, string>()
-    users.forEach(u => { userMap.set(u.id, u.display_name) })
-    const typeMap: Record<string, string> = {}
-    types.forEach(t => { typeMap[t.code] = t.name })
-
-    const userStatsMap = new Map<number, UserStat>()
-    const projectStatsMap = new Map<number, ProjectStat>()
-
-    for (const p of projects) {
-      const tasks = p.tasks || []
-
-      // Date filter
-      if (dateRange.value?.[0] && dateRange.value?.[1]) {
-        const taskDate = p.start_date ? dayjs(p.start_date) : null
-        if (!taskDate || taskDate.isBefore(dateRange.value[0]) || taskDate.isAfter(dateRange.value[1])) continue
-      }
-
-      if (!projectStatsMap.has(p.id)) {
-        projectStatsMap.set(p.id, {
-          projectId: p.id,
-          projectCode: p.code,
-          projectName: p.name,
-          clientName: p.client_name || '-',
-          manager: p.manager_name || '-',
-          taskCount: 0,
-          totalHours: 0,
-          humanHours: 0,
-          instrumentHours: 0,
-          users: [],
-          taskDetails: []
-        })
-      }
-      const pStat = projectStatsMap.get(p.id)!
-      const projUserMap = new Map<number, { userName: string; taskCount: number; hours: number; typeHours: Record<string, number> }>()
-
-      for (const t of tasks) {
-        const hours = t.est_duration_hours || 0
-        if (hours <= 0) continue
-
-        const isHuman = t.requires_instrument === false || (taskTypeMap.value[t.task_type] || '').includes('human')
-        const isInstrument = t.requires_instrument === true || (taskTypeMap.value[t.task_type] || '').includes('instrument')
-
-        pStat.taskDetails.push({
-          taskId: t.id, taskName: t.name, taskType: t.task_type,
-          assigneeName: t.assignee_id ? (userMap.get(t.assignee_id) || t.assignee_name || '-') : '-',
-          hours, isHuman, isInstrument
-        })
-
-        pStat.taskCount++
-        pStat.totalHours += hours
-        if (isHuman && !isInstrument) pStat.humanHours += hours
-        else if (isInstrument && !isHuman) pStat.instrumentHours += hours
-        else { pStat.humanHours += hours / 2; pStat.instrumentHours += hours / 2 }
-
-        // Per-user stats within project
-        if (t.assignee_id) {
-          if (!projUserMap.has(t.assignee_id)) {
-            projUserMap.set(t.assignee_id, {
-              userName: userMap.get(t.assignee_id) || t.assignee_name || '未知',
-              taskCount: 0, hours: 0, typeHours: {}
-            })
-          }
-          const pu = projUserMap.get(t.assignee_id)!
-          pu.taskCount++
-          pu.hours += hours
-          pu.typeHours[t.task_type] = (pu.typeHours[t.task_type] || 0) + hours
-
-          // Global user stats
-          if (!userStatsMap.has(t.assignee_id)) {
-            userStatsMap.set(t.assignee_id, {
-              userId: t.assignee_id,
-              userName: userMap.get(t.assignee_id) || t.assignee_name || '未知',
-              taskCount: 0, totalHours: 0, typeHours: {}
-            })
-          }
-          const uStat = userStatsMap.get(t.assignee_id)!
-          uStat.taskCount++
-          uStat.totalHours += hours
-          uStat.typeHours[t.task_type] = (uStat.typeHours[t.task_type] || 0) + hours
-        }
-      }
-
-      pStat.users = Array.from(projUserMap.values()).sort((a, b) => b.hours - a.hours)
-    }
-
-    projectStats.value = Array.from(projectStatsMap.values()).sort((a, b) => b.totalHours - a.totalHours)
-    userStats.value = Array.from(userStatsMap.values()).sort((a, b) => b.totalHours - a.totalHours)
-    maxProjectHours.value = projectStats.value.length > 0 ? projectStats.value[0].totalHours : 0
-    maxUserHours.value = userStats.value.length > 0 ? userStats.value[0].totalHours : 0
-  } catch { message.error('加载数据失败') }
-  finally { loading.value = false }
+    report.value = await getProjectHoursReport(queryParams())
+  } catch {
+    message.error('项目工时报表加载失败，请稍后重试')
+  } finally {
+    loading.value = false
+  }
 }
 
-onMounted(() => { buildStats() })
+async function exportExcel() {
+  exporting.value = true
+  try {
+    const blob = await exportProjectHoursReport(queryParams())
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `项目工时统计报表-${new Date().toISOString().slice(0, 10)}.xlsx`
+    link.click()
+    URL.revokeObjectURL(url)
+    message.success('Excel 报表已导出')
+  } catch {
+    message.error('Excel 导出失败，请稍后重试')
+  } finally {
+    exporting.value = false
+  }
+}
+
+function formatHours(value: number | null | undefined) {
+  return `${(value ?? 0).toFixed(2)}h`
+}
+
+function formatSignedHours(value: number) {
+  const prefix = value > 0 ? '+' : ''
+  return `${prefix}${value.toFixed(2)}h`
+}
+
+function varianceClass(value: number) {
+  return value > 0 ? 'variance-over' : value < 0 ? 'variance-under' : ''
+}
+
+onMounted(loadReport)
 </script>
+
+<style scoped>
+.hours-report-page { min-width: 0; }
+.page-header { margin-bottom: 20px; padding-right: 180px; }
+.page-header h2 { margin: 0; color: #172033; font-size: 22px; font-weight: 650; }
+.page-header p { margin: 6px 0 0; color: #667085; font-size: 13px; }
+.report-toolbar { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 0; border-top: 1px solid #e5e7eb; }
+.keyword-input { width: min(320px, 100%); }
+.export-button { margin-left: auto; }
+.metric-strip { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); border: 1px solid #dfe3e8; border-radius: 6px; margin: 12px 0 16px; background: #fff; }
+.metric-item { min-width: 0; padding: 14px 18px; border-right: 1px solid #e5e7eb; }
+.metric-item:last-child { border-right: 0; }
+.metric-item span { display: block; color: #667085; font-size: 12px; }
+.metric-item strong { display: block; margin-top: 6px; color: #172033; font-size: 22px; font-weight: 650; }
+.project-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.project-identity strong { color: #1d4ed8; font-size: 13px; }
+.project-identity span { overflow: hidden; color: #344054; text-overflow: ellipsis; white-space: nowrap; }
+.task-detail-band { margin: -16px -16px; padding: 12px 16px 16px 48px; background: #f8fafc; }
+.task-detail-title { margin-bottom: 10px; color: #344054; font-size: 13px; font-weight: 600; }
+.task-name { display: inline-flex; align-items: center; min-width: 0; }
+.task-branch { margin-right: 6px; color: #98a2b3; }
+.variance-over { color: #c2410c !important; }
+.variance-under { color: #067647 !important; }
+@media (max-width: 768px) {
+  .page-header { padding-right: 0; }
+  .report-toolbar { align-items: stretch; flex-direction: column; }
+  .keyword-input { width: 100%; }
+  .export-button { margin-left: 0; }
+  .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric-item:nth-child(2) { border-right: 0; }
+  .metric-item:nth-child(-n + 2) { border-bottom: 1px solid #e5e7eb; }
+  .task-detail-band { padding-left: 16px; }
+}
+</style>

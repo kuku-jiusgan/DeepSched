@@ -6,3 +6,4 @@ pydantic==2.10.3
 pydantic-settings==2.7.0
 ortools==9.15.6755
 alembic==1.14.0
+openpyxl==3.0.10

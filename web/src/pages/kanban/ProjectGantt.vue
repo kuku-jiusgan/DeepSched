@@ -87,7 +87,7 @@
       <div v-if="hoveredSlot.task_type !== 'approval_gate'" class="tooltip-row"><span>负责人</span>{{ hoveredSlot.assignee_name || '-' }}</div>
       <div class="tooltip-row"><span>开始</span>{{ dayjs(hoveredSlot.plan_start).format('MM-DD HH:mm') }}</div>
       <div class="tooltip-row"><span>结束</span>{{ dayjs(hoveredSlot.plan_end).format('MM-DD HH:mm') }}</div>
-      <div class="tooltip-row"><span>状态</span>{{ statusLabel(hoveredSlot.status) }}</div>
+      <div class="tooltip-row"><span>状态</span>{{ statusLabel(displayStatus(hoveredSlot)) }}</div>
       <div v-if="hoveredSlot.task_type === 'approval_gate'" class="tooltip-row"><span>最迟签批</span>{{ hoveredSlot.approval_latest_at ? dayjs(hoveredSlot.approval_latest_at).format('MM-DD HH:mm') : '-' }}</div>
       <div v-if="hoveredSlot.task_type === 'approval_gate'" class="tooltip-row"><span>解锁任务</span>{{ hoveredSlot.approval_unlock_tasks?.map(task => task.name).join('、') || '-' }}</div>
       <div v-if="hasDelay(hoveredSlot)" class="tooltip-row is-delay"><span>延期</span>{{ getDelayText(hoveredSlot) }}</div>
@@ -351,17 +351,21 @@ function getBarInstrumentText(slot: TimeSlot) {
   return slot.instrument_code || slot.instrument_name || '未指定仪器'
 }
 function getBarTaskText(slot: TimeSlot) {
-  if (slot.task_type === 'approval_gate') return statusLabel(slot.status)
+  if (slot.task_type === 'approval_gate') return statusLabel(displayStatus(slot))
   const taskName = slot.task_name || '-'
   const ownerName = slot.assignee_name || '-'
   const delayText = hasDelay(slot) ? ` · 延期${slot.delay_hours || ''}h` : ''
   return `${taskName} · ${ownerName}${delayText}`
 }
 function getBarClasses(slot: TimeSlot) {
-  const status = slot.status === 'pending'
+  const display = displayStatus(slot)
+  const status = display === 'pending'
     ? 'scheduled'
-    : slot.status === 'interrupted' ? 'blocked' : slot.status
+    : display === 'interrupted' ? 'blocked' : display
   return [`status-${status}`, { 'has-delay': hasDelay(slot) }]
+}
+function displayStatus(slot: TimeSlot) {
+  return slot.execution_status || slot.task_status || slot.status
 }
 function hasDelay(slot: TimeSlot) {
   const delayHours = Number(slot.delay_hours || 0)

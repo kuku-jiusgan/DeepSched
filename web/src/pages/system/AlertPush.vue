@@ -117,9 +117,9 @@
                 <div class="rule-field rule-trigger-field">
                   <label>触发条件</label>
                   <div v-if="rule.rule_type === 'task_start_delay'" class="inline-threshold">
-                    <span>计划开始后</span>
-                    <a-input-number v-model:value="rule.threshold_minutes" :min="0" :max="480" :step="5" />
-                    <span>分钟未开始</span>
+                    <span>计划开始前</span>
+                    <a-input-number v-model:value="rule.threshold_minutes" :min="5" :max="480" :step="5" />
+                    <span>分钟提醒</span>
                   </div>
                   <div v-else-if="rule.rule_type === 'hours_exceeded'" class="inline-threshold">
                     <span>实际工时达到预计</span>
@@ -376,7 +376,7 @@ function parseRoles(value: string | null) {
 
 function ruleDescription(type: string) {
   const descriptions: Record<string, string> = {
-    task_start_delay: '任务到达计划开始时间后仍未点击开始。',
+    task_start_delay: '任务到达计划开始时间前，提醒对应任务负责人做好准备。',
     task_end_delay: '已开始任务超过计划结束时间仍未点击结束。',
     schedule_changed: '重排或插单改变任务原定时间。',
     task_schedule_advanced: '任何排程操作使任务计划开始时间提前。',

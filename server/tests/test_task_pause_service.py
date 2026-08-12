@@ -298,7 +298,7 @@ class TaskPauseServiceTest(unittest.TestCase):
         ]
         self.assertEqual(1, len(resumed_slots))
         self.assertIsNotNone(self.source_slot.actual_end)
-        self.assertEqual("done", self.target_task.status)
+        self.assertEqual("completed", self.target_task.status)
 
     def test_candidate_with_paused_predecessor_is_excluded(self):
         dependent_task = Task(

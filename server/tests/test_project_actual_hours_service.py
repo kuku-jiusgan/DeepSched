@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.models import Instrument, Project, Task, TaskExecutionSegment, TaskNightRun, TimeSlot
-from app.services.project_actual_hours_service import project_actual_hours_map
+from app.services.project_actual_hours_service import project_actual_hours_map, task_actual_hours_map
 
 
 class ProjectActualHoursServiceTest(unittest.TestCase):
@@ -46,6 +46,7 @@ class ProjectActualHoursServiceTest(unittest.TestCase):
 
     def test_excludes_non_working_hours_without_night_run(self):
         self.assertEqual(1.0, project_actual_hours_map(self.db, [self.project])[self.project.id])
+        self.assertEqual(1.0, task_actual_hours_map(self.db, [self.task.id])[self.task.id])
 
     def test_adds_registered_night_run_hours(self):
         self.db.add(TaskNightRun(

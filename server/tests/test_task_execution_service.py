@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Project, Task, TaskDependency, TimeSlot
+from app.models import Instrument, Project, Task, TaskDependency, TimeSlot
 from app.services.task_execution_service import (
     TaskExecutionInvalidError,
     start_task_execution,
@@ -108,6 +108,53 @@ class TaskExecutionServiceTest(unittest.TestCase):
 
         self.assertEqual("ok", result["status"])
         self.assertEqual("running", self.db.get(Task, self.task.id).status)
+
+    def test_faulted_instrument_cannot_start_task(self):
+        self.predecessor.status = "done"
+        self.db.add(Instrument(
+            id=1,
+            code="ZBYY-002-0005",
+            name="三重四极液质联用仪",
+            status="fault",
+        ))
+        self.db.commit()
+
+        with self.assertRaisesRegex(
+            TaskExecutionInvalidError,
+            "ZBYY-002-0005.*故障状态",
+        ):
+            start_task_execution(self.db, self.slot.id)
+
+        self.assertEqual("scheduled", self.db.get(Task, self.task.id).status)
+
+    def test_earlier_instrument_task_error_identifies_project(self):
+        self.predecessor.status = "done"
+        earlier_project = Project(id=2, name="前序项目", code="XM-002")
+        earlier_task = Task(
+            id=3,
+            project_id=earlier_project.id,
+            name="方法开发",
+            task_type="FFKF_001",
+            requires_instrument=True,
+            status="scheduled",
+        )
+        earlier_slot = TimeSlot(
+            id=2,
+            task_id=earlier_task.id,
+            instrument_id=1,
+            plan_start=self.slot.plan_start - timedelta(hours=2),
+            plan_end=self.slot.plan_start - timedelta(hours=1),
+            status="scheduled",
+            tier="confirmed",
+        )
+        self.db.add_all([earlier_project, earlier_task, earlier_slot])
+        self.db.commit()
+
+        with self.assertRaisesRegex(
+            TaskExecutionInvalidError,
+            "仪器前序项目【XM-002 · 前序项目】任务【方法开发】尚未完成",
+        ):
+            start_task_execution(self.db, self.slot.id)
 
     def test_human_task_can_start_early(self):
         self.predecessor.status = "done"

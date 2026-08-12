@@ -33,6 +33,39 @@ export interface DetectionTask {
   preview_token?: string | null;
 }
 
+export interface ProjectHoursTask {
+  task_id: number;
+  parent_id: number | null;
+  task_name: string;
+  top_level_task_name: string;
+  assignee_name: string | null;
+  status: string;
+  depth: number;
+  planned_hours: number;
+  actual_hours: number;
+}
+
+export interface ProjectHoursItem {
+  project_id: number;
+  project_code: string;
+  project_name: string;
+  client_name: string | null;
+  manager_name: string | null;
+  task_count: number;
+  planned_hours: number;
+  actual_hours: number;
+  variance_hours: number;
+  tasks: ProjectHoursTask[];
+}
+
+export interface ProjectHoursReport {
+  generated_at: string;
+  project_count: number;
+  planned_hours: number;
+  actual_hours: number;
+  items: ProjectHoursItem[];
+}
+
 export interface Task {
   id: number;
   project_id: number;
@@ -94,6 +127,7 @@ export interface ApprovalGate {
   assignee_name?: string | null;
   project_end_date?: string | null;
   name: string;
+  top_level_task_name?: string | null;
   gate_status: ApprovalGateStatus;
   expected_approval_at?: string | null;
   submitted_at?: string | null;
@@ -181,6 +215,7 @@ export interface InstrumentFault {
     shifted_slots: number;
     affected_tasks: number;
     notified_users: number;
+    risk_tasks?: number;
   };
   affected_tasks?: FaultAffectedTask[];
 }

@@ -5,6 +5,7 @@ import type {
   ApprovalGate, ApprovalGateAction, ApprovalGateList,
   StandardPlanImportResult,
   DetectionTask,
+  ProjectHoursReport,
 } from '@/types';
 
 export type {
@@ -61,6 +62,18 @@ export interface ProjectProgressOverview {
 export interface ProjectProgressList { generated_at: string; items: ProjectProgressOverview[] }
 export const getProjectProgress = (): Promise<ProjectProgressList> =>
   api.get<ProjectProgressList>('/stats/project-progress').then(response => response.data)
+
+export interface ProjectHoursReportQuery {
+  start_date?: string
+  end_date?: string
+  keyword?: string
+}
+
+export const getProjectHoursReport = (params?: ProjectHoursReportQuery): Promise<ProjectHoursReport> =>
+  api.get<ProjectHoursReport>('/reports/project-hours', { params }).then(response => response.data)
+
+export const exportProjectHoursReport = (params?: ProjectHoursReportQuery): Promise<Blob> =>
+  api.get('/reports/project-hours/export', { params, responseType: 'blob' }).then(response => response.data as Blob)
 
 export const deleteProject = (id: number): Promise<void> =>
   api.delete(`/projects/${id}`)

@@ -12,7 +12,7 @@
         </div>
         <div class="today-card-lines">
           <div><span>项目：</span>{{ gate.project_code }} · {{ gate.project_name }}</div>
-          <div><span>方案：</span>{{ gate.name }}</div>
+          <div><span>方案：</span>{{ gateDisplayName(gate) }}</div>
           <div><span>负责人：</span>{{ gate.assignee_name || '未指定' }}</div>
           <div><span>提交时间：</span>{{ formatDateTime(gate.submitted_at) }}</div>
           <div><span>预计签批：</span>{{ formatDateTime(gate.expected_approval_at) }}</div>
@@ -89,6 +89,13 @@ const expectedModalOpen = ref(false)
 const expectedSubmitting = ref(false)
 const expectedGate = ref<ApprovalGate | null>(null)
 const expectedApprovalAt = ref<Dayjs | null>(null)
+function gateDisplayName(gate: ApprovalGate) {
+  if (!gate.top_level_task_name || gate.name.startsWith(`${gate.top_level_task_name} ·`)) {
+    return gate.name
+  }
+  return `${gate.top_level_task_name} · ${gate.name}`
+}
+
 function openExpectedApproval(gate: ApprovalGate) {
   expectedGate.value = gate
   const latestApprovalAt = gate.latest_approval_at ? dayjs(gate.latest_approval_at) : null

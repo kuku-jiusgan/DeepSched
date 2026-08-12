@@ -142,7 +142,7 @@ import { canViewPage, clearPermissions, permissionState } from '@/services/permi
 import {
   FundOutlined, AppstoreOutlined, CheckSquareOutlined,
   ProjectOutlined, ScheduleOutlined, SettingOutlined,
-  DashboardOutlined, FileTextOutlined, DesktopOutlined,
+  FileTextOutlined, DesktopOutlined,
   BarChartOutlined, UserOutlined, MessageOutlined,
   WarningOutlined, DatabaseOutlined, PartitionOutlined,
   ApartmentOutlined, TableOutlined, ToolOutlined,
@@ -193,7 +193,7 @@ const ACTIVITY_EVENTS = ['click', 'keydown', 'mousemove', 'scroll', 'touchstart'
 const iconMap: Record<string, any> = {
   FundOutlined, AppstoreOutlined, CheckSquareOutlined,
   ProjectOutlined, ScheduleOutlined, SettingOutlined,
-  DashboardOutlined, FileTextOutlined, DesktopOutlined,
+  FileTextOutlined, DesktopOutlined,
   BarChartOutlined, UserOutlined, MessageOutlined,
   WarningOutlined, DatabaseOutlined, PartitionOutlined,
   ApartmentOutlined, TableOutlined, ToolOutlined,
@@ -210,8 +210,6 @@ function icon(name: string) {
 const baseMenuItems = [
   { key: '/operations/cockpit', icon: icon('HomeOutlined'), label: '首页' },
   { key: '/operations', icon: icon('FundOutlined'), label: '运营数据中台', hidden: true, children: [
-    { key: '/dashboard', icon: icon('DashboardOutlined'), label: '核心 KPI 仪表盘' },
-    { key: '/operations/reports', icon: icon('FileTextOutlined'), label: '精细化运营报表' },
     { key: '/operations/lab-status', icon: icon('DesktopOutlined'), label: '实验室状态大屏' },
   ]},
   { key: '/kanban', icon: icon('AppstoreOutlined'), label: '资源看板', children: [
@@ -228,6 +226,9 @@ const baseMenuItems = [
     { key: '/projects/plan-breakdown', icon: icon('PartitionOutlined'), label: '项目计划拆解' },
     { key: '/projects/process-dag', icon: icon('ApartmentOutlined'), label: '标准工序依赖配置' },
     { key: '/projects/resource-ledger', icon: icon('TableOutlined'), label: '仪器基础信息' },
+  ]},
+  { key: '/reports', icon: icon('BarChartOutlined'), label: '报表中心', children: [
+    { key: '/operations/reports', icon: icon('FileTextOutlined'), label: '项目工时统计报表' },
   ]},
   { key: '/schedule', icon: icon('ScheduleOutlined'), label: '排程管理', children: [
     { key: '/schedule/rules', icon: icon('ToolOutlined'), label: '排程规则配置' },
@@ -486,7 +487,7 @@ function notificationTypeLabel(type: string) {
     instrument_fault_reschedule: '故障重排',
     instrument_fault_schedule_conflict: '故障冲突',
     schedule_changed: '排程变更',
-    task_start_delay: '开始延迟',
+    task_start_delay: '开始提醒',
     task_end_delay: '结束延期',
     task_schedule_advanced: '排程提前',
     task_schedule_delayed: '排程推迟',

@@ -314,12 +314,21 @@
   border: 1px solid #cbd5e1;
   border-left-color: #94a3b8;
 }
+.status-fault {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #f87171;
+  box-shadow: inset 0 0 0 1px #fecaca;
+}
 .gantt-bar.status-scheduled,
 .gantt-bar.status-running,
 .gantt-bar.status-completed,
 .gantt-bar.status-paused,
 .gantt-bar.status-blocked {
   border-left-width: 4px;
+}
+.gantt-bar.status-fault {
+  border-left-width: 1px;
 }
 .auto-scroll-note {
   position: absolute;

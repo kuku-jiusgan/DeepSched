@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import datetime, timedelta
 
 from app.models import Project, Task, TaskDependency, TimeSlot
@@ -16,6 +14,13 @@ from app.services.project_hours_validation_service import (
     validate_project_estimated_hours,
 )
 from app.services.instrument_status_service import delete_time_slots_and_refresh
+from app.services.approval_gate_schedule_context import ApprovalScheduleContext
+from app.services.project_plan_apply_helpers import (
+    approval_earliest_bounds,
+    apply_success_message,
+    load_approval_resource_queue_tasks,
+    plan_fingerprint,
+)
 from app.services.task_delay_status_service import reset_task_delay
 from app.services.project_instrument_validation_service import (
     RequiredInstrumentError,
@@ -42,7 +47,11 @@ class ProjectPlanInvalidError(Exception):
     pass
 
 
-def apply_project_plan(db, project_id: int) -> ProjectPlanApplyResponse:
+def apply_project_plan(
+    db,
+    project_id: int,
+    approval_context: ApprovalScheduleContext | None = None,
+) -> ProjectPlanApplyResponse:
     recalculate_project_parent_hours(db, project_id)
     db.flush()
     try:
@@ -55,6 +64,11 @@ def apply_project_plan(db, project_id: int) -> ProjectPlanApplyResponse:
     except RequiredInstrumentError as exc:
         raise ProjectPlanInvalidError(str(exc))
     project, selected_tasks = _load_project_candidates(db, project_id)
+    if approval_context:
+        selected_tasks = [
+            task for task in selected_tasks
+            if task.id in approval_context.downstream_task_ids
+        ]
     if not selected_tasks:
         return ProjectPlanApplyResponse(
             status="no_changes",
@@ -62,21 +76,42 @@ def apply_project_plan(db, project_id: int) -> ProjectPlanApplyResponse:
             project_id=project_id,
         )
 
-    stable_result = _execute_replan(db, project, selected_tasks, [], commit=False)
-    if stable_result.status == "applied" and _selected_tasks_start_today(
-        db, selected_tasks, stable_result.schedule_run_id,
-    ):
-        db.rollback()
-        return _execute_replan(db, project, selected_tasks, [], commit=True)
+    stable_result = _execute_replan(
+        db, project, selected_tasks, [], commit=False,
+        approval_context=approval_context,
+    )
     if stable_result.status == "applied":
+        # Normal project scheduling preserves existing schedules.  Inserting a
+        # newly saved project ahead of equal-priority work requires the explicit
+        # insert workflow, not an automatic fallback merely because it starts later.
         db.rollback()
-        movable_tasks = _load_insert_movable_tasks(db, project, selected_tasks)
-        if not movable_tasks:
-            return _execute_replan(db, project, selected_tasks, [], commit=True)
+        if approval_context and _load_insert_movable_tasks(
+            db, project, selected_tasks, approval_context,
+        ):
+            try:
+                return _preview_plan_insert(
+                    db,
+                    project,
+                    selected_tasks,
+                    stable_result.message,
+                    approval_context,
+                )
+            finally:
+                db.rollback()
+        return _execute_replan(
+            db, project, selected_tasks, [], commit=True,
+            approval_context=approval_context,
+        )
     db.rollback()
 
     try:
-        return _preview_plan_insert(db, project, selected_tasks, stable_result.message)
+        return _preview_plan_insert(
+            db,
+            project,
+            selected_tasks,
+            stable_result.message,
+            approval_context,
+        )
     finally:
         db.rollback()
 
@@ -84,17 +119,32 @@ def apply_project_plan(db, project_id: int) -> ProjectPlanApplyResponse:
 def confirm_project_plan_insert(
     db,
     data: ProjectPlanInsertConfirmRequest,
+    approval_context: ApprovalScheduleContext | None = None,
 ) -> ProjectPlanApplyResponse:
     project, selected_tasks = _load_project_candidates(db, data.project_id)
     if not selected_tasks:
         raise ProjectPlanInvalidError("计划已经更新，请重新计算排程")
-    movable_tasks = _load_insert_movable_tasks(db, project, selected_tasks)
+    if approval_context:
+        selected_tasks = [
+            task for task in selected_tasks
+            if task.id in approval_context.downstream_task_ids
+        ]
+    if not selected_tasks:
+        raise ProjectPlanInvalidError("计划已经更新，请重新计算排程")
+    movable_tasks = _load_insert_movable_tasks(
+        db, project, selected_tasks, approval_context,
+    )
     if not movable_tasks:
         raise ProjectPlanInvalidError("当前没有允许移动的低优先级任务")
-    preview_token = _plan_fingerprint(db, project, selected_tasks + movable_tasks)
+    preview_token = plan_fingerprint(
+        db, project, selected_tasks + movable_tasks, approval_context,
+    )
     if preview_token != data.preview_token:
         raise ProjectPlanInvalidError("计划或排程数据已变化，请重新计算影响")
-    result = _execute_replan(db, project, selected_tasks, movable_tasks, commit=True)
+    result = _execute_replan(
+        db, project, selected_tasks, movable_tasks, commit=True,
+        approval_context=approval_context,
+    )
     if result.status != "applied":
         db.rollback()
         raise ProjectPlanInvalidError(result.message or "插单排程失败")
@@ -106,16 +156,24 @@ def _preview_plan_insert(
     project: Project,
     selected_tasks: list[Task],
     stable_message: str | None,
+    approval_context: ApprovalScheduleContext | None = None,
 ) -> ProjectPlanApplyResponse:
-    movable_tasks = _load_insert_movable_tasks(db, project, selected_tasks)
+    movable_tasks = _load_insert_movable_tasks(
+        db, project, selected_tasks, approval_context,
+    )
     if not movable_tasks:
         return ProjectPlanApplyResponse(
             status="error",
             message=stable_message or "没有可移动的低优先级任务，无法完成重排",
             project_id=project.id,
         )
-    preview_token = _plan_fingerprint(db, project, selected_tasks + movable_tasks)
-    preview = _execute_replan(db, project, selected_tasks, movable_tasks, commit=False)
+    preview_token = plan_fingerprint(
+        db, project, selected_tasks + movable_tasks, approval_context,
+    )
+    preview = _execute_replan(
+        db, project, selected_tasks, movable_tasks, commit=False,
+        approval_context=approval_context,
+    )
     if preview.status != "applied":
         return ProjectPlanApplyResponse(
             status="error",
@@ -123,7 +181,10 @@ def _preview_plan_insert(
             project_id=project.id,
         )
     if preview.moved_tasks == 0:
-        preview.message = "排程完成，未顺延其他任务"
+        preview.message = (
+            apply_success_message(approval_context, moved=False)
+            if approval_context else "排程完成，未顺延其他任务"
+        )
         db.commit()
         return preview
     return ProjectPlanApplyResponse(
@@ -146,6 +207,7 @@ def _execute_replan(
     selected_tasks: list[Task],
     movable_tasks: list[Task],
     commit: bool,
+    approval_context: ApprovalScheduleContext | None = None,
 ) -> ProjectPlanApplyResponse:
     replan_tasks = _unique_tasks(selected_tasks + movable_tasks)
     replan_task_ids = {task.id for task in replan_tasks}
@@ -167,6 +229,7 @@ def _execute_replan(
         mode="insert" if movable_tasks else "normal",
         commit=False,
         original_schedule_windows=old_windows,
+        earliest_start_bounds=approval_earliest_bounds(approval_context),
         advance_notification_reason="项目任务保存重排",
         emit_advance_notifications=commit,
     )
@@ -203,7 +266,7 @@ def _execute_replan(
 
     response = ProjectPlanApplyResponse(
         status="applied",
-        message=f"排程完成",
+        message=apply_success_message(approval_context, moved=bool(movable_tasks)),
         project_id=project.id,
         schedule_run_id=schedule_run_id,
         timeslots_created=int(solver_result.get("timeslots_created", 0)),
@@ -242,7 +305,12 @@ def _load_project_candidates(db, project_id: int) -> tuple[Project, list[Task]]:
     return project, sorted(candidates, key=lambda task: (task.created_at, task.id))
 
 
-def _load_insert_movable_tasks(db, project: Project, selected_tasks: list[Task]) -> list[Task]:
+def _load_insert_movable_tasks(
+    db,
+    project: Project,
+    selected_tasks: list[Task],
+    approval_context: ApprovalScheduleContext | None = None,
+) -> list[Task]:
     selected_ids = {task.id for task in selected_tasks}
     movable = _load_lower_priority_movable_tasks(
         db,
@@ -252,7 +320,19 @@ def _load_insert_movable_tasks(db, project: Project, selected_tasks: list[Task])
         include_same_priority=True,
         unstarted_projects_only=True,
     )
-    return _unique_tasks(movable + _load_later_deadline_movable_tasks(db, project, selected_tasks))
+    approval_movable = load_approval_resource_queue_tasks(
+        db,
+        project,
+        selected_tasks,
+        approval_context,
+        _task_has_protected_slot,
+    )
+    return _unique_tasks(
+        movable
+        + _load_later_deadline_movable_tasks(db, project, selected_tasks)
+        + approval_movable
+    )
+
 
 
 def _load_later_deadline_movable_tasks(
@@ -473,63 +553,5 @@ def _downstream_ids(db, seed_ids: set[int], project_task_ids: set[int]) -> set[i
     return affected_ids
 
 
-def _plan_fingerprint(db, project: Project, tasks: list[Task]) -> str:
-    unique_tasks = _unique_tasks(tasks)
-    slots = db.query(TimeSlot).filter(TimeSlot.status.in_(["scheduled", "running", "completed", "paused", "blocked", "interrupted"])).order_by(TimeSlot.id).all()
-    payload = {
-        "project": [
-            project.id,
-            project.priority,
-            _iso(project.start_date),
-            _iso(project.end_date),
-            _iso(project.updated_at),
-        ],
-        "tasks": [
-            [
-                task.id,
-                task.project_id,
-                int(task.project.priority or 3) if task.project else 3,
-                task.status,
-                bool(task.schedule_dirty),
-                task.task_type,
-                task.est_duration_hours,
-                task.switchover_hours,
-                bool(task.allow_split),
-                bool(task.allow_transfer),
-                task.milestone_id,
-                task.priority_weight,
-                sorted(task.instrument_ids or []),
-                sorted(task.predecessor_ids),
-                task.parent_id,
-                bool(task.is_external_gate),
-                task.gate_status,
-                _iso(task.expected_approval_at),
-                _iso(task.approved_at),
-                _iso(task.updated_at),
-            ]
-            for task in unique_tasks
-        ],
-        "slots": [
-            [
-                slot.id,
-                slot.task_id,
-                slot.instrument_id,
-                _iso(slot.plan_start),
-                _iso(slot.plan_end),
-                slot.tier,
-                slot.status,
-                _iso(slot.updated_at),
-            ]
-            for slot in slots
-        ],
-    }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
 def _unique_tasks(tasks: list[Task]) -> list[Task]:
     return sorted({task.id: task for task in tasks}.values(), key=lambda task: (task.project_id, task.created_at, task.id))
-
-
-def _iso(value: datetime | None) -> str | None:
-    return value.isoformat() if value else None

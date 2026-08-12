@@ -3,8 +3,8 @@ import { ref, computed, nextTick } from 'vue'
 import type { CSSProperties, Component } from 'vue'
 import { message } from 'ant-design-vue'
 import { LeftOutlined, RightOutlined, FullscreenOutlined, FullscreenExitOutlined, ExperimentOutlined, EditOutlined, CheckSquareOutlined, DotChartOutlined, FileTextOutlined } from '@ant-design/icons-vue'
-import { getInstruments, getTimeslots, getTaskTypes, type TaskTypeConfig } from '@/services/api'
-import type { Instrument, TimeSlot } from '@/types'
+import { getInstruments, getInstrumentFaults, getTimeslots, getTaskTypes, type TaskTypeConfig } from '@/services/api'
+import type { Instrument, InstrumentFault, TimeSlot } from '@/types'
 import { taskStatusLabel } from '@/utils/statusMeta'
 import dayjs from 'dayjs'
 import { centerGanttTimelineOnCurrentTime } from './kanban/ganttTimelineScroll'
@@ -27,7 +27,7 @@ const WEEK_BAR_FULL_WIDTH = 110
 const WEEK_FRAGMENT_GAP_PX = 2
 const DELAY_PROBLEM_STATUSES = new Set(['blocked', 'interrupted'])
 
-type SlotStatusKey = 'scheduled' | 'running' | 'completed' | 'paused' | 'blocked'
+type SlotStatusKey = 'scheduled' | 'running' | 'completed' | 'paused' | 'blocked' | 'fault'
 type InstrumentStatusKey = 'idle' | 'running' | 'maintenance' | 'fault' | 'disabled' | 'unknown'
 
 interface StatusMeta {
@@ -62,6 +62,7 @@ interface GanttSlot extends TimeSlot {
   renderEnd?: string
   originalPlanEnd?: string
   isOverdueDisplay?: boolean
+  faultDescription?: string
 }
 
 interface TaskTiming {
@@ -80,6 +81,7 @@ const slotStatusMetaMap: Record<string, StatusMeta> = {
   completed: { key: 'completed', label: '已完成' },
   blocked: { key: 'blocked', label: '已阻塞' },
   interrupted: { key: 'blocked', label: '已中断' },
+  fault: { key: 'fault', label: '故障停机' },
 }
 
 const instrumentStatusMetaMap: Record<string, InstrumentStatusMeta> = {
@@ -94,6 +96,7 @@ export function useInstrumentGanttPage() {
 const loading = ref(true)
 const instruments = ref<Instrument[]>([])
 const slots = ref<TimeSlot[]>([])
+const faults = ref<InstrumentFault[]>([])
 const viewMode = ref<'day' | 'week' | 'month'>('week')
 const cursorDate = ref(dayjs().startOf('week'))
 const isFullscreen = ref(false)
@@ -220,8 +223,71 @@ const taskTimingMap = computed(() => {
   return timingMap
 })
 
+const taskDelayRangesMap = computed(() => {
+  const result = new Map<number, Array<[dayjs.Dayjs, dayjs.Dayjs]>>()
+  for (const [taskId, timing] of taskTimingMap.value) {
+    const delayHours = timing.delayHours
+    if (delayHours <= 0) continue
+    const reportedStarts = slots.value
+      .filter(slot => slot.task_id === taskId && slot.delay_started_at)
+      .map(slot => dayjs(slot.delay_started_at))
+      .filter(start => start.isValid())
+    let remainingMinutes = Math.round(delayHours * 60)
+    let cursor = reportedStarts.length
+      ? reportedStarts.reduce((earliest, start) => start.isBefore(earliest) ? start : earliest)
+      : rewindWorkingMinutes(timing.expectedEnd, remainingMinutes)
+    const ranges: Array<[dayjs.Dayjs, dayjs.Dayjs]> = []
+    let daysScanned = 0
+    while (remainingMinutes > 0 && daysScanned < 370) {
+      const day = cursor.startOf('day')
+      const dayStart = day.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE)
+      const dayEnd = day.hour(WORKDAY_END_HOUR).minute(0)
+      if (cursor.isBefore(dayStart)) cursor = dayStart
+      if (cursor.day() === 0 || cursor.day() === 6 || !cursor.isBefore(dayEnd)) {
+        cursor = day.add(1, 'day').hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE)
+        daysScanned++
+        continue
+      }
+      const end = cursor.add(Math.min(remainingMinutes, dayEnd.diff(cursor, 'minute')), 'minute')
+      ranges.push([cursor, end])
+      remainingMinutes -= end.diff(cursor, 'minute')
+      cursor = end
+    }
+    result.set(taskId, ranges)
+  }
+  return result
+})
+
+function rewindWorkingMinutes(end: dayjs.Dayjs, durationMinutes: number) {
+  let cursor = end
+  let remainingMinutes = durationMinutes
+  let daysScanned = 0
+  while (remainingMinutes > 0 && daysScanned < 370) {
+    const day = cursor.startOf('day')
+    const dayStart = day.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE)
+    const dayEnd = day.hour(WORKDAY_END_HOUR).minute(0)
+    if (cursor.isAfter(dayEnd)) cursor = dayEnd
+    if (cursor.day() === 0 || cursor.day() === 6 || !cursor.isAfter(dayStart)) {
+      cursor = day.subtract(1, 'day').hour(WORKDAY_END_HOUR).minute(0)
+      daysScanned++
+      continue
+    }
+    const availableMinutes = cursor.diff(dayStart, 'minute')
+    const consumedMinutes = Math.min(remainingMinutes, availableMinutes)
+    cursor = cursor.subtract(consumedMinutes, 'minute')
+    remainingMinutes -= consumedMinutes
+  }
+  return cursor
+}
+
 const displaySlots = computed<GanttSlot[]>(() =>
-  mergeContinuousSlots(splitSlotsAroundExecutedOccupancy(toDisplaySlots(slots.value))),
+  mergeContinuousSlots(splitSlotsAroundExecutedOccupancy(toDisplaySlots([...slots.value, ...faultDisplaySlots.value]))),
+)
+
+const faultDisplaySlots = computed<TimeSlot[]>(() =>
+  faults.value
+    .map(faultToDisplaySlot)
+    .filter((slot): slot is TimeSlot => Boolean(slot)),
 )
 
 function computeLanes() {
@@ -411,15 +477,19 @@ const taskIconMap: Record<string, Component> = {
 function getTaskIcon(code: string | null | undefined) { return code ? (taskIconMap[code] || null) : null }
 function getTaskTypeLabel(code: string | null | undefined) { return code ? (taskTypeMap.value[code] || code) : '' }
 function getSlotStatusMeta(status: string): StatusMeta {
-  return slotStatusMetaMap[status] || { key: 'scheduled', label: status || '待执行' }
+  return slotStatusMetaMap[status] || (status === 'delayed'
+    ? { key: 'blocked', label: '延期' }
+    : { key: 'scheduled', label: status || '待执行' })
 }
 function getInstrumentStatusMeta(status: string): InstrumentStatusMeta {
   return instrumentStatusMetaMap[status] || { key: 'unknown', label: status || '未知' }
 }
 function getBarProjectText(slot: TimeSlot) {
+  if (slot.status === 'fault') return '故障'
   return slot.project_code || '-'
 }
 function getBarTaskText(slot: TimeSlot) {
+  if (slot.status === 'fault') return (slot as GanttSlot).faultDescription || '仪器故障'
   const taskName = slot.task_name || '-'
   const ownerName = slot.assignee_name || '-'
   const delayText = hasDelay(slot) ? ` · 延期${slot.delay_hours || ''}h` : ''
@@ -430,9 +500,9 @@ function isCompactBar(slot: TimeSlot, quarter?: number) {
 }
 
 function hasDelay(slot: TimeSlot) {
-  const delayRange = getDelayRange(slot)
-  if (!delayRange) return false
-  return dayjs(slot.plan_end).isAfter(delayRange[0]) && dayjs(slot.plan_start).isBefore(delayRange[1])
+  const slotStart = dayjs(slot.plan_start)
+  const slotEnd = dayjs(slot.plan_end)
+  return getDelayRanges(slot).some(([start, end]) => slotEnd.isAfter(start) && slotStart.isBefore(end))
 }
 
 function hasPausedExecution(slot: TimeSlot) {
@@ -456,8 +526,11 @@ function getPausedExecutionStyle(slot: TimeSlot, quarter?: number): CSSPropertie
 
 function getDelaySegmentStyle(slot: TimeSlot, quarter?: number): CSSProperties {
   const visibleRange = getVisibleSlotRange(slot, quarter)
-  const delayRange = getDelayRange(slot)
-  if (!visibleRange || !delayRange) return { display: 'none' }
+  if (!visibleRange) return { display: 'none' }
+  const delayRange = getDelayRanges(slot).find(
+    ([start, end]) => visibleRange[1].isAfter(start) && visibleRange[0].isBefore(end),
+  )
+  if (!delayRange) return { display: 'none' }
   const overlapStart = delayRange[0].isAfter(visibleRange[0]) ? delayRange[0] : visibleRange[0]
   const overlapEnd = delayRange[1].isBefore(visibleRange[1]) ? delayRange[1] : visibleRange[1]
   if (!overlapEnd.isAfter(overlapStart)) return { display: 'none' }
@@ -467,16 +540,12 @@ function getDelaySegmentStyle(slot: TimeSlot, quarter?: number): CSSProperties {
   return { left: `${leftRatio * 100}%`, width: `${widthRatio * 100}%` }
 }
 
-function getDelayRange(slot: TimeSlot): [dayjs.Dayjs, dayjs.Dayjs] | null {
+function getDelayRanges(slot: TimeSlot): Array<[dayjs.Dayjs, dayjs.Dayjs]> {
   // 延期显示必须以正式“延期使用”申请为准。实际执行超过计划时间
   // 只代表执行结果，不应自动生成甘特图红色延期区间。
   const slotDelayHours = Number(slot.delay_hours || 0)
-  if (slotDelayHours <= 0) return null
-  const timing = taskTimingMap.value.get(slot.task_id)
-  if (!timing) return null
-  const delayedEnd = timing.expectedEnd
-  const reportedStart = slot.delay_started_at ? dayjs(slot.delay_started_at) : null
-  return [reportedStart?.isValid() ? reportedStart : delayedEnd.subtract(slotDelayHours, 'hour'), delayedEnd]
+  if (slotDelayHours <= 0) return []
+  return taskDelayRangesMap.value.get(slot.task_id) || []
 }
 
 function isTerminalTaskSlot(slot: TimeSlot, timing: TaskTiming) {
@@ -583,6 +652,7 @@ function dismissTooltip() {
 
 function toDisplaySlots(sourceSlots: TimeSlot[]): GanttSlot[] {
   return sourceSlots.flatMap(slot => {
+    if (slot.status === 'fault') return [{ ...slot, originalPlanEnd: slot.plan_end }]
     if (slot.status !== 'completed') {
       const originalPlanEnd = dayjs(slot.plan_end)
       const timing = taskTimingMap.value.get(slot.task_id)
@@ -617,7 +687,7 @@ function splitSlotsAroundExecutedOccupancy(sourceSlots: GanttSlot[]): GanttSlot[
     .filter(item => item.end.isAfter(item.start))
 
   return sourceSlots.flatMap(slot => {
-    if (slot.status === 'completed' || slot.isOverdueDisplay || !slot.instrument_id) return [slot]
+    if (slot.status === 'completed' || slot.status === 'fault' || slot.isOverdueDisplay || !slot.instrument_id) return [slot]
     const start = dayjs(slot.plan_start)
     const end = dayjs(slot.plan_end)
     const overlaps = executedSlots
@@ -746,9 +816,15 @@ function updateRowHeight() {
 async function fetchData(silent = false) {
   if (!silent) loading.value = true
   try {
-    const [insts, timeslots, types] = await Promise.all([getInstruments(), getTimeslots(), getTaskTypes()])
+    const [insts, timeslots, faultItems, types] = await Promise.all([
+      getInstruments(),
+      getTimeslots(),
+      getInstrumentFaults(),
+      getTaskTypes(),
+    ])
     instruments.value = insts
     slots.value = timeslots
+    faults.value = faultItems
     const map: Record<string, string> = {}
     types.forEach((t: TaskTypeConfig) => { map[t.code] = t.name })
     taskTypeMap.value = map
@@ -760,6 +836,35 @@ async function fetchData(silent = false) {
     if (viewMode.value === 'day') await centerGanttTimelineOnCurrentTime(containerRef, colWidth)
     if (isFullscreen.value && autoScrollEnabled.value) scheduleAutoScrollStart()
   }
+}
+
+function faultToDisplaySlot(fault: InstrumentFault): TimeSlot | null {
+  if (!fault.instrument_id || !fault.reported_at) return null
+  const end = fault.resolved_at || fault.estimated_resolved_at
+  if (!end || !dayjs(end).isAfter(dayjs(fault.reported_at))) return null
+  return {
+    id: -fault.id,
+    task_id: -fault.id,
+    instrument_id: fault.instrument_id,
+    plan_start: fault.reported_at,
+    plan_end: end,
+    actual_start: fault.reported_at,
+    actual_end: fault.resolved_at || undefined,
+    tier: 'fault',
+    status: 'fault',
+    execution_status: 'fault',
+    is_night_run: true,
+    task_name: '仪器故障',
+    task_type: 'instrument_fault',
+    task_status: 'fault',
+    delay_status: 'not_delayed',
+    project_code: '故障',
+    project_name: '仪器故障',
+    assignee_id: null,
+    assignee_name: '-',
+    project_id: null,
+    faultDescription: fault.description,
+  } as GanttSlot
 }
 
 return {

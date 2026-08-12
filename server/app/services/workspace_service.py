@@ -8,6 +8,7 @@ from app.domain.task_schedule import (
     planned_task_window,
     select_actionable_segment,
 )
+from app.domain.task_status import resolve_task_execution_status
 from app.repositories.workspace_repository import (
     get_active_user,
     list_agenda_slots,
@@ -95,17 +96,9 @@ def _workspace_task_out(task, segments, delay_by_slot, resume_priority_by_task, 
 
 
 def _workspace_execution_status(task, segments, actionable) -> str:
-    if task.status in {"done", "completed"}:
-        return task.status
-    if any(segment.ended_at is None for segment in task.execution_segments):
-        return "running"
-    if any(segment.status == "running" for segment in segments):
-        return "running"
     if task.status == "paused" and _is_inconsistent_paused_task(task):
         return "interrupted"
-    if task.status == "running" and actionable and actionable.status in {"paused", "blocked", "interrupted"}:
-        return actionable.status
-    return task.status
+    return resolve_task_execution_status(task)
 
 
 def _top_level_task_name(task) -> str | None:

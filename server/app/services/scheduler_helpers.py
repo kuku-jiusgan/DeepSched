@@ -197,7 +197,26 @@ def build_maintenance_windows(
                 windows.append(
                     (instrument.id, (max(0, start_unit), end_unit))
                 )
+        for fault in getattr(instrument, "faults", []) or []:
+            if fault.status != "open" or not fault.estimated_resolved_at:
+                continue
+            start_time = max(horizon_start, fault.reported_at or horizon_start)
+            start_unit = datetime_to_units(start_time, horizon_start)
+            end_unit = datetime_to_units(fault.estimated_resolved_at, horizon_start)
+            if end_unit > 0:
+                windows.append(
+                    (instrument.id, (max(0, start_unit), end_unit))
+                )
+        if instrument.status == "fault" and not _has_open_fault_repair_time(instrument):
+            windows.append((instrument.id, (0, HORIZON_DAYS * 24 * 60 // TIME_UNIT_MINUTES)))
     return windows
+
+
+def _has_open_fault_repair_time(instrument) -> bool:
+    return any(
+        fault.status == "open" and fault.estimated_resolved_at
+        for fault in getattr(instrument, "faults", []) or []
+    )
 
 
 def build_working_prefix_sum(

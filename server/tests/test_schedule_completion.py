@@ -6,7 +6,16 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Notification, Project, Task, TaskDependency, TimeSlot, User
+from app.models import (
+    Instrument,
+    InstrumentFault,
+    Notification,
+    Project,
+    Task,
+    TaskDependency,
+    TimeSlot,
+    User,
+)
 from app.services.schedule_completion_service import (
     _forward_shift_instrument_queue,
     _mark_task_slots_completed,
@@ -237,6 +246,50 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.assertEqual(datetime(2026, 7, 13, 15, 0), moved_slot.plan_start)
         self.assertEqual(datetime(2026, 7, 13, 17, 0), moved_slot.plan_end)
 
+    def test_forward_shift_respects_open_instrument_fault_window(self):
+        instrument = Instrument(
+            id=1,
+            code="ZBYY-002-0005",
+            name="三重四极液质联用仪",
+            status="fault",
+        )
+        candidate = Task(
+            project_id=1,
+            name="方法开发",
+            task_type="test",
+            status="scheduled",
+            requires_instrument=True,
+        )
+        self.db.add_all([instrument, candidate])
+        self.db.flush()
+        self.db.add_all([
+            InstrumentFault(
+                instrument_id=instrument.id,
+                reported_at=datetime(2026, 7, 13, 10, 0),
+                estimated_resolved_at=datetime(2026, 7, 14, 10, 0),
+                status="open",
+            ),
+            TimeSlot(
+                task_id=candidate.id,
+                instrument_id=instrument.id,
+                plan_start=datetime(2026, 7, 14, 15, 0),
+                plan_end=datetime(2026, 7, 14, 17, 0),
+                status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        result = self._forward_shift(instrument.id, datetime(2026, 7, 13, 12, 0))
+
+        moved_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == candidate.id,
+        ).one()
+        self.assertEqual(1, result["moved_tasks"])
+        self.assertGreaterEqual(
+            moved_slot.plan_start,
+            datetime(2026, 7, 14, 10, 0),
+        )
+
     def test_early_completion_notifies_each_moved_task_assignee(self):
         assignee = User(
             username="analyst",
@@ -277,9 +330,10 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.assertEqual(["site", "wecom"], [item.channel for item in notifications])
         self.assertEqual("analyst", notification.user_name)
         self.assertEqual("task_schedule_advanced", notification.n_type)
-        self.assertIn("前序检测", notification.content)
-        self.assertIn("2026-07-13 12:00", notification.content)
-        self.assertIn("2026-07-13 15:00", notification.content)
+        self.assertEqual("任务前移通知", notification.title)
+        self.assertIn("新时间：7/13（周一）12:00–14:00（2小时）", notification.content)
+        self.assertIn("原时间：7/13 15:00–17:00（已提前）", notification.content)
+        self.assertIn("原因：前序任务“前序检测”今日已提前完成。", notification.content)
 
     def test_on_time_completion_does_not_send_advance_notification(self):
         assignee = User(

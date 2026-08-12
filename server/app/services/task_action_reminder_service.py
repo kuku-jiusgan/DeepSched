@@ -49,7 +49,8 @@ def scan_task_action_reminders(db, now: datetime | None = None) -> dict[str, int
     current_time = now or datetime.now()
     start_rule = _rule(db, START_REMINDER_TYPE)
     end_rule = _rule(db, END_REMINDER_TYPE)
-    start_threshold = timedelta(minutes=max(0, start_rule.threshold_minutes if start_rule else 0))
+    start_threshold_minutes = max(0, start_rule.threshold_minutes if start_rule else 15)
+    start_threshold = timedelta(minutes=start_threshold_minutes)
     start_count = 0
     end_count = 0
 
@@ -64,10 +65,15 @@ def scan_task_action_reminders(db, now: datetime | None = None) -> dict[str, int
         last_slot = max(slots, key=lambda slot: (slot.plan_end, slot.id))
         has_started = task.status == "running" or any(slot.actual_start for slot in slots)
 
-        if not has_started and current_time >= first_slot.plan_start + start_threshold:
-            mark_task_delayed(task)
+        reminder_at = first_slot.plan_start - start_threshold
+        if not has_started and reminder_at <= current_time < first_slot.plan_start:
             if not _already_notified(db, START_REMINDER_TYPE, first_slot.id):
-                start_count += _push_start_reminder(db, task, first_slot)
+                start_count += _push_start_reminder(
+                    db, task, first_slot, start_threshold_minutes,
+                )
+
+        if not has_started and current_time >= first_slot.plan_start:
+            mark_task_delayed(task)
 
         if has_started and current_time >= last_slot.plan_end:
             mark_task_delayed(task)
@@ -78,20 +84,19 @@ def scan_task_action_reminders(db, now: datetime | None = None) -> dict[str, int
     return {"start_reminders": start_count, "end_reminders": end_count}
 
 
-def _push_start_reminder(db, task: Task, slot) -> int:
+def _push_start_reminder(db, task: Task, slot, threshold_minutes: int) -> int:
     return push_by_rule(
         db,
         START_REMINDER_TYPE,
-        _recipients(task),
-        "任务已到计划开始时间，请点击开始",
+        [task.assignee],
+        f"任务将在 {threshold_minutes} 分钟后开始",
         (
             f"项目【{task.project.code if task.project else '-'}】任务【{task.name}】"
-            f"计划于 {slot.plan_start:%Y-%m-%d %H:%M} 开始，当前尚未点击开始，"
-            "请及时确认任务状态。"
+            f"计划于 {slot.plan_start:%Y-%m-%d %H:%M} 开始，请提前做好准备。"
         ),
         related_entity_type="time_slot",
         related_entity_id=slot.id,
-        context_roles=["任务负责人", "项目负责人"],
+        context_roles=["任务负责人"],
     )
 
 

@@ -38,6 +38,10 @@
                   <span class="fault-summary-label">影响任务</span>
                   <strong>{{ fault.affected_tasks?.length || 0 }} 个</strong>
                 </div>
+                <div class="fault-summary-item" :class="{ highlight: fault.schedule_impact?.risk_tasks }">
+                  <span class="fault-summary-label">超期预警</span>
+                  <strong>{{ fault.schedule_impact?.risk_tasks || 0 }} 个</strong>
+                </div>
               </div>
 
               <div class="fault-card-desc">
@@ -292,7 +296,7 @@ async function handleSubmitFault() {
     })
     const impact = result.schedule_impact
     const impactText = impact && impact.affected_tasks > 0
-      ? `，已后移 ${impact.affected_tasks} 个任务、通知 ${impact.notified_users} 人`
+      ? `，已后移 ${impact.affected_tasks} 个任务、超期预警 ${impact.risk_tasks || 0} 个、通知 ${impact.notified_users} 人`
       : ''
     message.success((resolvedAt ? '故障记录已归档' : '故障已提报') + impactText)
     faultModalOpen.value = false
