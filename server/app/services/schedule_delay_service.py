@@ -12,6 +12,7 @@ from app.services.schedule_advance_notification_service import (
 )
 from app.services.task_delay_status_service import mark_task_delayed
 from app.services.schedule_rule_service import get_solver_constraints
+from app.services.schedule_forward_slot_service import has_instrument_unavailable_window
 from app.services.scheduler_helpers import (
     is_allowed_calendar_day,
     load_calendar_days,
@@ -368,6 +369,8 @@ def _is_working_unit(start: datetime, options: dict) -> bool:
 def _has_instrument_conflict(db, instrument_id: int | None, start: datetime, end: datetime) -> bool:
     if instrument_id is None:
         return False
+    if has_instrument_unavailable_window(db, instrument_id, start, end):
+        return True
     slots = db.query(TimeSlot).filter(TimeSlot.instrument_id == instrument_id).all()
     for slot in slots:
         if slot.status == "completed":

@@ -116,6 +116,8 @@ def _insert_target_into_source_schedule(
     historical_source_start = source_slot.actual_start or switch_time
     source_slot.plan_start = min(historical_source_start, switch_time)
     source_slot.plan_end = switch_time
+    target_slot.plan_start = switch_time
+    target_slot.plan_end = switch_time
 
     replaceable_slots = [slot for slot in source_slots if slot.id != source_slot.id]
     replaceable_slots.extend(slot for slot in target_slots if slot.id != target_slot.id)

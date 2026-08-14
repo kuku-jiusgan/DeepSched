@@ -1,14 +1,14 @@
 
 import { ref, computed, nextTick } from 'vue'
 import type { CSSProperties, Component } from 'vue'
-import { message } from 'ant-design-vue'
 import { LeftOutlined, RightOutlined, FullscreenOutlined, FullscreenExitOutlined, ExperimentOutlined, EditOutlined, CheckSquareOutlined, DotChartOutlined, FileTextOutlined } from '@ant-design/icons-vue'
-import { getInstruments, getInstrumentFaults, getTimeslots, getTaskTypes, type TaskTypeConfig } from '@/services/api'
-import type { Instrument, InstrumentFault, TimeSlot } from '@/types'
+import type { Instrument, TimeSlot } from '@/types'
 import { taskStatusLabel } from '@/utils/statusMeta'
 import dayjs from 'dayjs'
 import { centerGanttTimelineOnCurrentTime } from './kanban/ganttTimelineScroll'
 import { useGanttAutoScroll } from './kanban/useGanttAutoScroll'
+import { useInstrumentGanttData, type InstrumentGanttViewMode } from './useInstrumentGanttData'
+import { buildTrailingDelayRanges } from './instrumentGanttDelayRanges'
 
 const LEFT_WIDTH = 250
 const HEADER_HEIGHT = 50
@@ -93,11 +93,7 @@ const instrumentStatusMetaMap: Record<string, InstrumentStatusMeta> = {
 }
 
 export function useInstrumentGanttPage() {
-const loading = ref(true)
-const instruments = ref<Instrument[]>([])
-const slots = ref<TimeSlot[]>([])
-const faults = ref<InstrumentFault[]>([])
-const viewMode = ref<'day' | 'week' | 'month'>('week')
+const viewMode = ref<InstrumentGanttViewMode>('week')
 const cursorDate = ref(dayjs().startOf('week'))
 const isFullscreen = ref(false)
 const hoveredSlot = ref<GanttSlot | null>(null)
@@ -106,6 +102,16 @@ const tooltipX = ref(0)
 const tooltipY = ref(0)
 const tooltipStyle = computed(() => ({ left: tooltipX.value + 'px', top: tooltipY.value + 'px' }))
 const containerRef = ref<HTMLElement | null>(null)
+const { faults, instruments, loadData: fetchData, loading, slots, taskTypeMap } = useInstrumentGanttData({
+  viewMode,
+  cursorDate,
+  afterLoad: async () => {
+    await nextTick()
+    await recalc()
+    if (viewMode.value === 'day') await centerGanttTimelineOnCurrentTime(containerRef, colWidth)
+    if (isFullscreen.value && autoScrollEnabled.value) scheduleAutoScrollStart()
+  },
+})
 const {
   autoScrollEnabled,
   hasVerticalOverflow,
@@ -122,9 +128,9 @@ const leftRef = ref<HTMLElement | null>(null)
 const rightRef = ref<HTMLElement | null>(null)
 const colWidth = ref(140)
 const rowHeight = ref(WEEK_QUARTER_ROW_HEIGHT)
-const taskTypeMap = ref<Record<string, string>>({})
 const laneMap = ref<Record<number, Record<number, number>>>({})
 const laneCounts = ref<Record<number, number>>({})
+let recalcPromise: Promise<void> | null = null
 
 const flatRows = computed(() => {
   const rows: { inst: Instrument; quarter: number; isSubrow: boolean; isLast: boolean }[] = []
@@ -228,61 +234,45 @@ const taskDelayRangesMap = computed(() => {
   for (const [taskId, timing] of taskTimingMap.value) {
     const delayHours = timing.delayHours
     if (delayHours <= 0) continue
-    const reportedStarts = slots.value
-      .filter(slot => slot.task_id === taskId && slot.delay_started_at)
-      .map(slot => dayjs(slot.delay_started_at))
-      .filter(start => start.isValid())
-    let remainingMinutes = Math.round(delayHours * 60)
-    let cursor = reportedStarts.length
-      ? reportedStarts.reduce((earliest, start) => start.isBefore(earliest) ? start : earliest)
-      : rewindWorkingMinutes(timing.expectedEnd, remainingMinutes)
-    const ranges: Array<[dayjs.Dayjs, dayjs.Dayjs]> = []
-    let daysScanned = 0
-    while (remainingMinutes > 0 && daysScanned < 370) {
-      const day = cursor.startOf('day')
-      const dayStart = day.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE)
-      const dayEnd = day.hour(WORKDAY_END_HOUR).minute(0)
-      if (cursor.isBefore(dayStart)) cursor = dayStart
-      if (cursor.day() === 0 || cursor.day() === 6 || !cursor.isBefore(dayEnd)) {
-        cursor = day.add(1, 'day').hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE)
-        daysScanned++
-        continue
-      }
-      const end = cursor.add(Math.min(remainingMinutes, dayEnd.diff(cursor, 'minute')), 'minute')
-      ranges.push([cursor, end])
-      remainingMinutes -= end.diff(cursor, 'minute')
-      cursor = end
-    }
-    result.set(taskId, ranges)
+    const taskRanges = slots.value
+      .filter(slot => slot.task_id === taskId)
+      .map(slot => ({ start: dayjs(slot.plan_start), end: dayjs(slot.plan_end) }))
+    result.set(taskId, buildTrailingDelayRanges(taskRanges, delayHours * 60))
   }
   return result
 })
 
-function rewindWorkingMinutes(end: dayjs.Dayjs, durationMinutes: number) {
-  let cursor = end
-  let remainingMinutes = durationMinutes
-  let daysScanned = 0
-  while (remainingMinutes > 0 && daysScanned < 370) {
-    const day = cursor.startOf('day')
-    const dayStart = day.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE)
-    const dayEnd = day.hour(WORKDAY_END_HOUR).minute(0)
-    if (cursor.isAfter(dayEnd)) cursor = dayEnd
-    if (cursor.day() === 0 || cursor.day() === 6 || !cursor.isAfter(dayStart)) {
-      cursor = day.subtract(1, 'day').hour(WORKDAY_END_HOUR).minute(0)
-      daysScanned++
-      continue
-    }
-    const availableMinutes = cursor.diff(dayStart, 'minute')
-    const consumedMinutes = Math.min(remainingMinutes, availableMinutes)
-    cursor = cursor.subtract(consumedMinutes, 'minute')
-    remainingMinutes -= consumedMinutes
-  }
-  return cursor
-}
-
 const displaySlots = computed<GanttSlot[]>(() =>
   mergeContinuousSlots(splitSlotsAroundExecutedOccupancy(toDisplaySlots([...slots.value, ...faultDisplaySlots.value]))),
 )
+
+const slotsByInstrument = computed(() => {
+  const map = new Map<number, GanttSlot[]>()
+  for (const slot of displaySlots.value) {
+    if (!slot.instrument_id) continue
+    const items = map.get(slot.instrument_id) || []
+    items.push(slot)
+    map.set(slot.instrument_id, items)
+  }
+  return map
+})
+
+const slotsByQuarter = computed(() => {
+  const map = new Map<string, GanttSlot[]>()
+  if (viewMode.value !== 'week') return map
+  for (const slot of displaySlots.value) {
+    if (!slot.instrument_id) continue
+    for (let quarter = 0; quarter < WEEK_SEGMENT_COUNT; quarter++) {
+      const fragments = buildQuarterFragments(slot, quarter)
+      if (!fragments.length) continue
+      const key = quarterSlotKey(slot.instrument_id, quarter)
+      const items = map.get(key) || []
+      items.push(...fragments)
+      map.set(key, items)
+    }
+  }
+  return map
+})
 
 const faultDisplaySlots = computed<TimeSlot[]>(() =>
   faults.value
@@ -364,42 +354,47 @@ function displayStatus(slot: GanttSlot) {
 
 function getSlotsForQuarter(instId: number, quarter: number) {
   if (viewMode.value !== 'week') return getSlotsForInstrument(instId)
-  const cols = timeColumns.value
-  return getSlotsForInstrument(instId).flatMap(slot => {
-    const start = dayjs(slot.plan_start)
-    const end = dayjs(slot.plan_end)
-    const fragments: GanttSlot[] = []
-    for (const col of cols) {
-      const dayStart = col.start
-      const segmentStart = dayStart.hour(getSegmentStartHour(quarter))
-      const segmentEnd = dayStart.hour(getSegmentEndHour(quarter))
-      const qStart = slot.is_night_run
-        ? segmentStart
-        : (segmentStart.isBefore(dayStart.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE))
-          ? dayStart.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE)
-          : segmentStart)
-      const qEnd = slot.is_night_run
-        ? segmentEnd
-        : (segmentEnd.isAfter(dayStart.hour(WORKDAY_END_HOUR))
-          ? dayStart.hour(WORKDAY_END_HOUR)
-          : segmentEnd)
-      if (!qEnd.isAfter(qStart)) continue
-      if (!end.isAfter(qStart) || !start.isBefore(qEnd)) continue
-      const fragmentStart = start.isAfter(qStart) ? start : qStart
-      const fragmentEnd = end.isBefore(qEnd) ? end : qEnd
-      fragments.push({
-        ...slot,
-        renderKey: `${slot.id}-${quarter}-${col.key}`,
-        renderStart: fragmentStart.toISOString(),
-        renderEnd: fragmentEnd.toISOString(),
-      })
-    }
-    return fragments
-  })
+  return slotsByQuarter.value.get(quarterSlotKey(instId, quarter)) || []
 }
 
 function getSlotsForInstrument(instId: number) {
-  return displaySlots.value.filter(s => s.instrument_id === instId)
+  return slotsByInstrument.value.get(instId) || []
+}
+
+function quarterSlotKey(instId: number, quarter: number) {
+  return `${instId}:${quarter}`
+}
+
+function buildQuarterFragments(slot: GanttSlot, quarter: number) {
+  const start = dayjs(slot.plan_start)
+  const end = dayjs(slot.plan_end)
+  const fragments: GanttSlot[] = []
+  for (const col of timeColumns.value) {
+    const dayStart = col.start
+    const segmentStart = dayStart.hour(getSegmentStartHour(quarter))
+    const segmentEnd = dayStart.hour(getSegmentEndHour(quarter))
+    const qStart = slot.is_night_run
+      ? segmentStart
+      : (segmentStart.isBefore(dayStart.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE))
+        ? dayStart.hour(WORKDAY_START_HOUR).minute(WORKDAY_START_MINUTE)
+        : segmentStart)
+    const qEnd = slot.is_night_run
+      ? segmentEnd
+      : (segmentEnd.isAfter(dayStart.hour(WORKDAY_END_HOUR))
+        ? dayStart.hour(WORKDAY_END_HOUR)
+        : segmentEnd)
+    if (!qEnd.isAfter(qStart)) continue
+    if (!end.isAfter(qStart) || !start.isBefore(qEnd)) continue
+    const fragmentStart = start.isAfter(qStart) ? start : qStart
+    const fragmentEnd = end.isBefore(qEnd) ? end : qEnd
+    fragments.push({
+      ...slot,
+      renderKey: `${slot.id}-${quarter}-${col.key}`,
+      renderStart: fragmentStart.toISOString(),
+      renderEnd: fragmentEnd.toISOString(),
+    })
+  }
+  return fragments
 }
 
 function getBarStyle(slot: GanttSlot, quarter?: number) {
@@ -768,77 +763,58 @@ async function switchView(mode: 'day' | 'week' | 'month') {
   else if (mode === 'week') cursorDate.value = dayjs().startOf('week')
   else cursorDate.value = dayjs().startOf('day')
   updateRowHeight()
-  await recalc()
-  if (mode === 'day') await centerGanttTimelineOnCurrentTime(containerRef, colWidth)
+  await fetchData()
 }
 
-function goPrev() {
+async function goPrev() {
   if (viewMode.value === 'day') cursorDate.value = cursorDate.value.subtract(1, 'day')
   else if (viewMode.value === 'week') cursorDate.value = cursorDate.value.subtract(1, 'week')
   else cursorDate.value = cursorDate.value.subtract(1, 'month')
+  await fetchData()
 }
 
-function goNext() {
+async function goNext() {
   if (viewMode.value === 'day') cursorDate.value = cursorDate.value.add(1, 'day')
   else if (viewMode.value === 'week') cursorDate.value = cursorDate.value.add(1, 'week')
   else cursorDate.value = cursorDate.value.add(1, 'month')
+  await fetchData()
 }
 
 async function goToday() {
   if (viewMode.value === 'month') cursorDate.value = dayjs().startOf('month')
   else if (viewMode.value === 'week') cursorDate.value = dayjs().startOf('week')
   else cursorDate.value = dayjs().startOf('day')
-  await recalc()
-  if (viewMode.value === 'day') await centerGanttTimelineOnCurrentTime(containerRef, colWidth)
+  await fetchData()
 }
 
-async function recalc() {
-  await nextTick()
-  await new Promise<void>(resolve => {
-    setTimeout(() => {
-      if (containerRef.value && containerRef.value.clientHeight > 0) {
-        computeLanes()
-        updateRowHeight()
-        const available = containerRef.value.clientWidth - LEFT_WIDTH - 2
-        const cols = viewMode.value === 'day' ? 24 : viewMode.value === 'week' ? 7 : cursorDate.value.daysInMonth()
-        colWidth.value = Math.max(MIN_COL_WIDTH, available / cols)
-        getMaxVerticalScroll()
-      }
-      resolve()
-    }, 50)
+function recalc() {
+  if (recalcPromise) return recalcPromise
+  const currentRecalc = (async () => {
+    await nextTick()
+    await new Promise<void>(resolve => {
+      setTimeout(resolve, 50)
+    })
+    if (containerRef.value && containerRef.value.clientHeight > 0) {
+      computeLanes()
+      updateRowHeight()
+      const available = containerRef.value.clientWidth - LEFT_WIDTH - 2
+      const cols = viewMode.value === 'day' ? 24 : viewMode.value === 'week' ? 7 : cursorDate.value.daysInMonth()
+      colWidth.value = Math.max(MIN_COL_WIDTH, available / cols)
+      getMaxVerticalScroll()
+    }
+  })()
+  recalcPromise = currentRecalc
+  void currentRecalc.finally(() => {
+    if (recalcPromise === currentRecalc) recalcPromise = null
   })
+  return currentRecalc
 }
 
 function updateRowHeight() {
   rowHeight.value = viewMode.value === 'week' ? WEEK_QUARTER_ROW_HEIGHT : ENTITY_ROW_HEIGHT
 }
 
-async function fetchData(silent = false) {
-  if (!silent) loading.value = true
-  try {
-    const [insts, timeslots, faultItems, types] = await Promise.all([
-      getInstruments(),
-      getTimeslots(),
-      getInstrumentFaults(),
-      getTaskTypes(),
-    ])
-    instruments.value = insts
-    slots.value = timeslots
-    faults.value = faultItems
-    const map: Record<string, string> = {}
-    types.forEach((t: TaskTypeConfig) => { map[t.code] = t.name })
-    taskTypeMap.value = map
-  } catch { if (!silent) message.error('加载数据失败') }
-  finally {
-    if (!silent) loading.value = false
-    await nextTick()
-    await recalc()
-    if (viewMode.value === 'day') await centerGanttTimelineOnCurrentTime(containerRef, colWidth)
-    if (isFullscreen.value && autoScrollEnabled.value) scheduleAutoScrollStart()
-  }
-}
-
-function faultToDisplaySlot(fault: InstrumentFault): TimeSlot | null {
+function faultToDisplaySlot(fault: (typeof faults.value)[number]): TimeSlot | null {
   if (!fault.instrument_id || !fault.reported_at) return null
   const end = fault.resolved_at || fault.estimated_resolved_at
   if (!end || !dayjs(end).isAfter(dayjs(fault.reported_at))) return null

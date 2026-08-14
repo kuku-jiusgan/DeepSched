@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from typing import List, Optional
 import json
 from datetime import date, datetime
@@ -70,7 +70,12 @@ def list_timeslots(
     tier: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
-    q = db.query(TimeSlot)
+    q = db.query(TimeSlot).options(
+        joinedload(TimeSlot.instrument),
+        joinedload(TimeSlot.task).joinedload(Task.project),
+        joinedload(TimeSlot.task).joinedload(Task.assignee),
+        joinedload(TimeSlot.task).selectinload(Task.execution_segments),
+    )
     if start_date:
         q = q.filter(TimeSlot.plan_end > start_date)
     if end_date:
@@ -82,7 +87,8 @@ def list_timeslots(
     if tier:
         q = q.filter(TimeSlot.tier == tier)
     slots = q.order_by(TimeSlot.plan_start).all()
-    return [_enrich_slot(s, db) for s in slots]
+    delay_logs = _load_delay_logs(db, slots)
+    return [_enrich_slot(s, db, delay_logs) for s in slots]
 
 @router.put("/timeslots/{slot_id}", response_model=TimeSlotOut)
 def update_timeslot(
@@ -289,12 +295,16 @@ def _should_include_delay_fields(slot: TimeSlot) -> bool:
         return True
     return slot.status == "running" and slot.actual_start is not None
 
-def _enrich_slot(slot: TimeSlot, db: Session) -> TimeSlotOut:
-    task = db.query(Task).filter(Task.id == slot.task_id).first()
-    inst = db.query(Instrument).filter(Instrument.id == slot.instrument_id).first()
-    proj = db.query(Project).filter(Project.id == task.project_id).first() if task else None
+def _enrich_slot(
+    slot: TimeSlot,
+    db: Session,
+    delay_logs: dict[tuple[str, int], list[tuple[AuditLog, dict]]] | None = None,
+) -> TimeSlotOut:
+    task = slot.task
+    inst = slot.instrument
+    proj = task.project if task else None
     delay_fields = (
-        _latest_delay_fields(task.id, db, slot)
+        _latest_delay_fields(task.id, db, slot, delay_logs)
         if task and (task.delay_status == "delayed" or _should_include_delay_fields(slot))
         else _empty_delay_fields()
     )
@@ -329,14 +339,16 @@ def _slot_actual_window(task: Task | None, slot: TimeSlot):
                 return segment.started_at, segment.ended_at
     return slot.actual_start, slot.actual_end
 
-def _latest_delay_fields(task_id: int, db: Session, slot: TimeSlot) -> dict:
-    logs = (
-        db.query(AuditLog)
-        .filter(AuditLog.action == "task_delay_reported")
-        .order_by(AuditLog.created_at.desc())
-        .limit(50)
-        .all()
-    )
+def _latest_delay_fields(
+    task_id: int,
+    db: Session,
+    slot: TimeSlot,
+    delay_logs: dict[tuple[str, int], list[tuple[AuditLog, dict]]] | None = None,
+) -> dict:
+    if delay_logs is not None:
+        matched_logs = delay_logs.get((slot.schedule_run_id, task_id), [])
+        return _delay_fields_from_logs(matched_logs)
+    logs = _query_delay_logs(db)
     matched_logs: list[tuple[AuditLog, dict]] = []
     for log in logs:
         detail = _audit_detail_dict(log.detail)
@@ -344,6 +356,40 @@ def _latest_delay_fields(task_id: int, db: Session, slot: TimeSlot) -> dict:
             continue
         if detail.get("task_id") == task_id:
             matched_logs.append((log, detail))
+    return _delay_fields_from_logs(matched_logs)
+
+
+def _query_delay_logs(db: Session) -> list[AuditLog]:
+    return (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "task_delay_reported")
+        .order_by(AuditLog.created_at.desc())
+        .limit(500)
+        .all()
+    )
+
+
+def _load_delay_logs(
+    db: Session,
+    slots: list[TimeSlot],
+) -> dict[tuple[str, int], list[tuple[AuditLog, dict]]]:
+    delayed_keys = {
+        (slot.schedule_run_id, slot.task_id)
+        for slot in slots
+        if slot.task and (slot.task.delay_status == "delayed" or _should_include_delay_fields(slot))
+    }
+    if not delayed_keys:
+        return {}
+    result: dict[tuple[str, int], list[tuple[AuditLog, dict]]] = {}
+    for log in _query_delay_logs(db):
+        detail = _audit_detail_dict(log.detail)
+        key = (detail.get("schedule_run_id"), detail.get("task_id"))
+        if key in delayed_keys:
+            result.setdefault(key, []).append((log, detail))
+    return result
+
+
+def _delay_fields_from_logs(matched_logs: list[tuple[AuditLog, dict]]) -> dict:
     if not matched_logs:
         return _empty_delay_fields()
     total_hours = sum(float(detail.get("delay_hours") or 0) for _log, detail in matched_logs)

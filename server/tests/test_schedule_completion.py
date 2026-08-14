@@ -290,6 +290,47 @@ class ScheduleCompletionTest(unittest.TestCase):
             datetime(2026, 7, 14, 10, 0),
         )
 
+    def test_forward_shift_respects_resolved_instrument_fault_window(self):
+        instrument = Instrument(
+            id=1,
+            code="ZBYY-002-0005",
+            name="三重四极液质联用仪",
+            status="idle",
+        )
+        candidate = Task(
+            project_id=1,
+            name="方法开发",
+            task_type="test",
+            status="scheduled",
+            requires_instrument=True,
+        )
+        self.db.add_all([instrument, candidate])
+        self.db.flush()
+        self.db.add_all([
+            InstrumentFault(
+                instrument_id=instrument.id,
+                reported_at=datetime(2026, 7, 13, 10, 0),
+                estimated_resolved_at=datetime(2026, 7, 14, 9, 0),
+                resolved_at=datetime(2026, 7, 14, 15, 30),
+                status="resolved",
+            ),
+            TimeSlot(
+                task_id=candidate.id,
+                instrument_id=instrument.id,
+                plan_start=datetime(2026, 7, 14, 16, 0),
+                plan_end=datetime(2026, 7, 14, 18, 0),
+                status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        self._forward_shift(instrument.id, datetime(2026, 7, 13, 12, 0))
+
+        moved_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == candidate.id,
+        ).one()
+        self.assertGreaterEqual(moved_slot.plan_start, datetime(2026, 7, 14, 15, 30))
+
     def test_early_completion_notifies_each_moved_task_assignee(self):
         assignee = User(
             username="analyst",

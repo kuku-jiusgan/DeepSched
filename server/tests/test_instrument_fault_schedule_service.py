@@ -6,7 +6,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Instrument, Project, Task, TaskDependency, TimeSlot, User
+from app.models import AuditLog, Instrument, InstrumentFault, Project, Task, TaskDependency, TaskExecutionSegment, TimeSlot, User
+from app.services.instrument_fault_service import list_open_faults, resolve_fault
 from app.services.instrument_fault_schedule_service import shift_faulted_instrument_slots
 
 
@@ -194,6 +195,134 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         self.assertEqual(1, impact["risk_tasks"])
         self.assertFalse(impact["affected_task_details"][0]["can_shift"])
         self.assertIn("超期风险", impact["affected_task_details"][0]["reason"])
+
+    def test_fault_keeps_running_status_with_open_execution_segment(self):
+        project = Project(name="运行中故障项目", code="FAULT-RUNNING")
+        instrument = Instrument(code="ZBYY-002-0001", name="故障仪器")
+        task = Task(
+            project=project,
+            name="方法开发",
+            task_type="test",
+            status="running",
+            requires_instrument=True,
+        )
+        self.db.add_all([project, instrument, task])
+        self.db.flush()
+        executed_slot = TimeSlot(
+            task_id=task.id,
+            instrument_id=instrument.id,
+            plan_start=datetime(2026, 8, 12, 8, 30),
+            plan_end=datetime(2026, 8, 12, 12, 0),
+            status="running",
+        )
+        future_slot = TimeSlot(
+            task_id=task.id,
+            instrument_id=instrument.id,
+            plan_start=datetime(2026, 8, 13, 8, 30),
+            plan_end=datetime(2026, 8, 13, 10, 30),
+            status="running",
+        )
+        self.db.add_all([executed_slot, future_slot])
+        self.db.flush()
+        self.db.add(TaskExecutionSegment(
+            task_id=task.id,
+            slot_id=executed_slot.id,
+            instrument_id=instrument.id,
+            started_at=datetime(2026, 8, 12, 8, 30),
+        ))
+        self.db.commit()
+
+        self._shift(instrument, datetime(2026, 8, 13, 8, 0), datetime(2026, 8, 14, 8, 0))
+
+        self.db.refresh(task)
+        self.assertEqual("running", task.status)
+
+    def test_resolve_fault_shifts_slots_when_actual_resolution_is_late(self):
+        project = Project(name="延期维修项目", code="FAULT-LATE")
+        instrument = Instrument(code="ZBYY-002-0001", name="故障仪器", status="fault")
+        task = Task(
+            project=project,
+            name="方法开发",
+            task_type="test",
+            status="scheduled",
+            requires_instrument=True,
+        )
+        self.db.add_all([project, instrument, task])
+        self.db.flush()
+        fault = InstrumentFault(
+            instrument_id=instrument.id,
+            reported_at=datetime(2026, 8, 10, 9, 30),
+            estimated_resolved_at=datetime(2026, 8, 12, 9, 30),
+            status="open",
+        )
+        self.db.add_all([
+            fault,
+            TimeSlot(
+                task_id=task.id,
+                instrument_id=instrument.id,
+                plan_start=datetime(2026, 8, 12, 10, 0),
+                plan_end=datetime(2026, 8, 12, 12, 0),
+                status="scheduled",
+            ),
+        ])
+        self.db.commit()
+        actual_resolved_at = datetime(2026, 8, 12, 15, 30)
+
+        with patch(
+            "app.services.instrument_fault_service.datetime",
+        ) as mocked_datetime, patch(
+            "app.services.instrument_fault_schedule_service._load_working_options",
+            side_effect=working_options,
+        ), patch(
+            "app.services.instrument_fault_notification_service.push_by_rule",
+            return_value=0,
+        ), patch(
+            "app.services.instrument_fault_schedule_service.notify_rescheduled_tasks_delayed",
+        ):
+            mocked_datetime.now.return_value = actual_resolved_at
+            resolved = resolve_fault(self.db, instrument.id, fault.id)
+
+        shifted = self._only_slot(task.id)
+        self.assertEqual(actual_resolved_at, resolved.resolved_at)
+        self.assertGreaterEqual(shifted.plan_start, actual_resolved_at)
+        self.assertEqual("resolved", resolved.status)
+
+    def test_fault_list_uses_stored_reschedule_impact(self):
+        instrument = Instrument(code="ZBYY-002-0001", name="故障仪器", status="fault")
+        self.db.add(instrument)
+        self.db.flush()
+        fault = InstrumentFault(
+            instrument_id=instrument.id,
+            reported_at=datetime(2026, 8, 13, 8, 0),
+            estimated_resolved_at=datetime(2026, 8, 15, 8, 0),
+            status="open",
+        )
+        self.db.add(fault)
+        self.db.flush()
+        stored_detail = {
+            "task_id": 48,
+            "original_start": "2026-08-13T08:30:00",
+            "shifted_start": "2026-08-17T08:30:00",
+            "can_shift": True,
+        }
+        self.db.add(AuditLog(
+            user_name="system",
+            action="instrument_fault_rescheduled",
+            target_type="instrument_fault",
+            target_id=fault.id,
+            detail={
+                "impact": {
+                    "affected_tasks": 1,
+                    "affected_task_details": [stored_detail],
+                },
+            },
+        ))
+        self.db.commit()
+
+        listed_fault = list_open_faults(self.db)[0]
+
+        self.assertEqual([stored_detail], listed_fault.affected_tasks)
+        self.assertEqual(1, listed_fault.schedule_impact["affected_tasks"])
 
     def _shift(self, instrument: Instrument, reported_at: datetime, estimated_resolved_at: datetime) -> dict:
         with patch(

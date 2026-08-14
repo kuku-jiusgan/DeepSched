@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from app.models import AuditLog, Project, Task, TimeSlot
 from app.schemas.project_health_schemas import ProjectHealthOut
 from app.services.project_status_service import calculate_project_status
+from app.domain.task_status import resolve_task_execution_status
 
 
 HEALTH_EVENT_ACTIONS = {
@@ -238,7 +239,7 @@ def _arrangement_slot_item(task: Task, slot: TimeSlot | None) -> dict:
         "task_name": task.name,
         "top_level_task_name": _top_level_task_name(task),
         "plan_order": task.plan_order,
-        "task_status": task.status,
+        "task_status": resolve_task_execution_status(task),
         "slot_status": slot.status if slot else None,
         "delay_status": task.delay_status or "not_delayed",
         "assignee_id": task.assignee_id,

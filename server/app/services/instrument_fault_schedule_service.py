@@ -241,7 +241,10 @@ def _restore_shifted_task(
             tier=first_slot["tier"],
             status=status,
         ))
-    if task and task.status == "running":
+    has_open_execution = bool(
+        task and any(segment.ended_at is None for segment in task.execution_segments)
+    )
+    if task and task.status == "running" and not has_open_execution:
         task.status = "scheduled"
     db.flush()
     return _detail(task, snapshots, ranges[0][0], ranges[-1][1])

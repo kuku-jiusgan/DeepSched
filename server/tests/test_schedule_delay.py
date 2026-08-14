@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Project, Task, TimeSlot, User
+from app.models import InstrumentFault, Project, Task, TimeSlot, User
 from app.services.schedule_delay_service import (
     ScheduleDelayInvalidError,
     report_task_delay as report_task_delay_service,
@@ -135,6 +135,42 @@ class ScheduleDelayTest(unittest.TestCase):
         self.assertEqual(1, len(shifted_slots))
         self.assertEqual(datetime(2026, 7, 14, 9, 0), shifted_slots[0].plan_start)
         self.assertEqual(datetime(2026, 7, 14, 10, 30), shifted_slots[0].plan_end)
+
+    def test_following_task_delay_respects_resolved_fault_window(self):
+        delayed_task = Task(project_id=1, name="delayed", task_type="test", status="scheduled")
+        following_task = Task(project_id=1, name="following", task_type="test", status="scheduled")
+        self.db.add_all([delayed_task, following_task])
+        self.db.flush()
+        delayed_slot = TimeSlot(
+            task_id=delayed_task.id, instrument_id=1,
+            plan_start=datetime(2026, 7, 13, 8, 30),
+            plan_end=datetime(2026, 7, 13, 9, 0), status="scheduled",
+        )
+        following_slot = TimeSlot(
+            task_id=following_task.id, instrument_id=1,
+            plan_start=datetime(2026, 7, 13, 9, 0),
+            plan_end=datetime(2026, 7, 13, 10, 0), status="scheduled",
+        )
+        self.db.add_all([
+            delayed_slot,
+            following_slot,
+            InstrumentFault(
+                instrument_id=1,
+                reported_at=datetime(2026, 7, 13, 10, 30),
+                estimated_resolved_at=datetime(2026, 7, 13, 11, 30),
+                resolved_at=datetime(2026, 7, 13, 12, 0),
+                status="resolved",
+            ),
+        ])
+        self.db.commit()
+
+        report_task_delay(self.db, delayed_slot.id, 1.5, "实验延迟")
+
+        shifted = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == following_task.id,
+        ).one()
+        self.assertEqual(datetime(2026, 7, 13, 12, 0), shifted.plan_start)
+        self.assertEqual(datetime(2026, 7, 13, 13, 0), shifted.plan_end)
 
     def test_delay_shifts_same_assignee_task_in_another_project(self):
         assignee = User(

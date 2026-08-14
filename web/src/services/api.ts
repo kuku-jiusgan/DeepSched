@@ -271,8 +271,11 @@ export const resolveInstrumentFault = (instId: number, faultId: number): Promise
   api.put<InstrumentFault>(`/instruments/${instId}/fault/${faultId}/resolve`).then(r => r.data)
 
 // Schedules
-export const getTimeslots = (params?: Record<string, unknown>): Promise<TimeSlot[]> =>
-  api.get<TimeSlot[]>('/schedules/timeslots', { params }).then(r => r.data);
+export const getTimeslots = (
+  params?: Record<string, unknown>,
+  timeout?: number,
+): Promise<TimeSlot[]> =>
+  api.get<TimeSlot[]>('/schedules/timeslots', { params, timeout }).then(r => r.data);
 
 export const generateSchedule = (projectIds?: number[]): Promise<{ status: string; message?: string }> =>
   api.post('/schedules/generate', { project_ids: projectIds, mode: 'normal' }).then(r => r.data);

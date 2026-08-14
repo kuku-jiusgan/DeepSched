@@ -121,6 +121,7 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertEqual("paused", followup_slot.status)
 
     def test_pause_and_switch_starts_selected_candidate(self):
+        original_target_start = self.target_slot.plan_start
         pause_and_switch_task(
             self.db,
             self.source_slot.id,
@@ -134,6 +135,12 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertEqual("running", self.target_task.status)
         self.assertIsNotNone(self.target_slot.actual_start)
         self.assertIsNone(self.target_slot.actual_end)
+        self.assertLess(self.target_slot.plan_start, original_target_start)
+        self.assertGreaterEqual(self.target_slot.plan_start, self.target_slot.actual_start)
+        self.assertLess(
+            self.target_slot.plan_start - self.target_slot.actual_start,
+            timedelta(minutes=30),
+        )
         self.assertEqual(2, self.db.query(TaskExecutionSegment).count())
 
     def test_pause_and_switch_moves_the_whole_target_before_source_remainder(self):

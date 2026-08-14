@@ -54,10 +54,12 @@
                   <div class="affected-task-main">
                     <span class="affected-task-project">{{ task.project_code || task.project_name || '-' }}</span>
                     <span class="affected-task-name">{{ task.task_name }}</span>
-                    <a-tag :color="task.can_shift ? 'blue' : 'red'">{{ task.can_shift ? '可后移' : '超期' }}</a-tag>
+                    <a-tag :color="task.can_shift ? 'green' : 'orange'">
+                      {{ task.can_shift ? '已后移' : '已后移 · 超期' }}
+                    </a-tag>
                   </div>
                   <div class="affected-task-meta">
-                    <span>{{ formatDateTime(task.original_start) }} → {{ formatDateTime(task.shifted_start) }}</span>
+                    <span>调整前 {{ formatDateTime(task.original_start) }} → 调整后 {{ formatDateTime(task.shifted_start) }}</span>
                     <span>负责人 {{ task.assignee_name || '-' }}</span>
                   </div>
                   <div v-if="task.reason" class="affected-task-reason">{{ task.reason }}</div>

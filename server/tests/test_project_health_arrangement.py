@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Instrument, Project, Task, TimeSlot, User
+from app.models import Instrument, Project, Task, TaskExecutionSegment, TimeSlot, User
 from app.services.project_health_service import get_project_health
 
 
@@ -76,6 +76,21 @@ class ProjectHealthArrangementTest(unittest.TestCase):
         self.assertIsNone(unscheduled_item.slot_id)
         self.assertIsNone(unscheduled_item.plan_start)
         self.assertEqual("delayed", unscheduled_item.delay_status)
+
+    def test_arrangement_uses_open_execution_segment_as_running_status(self):
+        self.scheduled.status = "scheduled"
+        self.db.add(TaskExecutionSegment(
+            task_id=self.scheduled.id,
+            slot_id=1,
+            instrument_id=self.instrument.id,
+            operator_id=self.user.id,
+            started_at=datetime(2026, 8, 8, 8, 45),
+        ))
+        self.db.commit()
+
+        result = get_project_health(self.db, self.project)
+
+        self.assertEqual("running", result.arrangement_items[0].task_status)
 
 
 if __name__ == "__main__":

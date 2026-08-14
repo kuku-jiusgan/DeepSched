@@ -247,12 +247,11 @@ def _load_instrument_unavailable_windows(
     ]
     faults = db.query(InstrumentFault).filter(
         InstrumentFault.instrument_id == instrument_id,
-        InstrumentFault.status == "open",
     ).all()
     windows.extend(
         (
             fault.reported_at or datetime.min,
-            fault.estimated_resolved_at or datetime.max,
+            fault.resolved_at or fault.estimated_resolved_at or datetime.max,
         )
         for fault in faults
     )
@@ -260,9 +259,25 @@ def _load_instrument_unavailable_windows(
         Instrument.id == instrument_id,
         Instrument.status == "fault",
     ).first() is not None
-    if instrument_is_faulted and not faults:
+    open_faults = [fault for fault in faults if fault.status == "open"]
+    if instrument_is_faulted and not open_faults:
         windows.append((datetime.min, datetime.max))
     return windows
+
+
+def has_instrument_unavailable_window(
+    db: Session,
+    instrument_id: int,
+    start: datetime,
+    end: datetime,
+) -> bool:
+    return any(
+        unavailable_start < end and unavailable_end > start
+        for unavailable_start, unavailable_end in _load_instrument_unavailable_windows(
+            db,
+            instrument_id,
+        )
+    )
 
 
 def _ceil_to_schedule_unit(value: datetime) -> datetime:

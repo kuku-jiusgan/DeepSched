@@ -184,7 +184,10 @@ def resolve_fault(
     db: Session = Depends(get_db),
     _user=Depends(require_management_user),
 ):
-    fault = resolve_fault_service(db, inst_id, fault_id)
+    try:
+        fault = resolve_fault_service(db, inst_id, fault_id)
+    except InstrumentFaultConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if not fault:
         raise HTTPException(status_code=404, detail="故障记录不存在")
     return fault

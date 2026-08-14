@@ -24,6 +24,8 @@ export function useGanttAutoScroll(options: GanttAutoScrollOptions) {
   let refreshTimer: ReturnType<typeof setInterval> | null = null
   let autoScrollTimer: ReturnType<typeof setInterval> | null = null
   let autoScrollRetryTimer: ReturnType<typeof setTimeout> | null = null
+  let resizeFrame: number | null = null
+  let observedWidth = 0
   let autoScrollDirection = 1
   let autoScrollHoldUntil = 0
 
@@ -123,10 +125,14 @@ export function useGanttAutoScroll(options: GanttAutoScrollOptions) {
   }
 
   function handleResize() {
-    void options.recalculate()
-    if (options.isFullscreen.value && autoScrollEnabled.value && autoScrollTimer === null) {
-      scheduleAutoScrollStart(300)
-    }
+    if (resizeFrame !== null) return
+    resizeFrame = window.requestAnimationFrame(() => {
+      resizeFrame = null
+      void options.recalculate()
+      if (options.isFullscreen.value && autoScrollEnabled.value && autoScrollTimer === null) {
+        scheduleAutoScrollStart(300)
+      }
+    })
   }
 
   onMounted(() => {
@@ -136,8 +142,12 @@ export function useGanttAutoScroll(options: GanttAutoScrollOptions) {
     document.addEventListener('fullscreenchange', onFullscreenChange)
     nextTick(() => {
       if (!options.containerRef.value) return
-      resizeObserver = new ResizeObserver(() => {
-        if (options.containerRef.value && options.containerRef.value.clientHeight > 0) handleResize()
+      observedWidth = options.containerRef.value.clientWidth
+      resizeObserver = new ResizeObserver(entries => {
+        const width = entries[0]?.contentRect.width ?? 0
+        if (width <= 0 || Math.abs(width - observedWidth) < 1) return
+        observedWidth = width
+        handleResize()
       })
       resizeObserver.observe(options.containerRef.value)
     })
@@ -154,6 +164,7 @@ export function useGanttAutoScroll(options: GanttAutoScrollOptions) {
     window.removeEventListener('resize', handleResize)
     document.removeEventListener('fullscreenchange', onFullscreenChange)
     stopAutoScroll()
+    if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
     resizeObserver?.disconnect()
   })
 
