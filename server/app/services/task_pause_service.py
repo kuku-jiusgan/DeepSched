@@ -109,8 +109,9 @@ def _insert_target_into_source_schedule(
     target_minutes = _slot_minutes(target_slots)
     source_minutes = _slot_minutes(source_slots)
     target_original_end = max(slot.plan_end for slot in target_slots)
+    queue_reorder_end = _instrument_queue_end(db, source_slot.instrument_id, switch_time)
     intermediate_groups = _intermediate_task_slots(
-        db, source_slot, target_slot, switch_time, target_original_end,
+        db, source_slot, target_slot, switch_time, queue_reorder_end or target_original_end,
     )
 
     historical_source_start = source_slot.actual_start or switch_time
@@ -139,13 +140,14 @@ def _insert_target_into_source_schedule(
     for task, reusable_slot, duration_minutes, status, template_slot in queue:
         if duration_minutes <= 0:
             continue
+        task_options = _task_schedule_options(options, task)
         ranges = build_forward_slots(
             db,
             task,
             template_slot.instrument_id,
             duration_minutes,
             cursor,
-            options,
+            task_options,
         )
         if not ranges:
             raise DomainConflictError(f"切换后无法为任务【{task.name}】找到可用工作时段")
@@ -160,6 +162,30 @@ def _insert_target_into_source_schedule(
         )
         db.flush()
         cursor = ranges[-1][1]
+
+
+def _instrument_queue_end(db, instrument_id: int | None, switch_time: datetime) -> datetime | None:
+    if instrument_id is None:
+        return None
+    return max(
+        (
+            slot.plan_end
+            for slot in db.query(TimeSlot).filter(
+                TimeSlot.instrument_id == instrument_id,
+                TimeSlot.plan_start >= switch_time,
+                TimeSlot.actual_start.is_(None),
+                TimeSlot.status.in_(CANDIDATE_SLOT_STATUSES),
+            ).all()
+        ),
+        default=None,
+    )
+
+
+def _task_schedule_options(options: dict, task: Task) -> dict:
+    project_end = task.project.end_date if task.project else None
+    if not project_end or project_end >= options["horizon_end"]:
+        return options
+    return {**options, "horizon_end": project_end}
 
 
 def _task_queue_slots(db, anchor: TimeSlot) -> list[TimeSlot]:

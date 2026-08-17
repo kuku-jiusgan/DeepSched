@@ -6,12 +6,13 @@ from sqlalchemy.orm import sessionmaker
 from app.core.database import Base
 from app.api.projects import _task_to_out
 from app.models import AuditLog, Project, Task, TaskDependency, TaskTypeConfig, TimeSlot, User
+from app.schemas.schemas import TaskUpdate
 from app.schemas.project_plan_draft_schemas import ProjectPlanDraftCommitIn, ProjectPlanDraftTaskIn
 from app.services.project_plan_draft_service import (
     ProjectPlanDraftInvalidError,
     commit_project_plan_drafts,
 )
-from app.services.project_plan_change_service import delete_task_plan
+from app.services.project_plan_change_service import delete_task_plan, update_task_plan
 
 
 class ProjectPlanDraftServiceTest(unittest.TestCase):
@@ -20,8 +21,9 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
         Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.manager = User(id=1, username="manager", display_name="负责人", role="分析员")
+        self.gate_owner = User(id=2, username="gate-owner", display_name="签批负责人", role="分析员")
         self.project = Project(id=1, name="草稿项目", code="DRAFT-1", estimated_hours=100, manager_id=1)
-        self.db.add_all([self.manager, self.project])
+        self.db.add_all([self.manager, self.gate_owner, self.project])
         for code in ["FFKF_001", "QCFA_001", "FFYZ_001", "ZXBG_001"]:
             self.db.add(TaskTypeConfig(name=code, code=code, resource_type="both", is_active=True))
         self.db.commit()
@@ -65,6 +67,36 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
         self.assertEqual(70, audit.detail["task_details"][0]["estimated_hours"])
         self.assertEqual(["方法开发"], audit.detail["task_details"][1]["predecessors"])
         self.assertEqual(0, self.db.query(TimeSlot).count())
+
+    def test_commit_preserves_selected_approval_gate_assignee(self):
+        data = ProjectPlanDraftCommitIn(tasks=[
+            self._task(-1, "方案撰写", "QCFA_001", 5),
+            self._task(-2, "方案签批", "approval_gate", None, predecessors=[-1], is_gate=True, assignee_id=2),
+            self._task(-3, "方法验证", "FFYZ_001", 20, predecessors=[-2]),
+        ])
+
+        commit_project_plan_drafts(self.db, 1, data, self.manager)
+
+        saved_gate = self.db.query(Task).filter(Task.is_external_gate.is_(True)).one()
+        self.assertEqual(self.gate_owner.id, saved_gate.assignee_id)
+
+    def test_saved_approval_gate_assignee_can_be_updated(self):
+        data = ProjectPlanDraftCommitIn(tasks=[
+            self._task(-1, "方案撰写", "QCFA_001", 5),
+            self._task(-2, "方案签批", "approval_gate", None, predecessors=[-1], is_gate=True),
+            self._task(-3, "方法验证", "FFYZ_001", 20, predecessors=[-2]),
+        ])
+        commit_project_plan_drafts(self.db, 1, data, self.manager)
+        saved_gate = self.db.query(Task).filter(Task.is_external_gate.is_(True)).one()
+
+        updated = update_task_plan(
+            self.db,
+            saved_gate.id,
+            TaskUpdate(name="客户方案签批", assignee_id=self.gate_owner.id),
+        )
+
+        self.assertEqual("客户方案签批", updated.name)
+        self.assertEqual(self.gate_owner.id, updated.assignee_id)
 
     def test_hours_over_project_limit_rolls_back_whole_batch(self):
         data = ProjectPlanDraftCommitIn(tasks=[
@@ -201,6 +233,7 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
         is_gate: bool = False,
         instrument_ids: list[int] | None = None,
         parent_id: int | None = None,
+        assignee_id: int | None = None,
     ) -> ProjectPlanDraftTaskIn:
         return ProjectPlanDraftTaskIn(
             client_id=client_id,
@@ -209,7 +242,7 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
             requires_instrument=task_type in {"FFKF_001", "FFYZ_001"},
             requires_human=not is_gate,
             estimated_hours=hours,
-            assignee_id=None if is_gate else 1,
+            assignee_id=assignee_id if assignee_id is not None else (None if is_gate else 1),
             parent_id=parent_id,
             predecessor_ids=predecessors or [],
             instrument_ids=(instrument_ids if instrument_ids is not None else ([1] if task_type in {"FFKF_001", "FFYZ_001"} else [])),

@@ -146,13 +146,13 @@ const columns = [
   { title: '仪器编码', dataIndex: 'code', key: 'code', width: 100 },
   { title: '仪器名称', dataIndex: 'name', key: 'name', width: 140, ellipsis: true },
   { title: '所属分组', dataIndex: 'instrument_group', key: 'group', width: 90 },
-  { title: '品牌/型号', key: 'spec', width: 120 },
+  { title: '品牌/型号', key: 'spec', width: 120, responsive: ['lg'] },
   { title: '位置', dataIndex: 'location', key: 'location', width: 60 },
   { title: '可用状态', dataIndex: 'availability_status', key: 'availability', width: 80 },
   { title: '运行状态', dataIndex: 'status', key: 'status', width: 80 },
-  { title: '缓冲率', dataIndex: 'buffer_rate', key: 'buffer', width: 60 },
-  { title: '能力标签', dataIndex: 'capabilities', key: 'caps', width: 140 },
-  { title: '操作', key: 'actions', width: 150 },
+  { title: '缓冲率', dataIndex: 'buffer_rate', key: 'buffer', width: 60, responsive: ['xl'] },
+  { title: '能力标签', dataIndex: 'capabilities', key: 'caps', width: 140, responsive: ['xl'] },
+  { title: '操作', key: 'actions', width: 120 },
 ]
 
 async function fetchData() { loading.value = true; try { instruments.value = await getInstruments({ include_unavailable: true }) } catch { message.error('加载失败') } finally { loading.value = false } }
@@ -221,7 +221,6 @@ async function handleSubmit() {
 async function handleDelete(id:number){try{await deleteInstrument(id);message.success('已删除');fetchData()}catch{message.error('删除失败')}}
 onMounted(fetchData)
 </script>
-
 
 
 

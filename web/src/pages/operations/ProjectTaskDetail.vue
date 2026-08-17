@@ -14,7 +14,7 @@
 
       <a-table :dataSource="tasks" rowKey="taskId" size="small" :pagination="{ pageSize: 50, showSizeChanger: true }">
         <a-table-column title="任务名称" dataIndex="taskName" key="name" />
-        <a-table-column title="类型" key="type" width="120">
+        <a-table-column title="类型" key="type" width="110" :responsive="['lg']">
           <template #default="{ record }">
             <a-tag :color="getTypeColor(record.taskType)" style="font-size: 11px">{{ getTypeName(record.taskType) }}</a-tag>
           </template>
@@ -23,7 +23,7 @@
         <a-table-column title="工时(h)" key="hours" width="100" align="center">
           <template #default="{ record }">{{ record.hours.toFixed(1) }}</template>
         </a-table-column>
-        <a-table-column title="资源类型" key="res" width="100" align="center">
+        <a-table-column title="资源类型" key="res" width="90" align="center" :responsive="['xl']">
           <template #default="{ record }">
             <a-tag v-if="record.isHuman" color="purple" style="font-size: 11px">人工</a-tag>
             <a-tag v-if="record.isInstrument" color="blue" style="font-size: 11px">仪器</a-tag>

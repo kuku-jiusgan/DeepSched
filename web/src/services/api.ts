@@ -176,6 +176,7 @@ export const commitProjectPlanDrafts = (
 
 export interface ApprovalGateCreatePayload {
   name: string
+  assignee_id?: number | null
   predecessor_task_id: number
   unlock_task_ids: number[]
 }
@@ -665,7 +666,31 @@ export interface AuditLogRecord {
   target_id: number | null
   detail: Record<string, unknown>
   created_at: string
+  category: string
+  category_label: string
+  action_label: string
+  target_display: string
+  summary: string
+  result: 'success' | 'failed'
+  changes: Array<{ field: string; before: unknown; after: unknown }>
+  business_detail: Record<string, unknown>
+  technical_detail: Record<string, unknown>
 }
 
-export const getAuditLogs = (params?: { keyword?: string; action?: string; user_name?: string }): Promise<AuditLogRecord[]> =>
+export interface AuditLogQuery {
+  keyword?: string
+  action?: string
+  category?: string
+  user_name?: string
+}
+
+export interface AuditLogCategoryOption { value: string; label: string }
+
+export const getAuditLogCategories = (): Promise<AuditLogCategoryOption[]> =>
+  api.get<AuditLogCategoryOption[]>('/audit-logs/categories').then(response => response.data)
+
+export const getAuditLogs = (params?: AuditLogQuery): Promise<AuditLogRecord[]> =>
   api.get<AuditLogRecord[]>('/audit-logs', { params }).then(response => response.data)
+
+export const exportAuditLogs = (params?: AuditLogQuery): Promise<Blob> =>
+  api.get('/audit-logs/export', { params, responseType: 'blob' }).then(response => response.data as Blob)

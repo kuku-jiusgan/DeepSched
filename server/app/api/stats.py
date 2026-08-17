@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
@@ -11,7 +11,6 @@ from app.models import Instrument, TimeSlot, Task, Project
 from app.schemas.schemas import DashboardData, UtilizationStats
 from app.services.project_status_service import calculate_project_status
 from app.services.lab_status_service import list_lab_status
-from app.services.task_delay_status_service import DELAYED_STATUS
 from app.services.instrument_utilization_service import calculate_instrument_utilization
 from app.api.users import auth_token, get_current_user
 from app.schemas.project_progress_schemas import ProjectProgressList
@@ -48,17 +47,15 @@ def dashboard(
     ).all()
     total_proj = len(projects)
     active_proj = sum(calculate_project_status(project) == "active" for project in projects)
-    delayed = (
+    delayed_task_ids = (
         db.query(Task.id)
         .join(TimeSlot, TimeSlot.task_id == Task.id)
-        .filter(
-            Task.delay_status == DELAYED_STATUS,
-            TimeSlot.plan_end > window_start,
-            TimeSlot.plan_start < window_end,
-        )
-        .distinct()
-        .count()
+        .filter(Task.status.notin_({"done", "completed"}))
+        .group_by(Task.id)
+        .having(func.max(TimeSlot.plan_end) < datetime.now())
+        .all()
     )
+    delayed = len(delayed_task_ids)
 
     utilization_rows = calculate_instrument_utilization(db, window_start, window_end, settings.PERCENT_SCALE)
     total_hours = sum(row.actual_run_hours for row in utilization_rows)

@@ -18,6 +18,12 @@ from app.services.project_reference_validation_service import (
     ProjectReferenceInvalidError,
     validate_task_references,
 )
+from app.services.audit_log_service import (
+    record_audit_log,
+    task_audit_detail,
+    task_audit_snapshot,
+    task_deleted_audit_detail,
+)
 
 
 SCHEDULE_FIELDS = {
@@ -45,12 +51,18 @@ class PlanChangeInvalidError(Exception):
     pass
 
 
-def delete_task_plan(db, task_id: int, allow_completed: bool = False) -> None:
+def delete_task_plan(
+    db,
+    task_id: int,
+    allow_completed: bool = False,
+    actor_name: str | None = None,
+) -> None:
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise PlanChangeNotFoundError("任务不存在")
     if not allow_completed and _task_tree_has_completed_task(task):
         raise PlanChangeInvalidError("已完成任务不允许删除")
+    audit_detail = task_deleted_audit_detail(db, task) if actor_name else None
     released_resources = _released_task_resources(task)
     project_id = task.project_id
     bridge_pairs: set[tuple[int, int]] = set()
@@ -75,6 +87,8 @@ def delete_task_plan(db, task_id: int, allow_completed: bool = False) -> None:
         affected_task.schedule_dirty = True
     recalculate_project_parent_hours(db, project_id)
     _compact_released_resource_queues(db, released_resources)
+    if actor_name and audit_detail:
+        record_audit_log(db, actor_name, "task_deleted", "task", task_id, audit_detail)
     db.commit()
 
 
@@ -148,10 +162,16 @@ def update_project_plan(db, project_id: int, data: ProjectCreate) -> Project:
     return project
 
 
-def update_task_plan(db, task_id: int, data: TaskUpdate) -> Task:
+def update_task_plan(
+    db,
+    task_id: int,
+    data: TaskUpdate,
+    actor_name: str | None = None,
+) -> Task:
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise PlanChangeNotFoundError("任务不存在")
+    audit_before = task_audit_snapshot(db, task) if actor_name else None
 
     changes = data.model_dump(exclude_unset=True)
     predecessor_ids = changes.pop("predecessor_ids", None)
@@ -202,6 +222,17 @@ def update_task_plan(db, task_id: int, data: TaskUpdate) -> Task:
         else:
             _mark_task_and_downstream_dirty(db, task)
 
+    if actor_name and audit_before is not None:
+        db.flush()
+        db.expire(task, ["predecessors", "assignee", "parent"])
+        record_audit_log(
+            db,
+            actor_name,
+            "task_updated",
+            "task",
+            task.id,
+            task_audit_detail(db, task, "修改任务", audit_before),
+        )
     db.commit()
     db.refresh(task)
     return task

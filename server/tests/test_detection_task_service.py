@@ -83,6 +83,43 @@ class DetectionTaskServiceTest(unittest.TestCase):
 
         self.assertEqual(["JC-OWN"], [item.code for item in result])
 
+    @patch("app.services.detection_task_service.apply_project_plan")
+    def test_group_lead_and_director_can_view_and_edit_all_detection_tasks(self, apply_plan):
+        apply_plan.return_value.model_dump.return_value = {"status": "ok", "message": "排程完成"}
+        assignee = User(username="assignee", display_name="执行人", role="技术员", is_active=True)
+        project = Project(
+            code="JC-ALL", name="他人检测", project_kind="detection",
+            start_date=datetime(2026, 8, 6), end_date=datetime(2026, 8, 7),
+        )
+        task = Task(
+            project=project, name=project.name, task_type="instrument",
+            est_duration_hours=2, assignee=assignee,
+            instrument_ids=[self.instrument.id], requires_instrument=True,
+        )
+        self.db.add_all([assignee, project, task])
+        self.db.commit()
+        data = SimpleNamespace(
+            code=project.code, name="已调整检测", client_name=None, priority=3,
+            manager_id=assignee.id, start_date=project.start_date, end_date=project.end_date,
+            task_type=task.task_type, est_duration_hours=2, switchover_hours=0,
+            requires_instrument=True, requires_human=False, allow_split=False,
+            allow_transfer=False, instrument_ids=[self.instrument.id], assignee_id=assignee.id,
+        )
+
+        for index, role in enumerate(("技术组长", "分析所所长"), start=1):
+            manager = User(
+                username=f"manager-{index}", display_name=role, role=role,
+                roles=[role], is_active=True,
+            )
+            self.db.add(manager)
+            self.db.commit()
+
+            result = list_detection_tasks(self.db, manager)
+            updated_project, _ = update_detection_task(self.db, project.id, data, manager)
+
+            self.assertEqual(["JC-ALL"], [item.code for item in result])
+            self.assertEqual("已调整检测", updated_project.name)
+
     def test_project_manager_cannot_update_another_assignees_detection_task(self):
         assignee = User(username="assignee", display_name="执行人", role="技术员", is_active=True)
         project = Project(

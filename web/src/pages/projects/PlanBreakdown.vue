@@ -51,7 +51,7 @@
               <a-tag v-else-if="record.schedule_dirty" color="orange" style="margin-left: 8px">待重新排程</a-tag>
           </template>
         </a-table-column>
-        <a-table-column title="类型" key="task_type" width="120">
+        <a-table-column title="类型" key="task_type" width="110" :responsive="['lg']">
           <template #default="{ record }">
             <a-tag v-if="record.is_external_gate" color="default" style="font-size: 11px">方案签批</a-tag>
             <a-tag v-else-if="!record.children?.length" :color="getTaskTypeColor(record.task_type)" style="font-size: 11px">{{ getTaskTypeName(record.task_type) }}</a-tag>
@@ -66,7 +66,7 @@
             <span v-else>{{ taskStatusLabel(record.status) }}</span>
           </template>
         </a-table-column>
-        <a-table-column title="对应仪器" key="instruments" width="180">
+        <a-table-column title="对应仪器" key="instruments" width="160" :responsive="['xl']">
           <template #default="{ record }">
             <div v-if="getTaskInstrumentIds(record).length" class="instrument-tag-list">
               <a-tooltip
@@ -90,7 +90,7 @@
         <a-table-column title="耗时(h)" key="dur" width="90" align="center">
           <template #default="{ record }">{{ !record.children?.length ? (record.est_duration_hours || '-') : sumChildrenHours(record).toFixed(1) }}</template>
         </a-table-column>
-        <a-table-column title="前置任务" key="predecessors" width="160">
+        <a-table-column title="前置任务" key="predecessors" width="140" :responsive="['xl']">
           <template #default="{ record }">
             <span v-if="record.predecessor_ids?.length && !record.children?.length">
               <a-tag v-for="pid in record.predecessor_ids" :key="pid" color="blue" style="font-size: 10px; margin: 1px">{{ getTaskNameById(pid) }}</a-tag>
@@ -100,17 +100,23 @@
         </a-table-column>
         <a-table-column v-if="canOperate" title="操作" key="actions" width="180">
           <template #default="{ record }">
-            <a-space v-if="record.is_external_gate && record.is_local_draft" v-operation="'delete_task'" :size="0">
-              <a-popconfirm title="确定删除这个未保存的方案签批？" @confirm="handleDeleteTask(record.id)">
-                <a-button type="link" size="small" danger>删除</a-button>
-              </a-popconfirm>
+            <a-space v-if="record.is_external_gate && record.is_local_draft" :size="0">
+              <a-button v-operation="'edit_task'" type="link" size="small" @click="openEditApprovalGate(record)">编辑</a-button>
+              <span v-operation="'delete_task'">
+                <a-popconfirm title="确定删除这个未保存的方案签批？" @confirm="handleDeleteTask(record.id)">
+                  <a-button type="link" size="small" danger>删除</a-button>
+                </a-popconfirm>
+              </span>
             </a-space>
-            <a-space v-else-if="record.is_external_gate" v-operation="'delete_task'" :size="0">
-              <a-popconfirm :disabled="!canDeleteTask(record)" title="确定删除方案签批？删除后下游任务将恢复为待排程状态。" @confirm="handleDeleteTask(record.id)">
-                <a-tooltip :title="deleteDisabledReason(record)">
-                  <a-button type="link" size="small" danger :disabled="!canDeleteTask(record)">删除</a-button>
-                </a-tooltip>
-              </a-popconfirm>
+            <a-space v-else-if="record.is_external_gate" :size="0">
+              <a-button v-operation="'edit_task'" type="link" size="small" @click="openEditApprovalGate(record)">编辑</a-button>
+              <span v-operation="'delete_task'">
+                <a-popconfirm :disabled="!canDeleteTask(record)" title="确定删除方案签批？删除后下游任务将恢复为待排程状态。" @confirm="handleDeleteTask(record.id)">
+                  <a-tooltip :title="deleteDisabledReason(record)">
+                    <a-button type="link" size="small" danger :disabled="!canDeleteTask(record)">删除</a-button>
+                  </a-tooltip>
+                </a-popconfirm>
+              </span>
             </a-space>
             <a-space v-else :size="0">
               <a-button v-operation="'create_task'" type="link" size="small" @click="openAddTask(record.id)" title="添加子任务"><PlusOutlined /></a-button>
@@ -181,30 +187,46 @@
     <ApprovalGateModal
       :open="approvalGateOpen"
       :tasks="allTasks"
+      :userOptions="userOptions"
+      :defaultAssigneeId="project?.manager_id || null"
       :submitting="approvalGateSubmitting"
       @submit="handleCreateApprovalGate"
       @cancel="approvalGateOpen = false"
     />
+    <ApprovalGateEditModal
+      :open="approvalGateEditOpen"
+      :gate="editingApprovalGate"
+      :userOptions="userOptions"
+      :defaultAssigneeId="project?.manager_id || null"
+      :submitting="approvalGateEditSubmitting"
+      @submit="handleApprovalGateEditSubmit"
+      @cancel="closeEditApprovalGate"
+    />
   </div>
 </template>
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, h } from 'vue'
+import { ref, computed, reactive, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
 import { PlusOutlined, EditOutlined, LeftOutlined, PlayCircleOutlined, FileTextOutlined, ImportOutlined, HolderOutlined, SaveOutlined } from '@ant-design/icons-vue'
-import { commitProjectPlanDrafts, createApprovalGate, reorderProjectTasks, getProject, getProjectDAG, updateTask, deleteTask, getUserDirectory, getTaskTypes, getInstruments, applyProjectPlan, confirmProjectPlanInsert, type ApprovalGateCreatePayload, type ProjectPlanDraftTaskPayload, type Project, type Task, type DAGData, type TaskTypeConfig } from '@/services/api'
+import { commitProjectPlanDrafts, createApprovalGate, reorderProjectTasks, getProject, getProjectDAG, updateTask, deleteTask, getUserDirectory, getTaskTypes, getInstruments, applyProjectPlan, confirmProjectPlanInsert, type ApprovalGateCreatePayload, type Project, type Task, type DAGData, type TaskTypeConfig } from '@/services/api'
 import type { ProjectPlanApplyResult } from '@/types'
 import PlanInsertPreviewModal from './components/PlanInsertPreviewModal.vue'
 import ApprovalGateModal from './components/ApprovalGateModal.vue'
+import ApprovalGateEditModal from './components/ApprovalGateEditModal.vue'
 import dayjs from 'dayjs'
 import { canOperatePage, permissionState } from '@/services/permissions'
 import { taskStatusLabel } from '@/utils/statusMeta'
 import {
-  allocateTemplateHours, buildTaskTree, countLeafTasks, gateDateText, gateStatusMeta, getTaskTypeColor,
+  buildTaskTree, countLeafTasks, gateDateText, gateStatusMeta, getTaskTypeColor,
   parentTaskIds, priorityColor, priorityLabel, sumTaskHours,
   taskInstrumentIds, taskTreeHasCompletedTask,
 } from './planBreakdownUtils'
+import { scheduleFailureContent } from './planScheduleFailure'
+import { buildStandardPlanDrafts } from './standardPlanDrafts'
+import { persistCommittedDraftOrders, siblingOrderGroups, toDraftPayload } from './planDraftPersistence'
+import { useApprovalGateEditor } from './useApprovalGateEditor'
 import './planBreakdown.css'
 const router = useRouter()
 const route = useRoute()
@@ -291,6 +313,9 @@ const isEditingParent = computed(() => editingTask.value ? isParentTask(editingT
 const canEditScheduleFields = computed(() => editingTask.value?.can_edit_schedule_fields !== false)
 const isInstrumentRequired = computed(() => REQUIRED_INSTRUMENT_TASK_TYPES.has(tf.task_type))
 const hasLocalDrafts = computed(() => allTasks.value.some(task => task.is_local_draft))
+const { approvalGateEditOpen, approvalGateEditSubmitting, editingApprovalGate, openEditApprovalGate, closeEditApprovalGate, handleApprovalGateEditSubmit } = useApprovalGateEditor({
+  allTasks, hasLocalDrafts, project, getAssigneeName, fetchProject, errorDetail,
+})
 const hasPendingPlanChanges = computed(() => allTasks.value.some(task =>
   !task.children?.length
   && (task.schedule_dirty || ['pending', 'ready'].includes(task.status)),
@@ -473,35 +498,15 @@ function openTemplateImport() {
   if (!project.value) return
   if (!project.value?.estimated_hours) { message.error('请先填写项目预计工时'); return }
   if (!project.value.manager_id) { message.error('请先设置项目负责人'); return }
-  const [methodHours, schemeHours, validationHours, reportHours] = allocateTemplateHours(project.value.estimated_hours)
-  const managerId = project.value.manager_id
   const groupNumber = allTasks.value.filter(task => task.parent_id == null && task.task_type === 'group').length + 1
-  const group = buildDraftTask(templatePayload(`标准计划${groupNumber}`, 'group', false, 0, [], managerId, null), nextDraftId--)
-  const method = buildDraftTask(templatePayload('方法开发', 'FFKF_001', true, methodHours, [], managerId, group.id), nextDraftId--)
-  const scheme = buildDraftTask(templatePayload('方案撰写', 'QCFA_001', false, schemeHours, [method.id], managerId, group.id), nextDraftId--)
-  const restrictionId = nextDraftId--
-  const validation = buildDraftTask(templatePayload('方法验证', 'FFYZ_001', true, validationHours, [restrictionId], managerId, group.id), nextDraftId--)
-  const report = buildDraftTask(templatePayload('报告撰写', 'ZXBG_001', false, reportHours, [validation.id], managerId, group.id), nextDraftId--)
-  validation.status = 'waiting_external'; validation.schedule_dirty = false
-  report.status = 'waiting_external'; report.schedule_dirty = false
-  const restriction: Task = {
-    id: restrictionId, project_id: projectId, name: '方案签批', task_type: 'approval_gate',
-    requires_instrument: false, requires_human: false, switchover_hours: 0,
-    status: 'waiting_external', delay_status: 'not_delayed', schedule_dirty: false, schedule_lock_status: 'none',
-    can_edit_schedule_fields: true, can_edit_basic_fields: true,
-    can_edit_schedule_window: true, can_edit_resource_fields: true,
-    priority_weight: 1, allow_split: false,
-    instrument_ids: [], predecessor_ids: [scheme.id], assignee_id: null,
-    assignee_name: null, parent_id: group.id, is_external_gate: true,
-    gate_status: 'not_submitted', is_local_draft: true,
-  }
-  ;[method, scheme, restriction, validation, report].forEach((task, index) => { task.plan_order = index })
-  allTasks.value.push(group, method, scheme, restriction, validation, report)
-  expandTask(group.id)
-  message.success(`已追加“${group.name}”及其 5 个子任务，点击保存前不会写入数据库`)
-}
-function templatePayload(name: string, taskType: string, requiresInstrument: boolean, hours: number, predecessorIds: number[], assigneeId: number, parentId: number | null) {
-  return { name, task_type: taskType, requires_instrument: requiresInstrument, est_duration_hours: hours, switchover_hours: 0, predecessor_ids: predecessorIds, assignee_id: assigneeId, parent_id: parentId, instrument_ids: [] }
+  const draft = buildStandardPlanDrafts({
+    projectId, estimatedHours: project.value.estimated_hours, managerId: project.value.manager_id,
+    groupNumber, nextDraftId, getAssigneeName,
+  })
+  nextDraftId = draft.nextDraftId
+  allTasks.value.push(...draft.tasks)
+  expandTask(draft.group.id)
+  message.success(`已追加“${draft.group.name}”及其 5 个子任务，点击保存前不会写入数据库`)
 }
 async function loadInstruments() {
   try {
@@ -525,9 +530,9 @@ const savingPlan = ref(false)
 async function saveLocalDrafts() {
   const drafts = allTasks.value.filter(task => task.is_local_draft)
   if (!drafts.length) return null
-  const pendingOrders = siblingOrderGroups()
-  const result = await commitProjectPlanDrafts(projectId, drafts.map(toDraftPayload))
-  await persistCommittedDraftOrders(pendingOrders, result.id_map)
+  const pendingOrders = siblingOrderGroups(allTasks.value, siblingTasks)
+  const result = await commitProjectPlanDrafts(projectId, drafts.map(task => toDraftPayload(task, isParentTask)))
+  await persistCommittedDraftOrders(projectId, pendingOrders, result.id_map, reorderProjectTasks)
   return result
 }
 async function handleSavePlan() {
@@ -577,39 +582,6 @@ async function handleStartSchedule() {
     Modal.error({ title: '排程请求失败', content: errorDetail(error, '服务器内部错误，请稍后重试。') })
   } finally { scheduling.value = false }
 }
-function siblingOrderGroups() {
-  const parentIds = [...new Set(allTasks.value.map(task => task.parent_id))]
-  return parentIds.map(parentId => ({ parentId, taskIds: siblingTasks(parentId).map(task => task.id) }))
-}
-async function persistCommittedDraftOrders(
-  groups: { parentId: number | null; taskIds: number[] }[],
-  idMapRows: { client_id: number; task_id: number }[],
-) {
-  const idMap = new Map(idMapRows.map(row => [row.client_id, row.task_id]))
-  for (const group of groups) {
-    const parentId = group.parentId == null ? null : (idMap.get(group.parentId) ?? group.parentId)
-    const taskIds = group.taskIds.map(taskId => idMap.get(taskId) ?? taskId)
-    await reorderProjectTasks(projectId, parentId, taskIds)
-  }
-}
-function toDraftPayload(task: Task): ProjectPlanDraftTaskPayload {
-  const isParent = isParentTask(task.id)
-  return {
-    client_id: task.id,
-    name: task.name,
-    task_type: isParent ? 'group' : task.task_type,
-    requires_instrument: isParent ? false : task.requires_instrument,
-    requires_human: isParent ? false : task.requires_human,
-    estimated_hours: isParent ? null : (task.est_duration_hours ?? null),
-    switchover_hours: isParent ? 0 : task.switchover_hours,
-    assignee_id: isParent ? null : task.assignee_id,
-    parent_id: task.parent_id,
-    predecessor_ids: isParent ? [] : [...task.predecessor_ids],
-    instrument_ids: isParent ? [] : [...task.instrument_ids],
-    is_external_gate: Boolean(task.is_external_gate),
-    plan_order: task.plan_order ?? 0,
-  }
-}
 async function handleConfirmInsert() {
   const previewToken = insertPreview.value?.preview_token
   if (!previewToken) return
@@ -627,33 +599,6 @@ async function handleConfirmInsert() {
 function handleCancelInsert() {
   insertPreviewOpen.value = false
   insertPreview.value = null
-}
-function scheduleFailureContent(rawMessage: string) {
-  const marker = '。这不是系统故障，请按以下顺序检查：'
-  const [summary, checklistText] = rawMessage.split(marker)
-  if (!checklistText) return rawMessage
-
-  const projectPattern = /【([^】]+)】项目时间：(.+?) 至 (.+?)，待排总工时约 ([\d.]+) 小时（其中仪器工时 ([\d.]+) 小时）/g
-  const projects: Array<{ name: string; start: string; end: string; total: string; instrument: string }> = []
-  let match: RegExpExecArray | null
-  while ((match = projectPattern.exec(summary)) !== null) {
-    projects.push({ name: match[1], start: match[2], end: match[3], total: match[4], instrument: match[5] })
-  }
-  const checks = checklistText.replace(/调整后请重新点击“保存并开始排程”。?$/, '').split('；').filter(Boolean)
-  return h('div', { class: 'schedule-failure-content' }, [
-    h('div', { class: 'schedule-failure-summary' }, summary.split('。')[0]),
-    projects.length ? h('div', { class: 'schedule-failure-projects' }, [
-      h('div', { class: 'schedule-failure-section-title' }, '项目概况'),
-      ...projects.map(project => h('div', { class: 'schedule-failure-project' }, [
-        h('strong', project.name),
-        h('div', `时间：${project.start} 至 ${project.end}`),
-        h('div', `待排工时：${project.total} 小时（仪器 ${project.instrument} 小时）`),
-      ])),
-    ]) : null,
-    h('div', { class: 'schedule-failure-section-title' }, '请按顺序检查'),
-    h('ol', { class: 'schedule-failure-checks' }, checks.map(check => h('li', check))),
-    h('div', { class: 'schedule-failure-action' }, '调整后请重新点击“保存并开始排程”。'),
-  ])
 }
 function errorDetail(error: unknown, fallback: string) {
   if (isAxiosError<{ detail?: string }>(error)) return error.response?.data?.detail || fallback

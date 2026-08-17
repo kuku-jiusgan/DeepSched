@@ -3,7 +3,6 @@
     <header class="page-header">
       <div>
         <h2>项目工时统计报表</h2>
-        <p>汇总项目总工时与实际工时，展开项目可查看任务明细。</p>
       </div>
     </header>
 
@@ -60,7 +59,6 @@
         :pagination="{ pageSize: 10, showSizeChanger: true, showTotal: (total: number) => `共 ${total} 个项目` }"
         row-key="project_id"
         size="middle"
-        :scroll="{ x: 1040 }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'project'">
@@ -71,6 +69,12 @@
           </template>
           <template v-else-if="column.key === 'planned_hours'">
             {{ formatHours(record.planned_hours) }}
+          </template>
+          <template v-else-if="column.key === 'start_date' || column.key === 'end_date'">
+            {{ formatProjectDate(record[column.key as 'start_date' | 'end_date']) }}
+          </template>
+          <template v-else-if="column.key === 'project_status'">
+            <a-tag :color="projectStatusColor(record.project_status)">{{ projectStatusLabel(record.project_status) }}</a-tag>
           </template>
           <template v-else-if="column.key === 'actual_hours'">
             {{ formatHours(record.actual_hours) }}
@@ -89,7 +93,7 @@
               :pagination="false"
               row-key="task_id"
               size="small"
-              :scroll="{ x: 900 }"
+              :scroll="{ x: 'max-content' }"
             >
               <template #bodyCell="{ column, record: task }">
                 <template v-if="column.key === 'task_name'">
@@ -99,6 +103,18 @@
                 </template>
                 <template v-else-if="column.key === 'status'">
                   <a-tag :color="taskStatusColor(task.status)">{{ taskStatusLabel(task.status) }}</a-tag>
+                </template>
+                <template v-else-if="column.key === 'instrument_codes'">
+                  {{ task.instrument_codes.join('、') }}
+                </template>
+                <template v-else-if="['planned_start', 'planned_end', 'actual_start', 'actual_end'].includes(String(column.key))">
+                  {{ formatDateTime(task[column.key as keyof ProjectHoursTask] as string | null) }}
+                </template>
+                <template v-else-if="column.key === 'schedule_judgement'">
+                  <a-tag v-if="task.schedule_judgement" :color="judgementColor(task.schedule_judgement)">{{ task.schedule_judgement }}</a-tag>
+                </template>
+                <template v-else-if="column.key === 'pause_reasons'">
+                  {{ task.pause_reasons.join('；') }}
                 </template>
                 <template v-else-if="column.key === 'planned_hours'">
                   {{ formatHours(task.planned_hours) }}
@@ -140,23 +156,57 @@ const appliedKeyword = ref('')
 const report = ref<ProjectHoursReport | null>(null)
 
 const projectColumns: TableColumnsType<ProjectHoursItem> = [
-  { title: '项目', key: 'project', width: 250, fixed: 'left' },
-  { title: '客户', dataIndex: 'client_name', key: 'client_name', width: 150, ellipsis: true },
-  { title: '负责人', dataIndex: 'manager_name', key: 'manager_name', width: 120 },
-  { title: '任务数', dataIndex: 'task_count', key: 'task_count', width: 90, align: 'right' },
-  { title: '总工时(h)', dataIndex: 'planned_hours', key: 'planned_hours', width: 130, align: 'right', sorter: (a, b) => a.planned_hours - b.planned_hours },
-  { title: '实际工时(h)', dataIndex: 'actual_hours', key: 'actual_hours', width: 140, align: 'right', sorter: (a, b) => a.actual_hours - b.actual_hours },
-  { title: '差异(h)', dataIndex: 'variance_hours', key: 'variance_hours', width: 120, align: 'right', sorter: (a, b) => a.variance_hours - b.variance_hours },
+  { title: '项目', key: 'project', width: 180 },
+  { title: '客户', dataIndex: 'client_name', key: 'client_name', width: 100, ellipsis: true },
+  { title: '负责人', dataIndex: 'manager_name', key: 'manager_name', width: 70, ellipsis: true },
+  { title: '开始日期', dataIndex: 'start_date', key: 'start_date', width: 100 },
+  { title: '结束日期', dataIndex: 'end_date', key: 'end_date', width: 100 },
+  { title: '状态', dataIndex: 'project_status', key: 'project_status', width: 80 },
+  { title: '任务数', dataIndex: 'task_count', key: 'task_count', width: 60, align: 'right' },
+  { title: '预计(h)', dataIndex: 'planned_hours', key: 'planned_hours', width: 80, align: 'right', sorter: (a, b) => a.planned_hours - b.planned_hours },
+  { title: '实际(h)', dataIndex: 'actual_hours', key: 'actual_hours', width: 80, align: 'right', sorter: (a, b) => a.actual_hours - b.actual_hours },
+  { title: '差异(h)', dataIndex: 'variance_hours', key: 'variance_hours', width: 80, align: 'right', sorter: (a, b) => a.variance_hours - b.variance_hours },
 ]
 
 const taskColumns: TableColumnsType<ProjectHoursTask> = [
-  { title: '顶级任务', dataIndex: 'top_level_task_name', key: 'top_level_task_name', width: 210, ellipsis: true },
-  { title: '任务名称', dataIndex: 'task_name', key: 'task_name', width: 280 },
-  { title: '负责人', dataIndex: 'assignee_name', key: 'assignee_name', width: 120 },
+  { title: '任务名称', dataIndex: 'task_name', key: 'task_name', width: 190, ellipsis: true },
+  { title: '负责人', dataIndex: 'assignee_name', key: 'assignee_name', width: 80, ellipsis: true },
+  { title: '仪器编号', dataIndex: 'instrument_codes', key: 'instrument_codes', width: 120 },
+  { title: '计划开始', dataIndex: 'planned_start', key: 'planned_start', width: 135 },
+  { title: '计划结束', dataIndex: 'planned_end', key: 'planned_end', width: 135 },
+  { title: '实际开始', dataIndex: 'actual_start', key: 'actual_start', width: 135 },
+  { title: '实际完成', dataIndex: 'actual_end', key: 'actual_end', width: 135 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 120 },
-  { title: '总工时(h)', dataIndex: 'planned_hours', key: 'planned_hours', width: 120, align: 'right' },
-  { title: '实际工时(h)', dataIndex: 'actual_hours', key: 'actual_hours', width: 130, align: 'right' },
+  { title: '预计工时(h)', dataIndex: 'planned_hours', key: 'planned_hours', width: 100, align: 'right' },
+  { title: '实际工时(h)', dataIndex: 'actual_hours', key: 'actual_hours', width: 100, align: 'right' },
+  { title: '系统判定', dataIndex: 'schedule_judgement', key: 'schedule_judgement', width: 110 },
+  { title: '延期小时数', dataIndex: 'delay_hours', key: 'delay_hours', width: 100 },
+  { title: '暂停次数', dataIndex: 'pause_count', key: 'pause_count', width: 90 },
+  { title: '延期/暂停原因', dataIndex: 'pause_reasons', key: 'pause_reasons', width: 240 },
 ]
+
+function formatDateTime(value: string | null) {
+  return value ? value.replace('T', ' ').slice(0, 16) : ''
+}
+
+function formatProjectDate(value: string | null) {
+  return value ? value.slice(0, 10) : ''
+}
+
+function judgementColor(value: string) {
+  if (value === '延期') return 'red'
+  if (value === '正常') return 'green'
+  if (value === '提前') return 'blue'
+  return 'default'
+}
+
+function projectStatusLabel(value: string) {
+  return value === 'completed' ? '已完成' : value === 'active' ? '进行中' : '未开始'
+}
+
+function projectStatusColor(value: string) {
+  return value === 'completed' ? 'green' : value === 'active' ? 'blue' : 'default'
+}
 
 const totalVariance = computed(() => (report.value?.actual_hours ?? 0) - (report.value?.planned_hours ?? 0))
 
@@ -245,7 +295,10 @@ onMounted(loadReport)
 .project-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .project-identity strong { color: #1d4ed8; font-size: 13px; }
 .project-identity span { overflow: hidden; color: #344054; text-overflow: ellipsis; white-space: nowrap; }
-.task-detail-band { margin: -16px -16px; padding: 12px 16px 16px 48px; background: #f8fafc; }
+.project-hours-table :deep(.ant-table-thead > tr > th),
+.project-hours-table :deep(.ant-table-tbody > tr > td) { white-space: nowrap; }
+.project-hours-table :deep(.ant-table-cell) { word-break: keep-all; }
+.task-detail-band { margin: -16px -16px; padding: 12px 16px 16px; background: #f8fafc; }
 .task-detail-title { margin-bottom: 10px; color: #344054; font-size: 13px; font-weight: 600; }
 .task-name { display: inline-flex; align-items: center; min-width: 0; }
 .task-branch { margin-right: 6px; color: #98a2b3; }

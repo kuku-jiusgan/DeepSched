@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from app.models import AuditLog, User
+from app.models import AuditLog, Instrument, User
 
 
 HIDDEN_TECHNICAL_PATHS = {"/api/v1/users/keep-alive"}
@@ -23,6 +23,20 @@ PROJECT_AUDIT_FIELDS = {
     "start_date": "项目开始时间",
     "end_date": "项目结束时间",
 }
+TASK_AUDIT_FIELDS = {
+    "name": "任务名称",
+    "task_type": "任务类型",
+    "est_duration_hours": "预计工时",
+    "switchover_hours": "切换时间",
+    "assignee_name": "负责人",
+    "instrument_names": "仪器",
+    "predecessor_names": "前置任务",
+    "parent_name": "所属任务",
+    "requires_instrument": "需要仪器",
+    "requires_human": "需要人工",
+    "allow_split": "允许拆分",
+    "allow_transfer": "允许转移",
+}
 
 
 def record_audit_log(db, user_name: str, action: str, target_type: str, target_id: int | None, detail: dict) -> None:
@@ -33,6 +47,109 @@ def record_audit_log(db, user_name: str, action: str, target_type: str, target_i
         target_id=target_id,
         detail=detail,
     ))
+
+
+def structured_audit_detail(
+    category: str,
+    summary: str,
+    target_display: str,
+    *,
+    changes: list[dict] | None = None,
+    context: dict | None = None,
+    reason: str | None = None,
+) -> dict:
+    return {
+        "event_version": 1,
+        "category": category,
+        "summary": summary,
+        "target_display": target_display,
+        "result": "success",
+        "changes": changes or [],
+        "context": context or {},
+        **({"reason": reason} if reason else {}),
+    }
+
+
+def task_audit_snapshot(db, task) -> dict:
+    instrument_ids = list(task.instrument_ids or [])
+    instruments = {
+        item.id: " · ".join(part for part in [item.code, item.name] if part)
+        for item in db.query(Instrument).filter(Instrument.id.in_(instrument_ids)).all()
+    } if instrument_ids else {}
+    return {
+        "name": task.name,
+        "task_type": task.task_type,
+        "est_duration_hours": task.est_duration_hours,
+        "switchover_hours": task.switchover_hours,
+        "assignee_name": task.assignee.display_name if task.assignee else None,
+        "instrument_names": [instruments.get(item, f"仪器 #{item}") for item in instrument_ids],
+        "predecessor_names": [item.predecessor.name for item in task.predecessors],
+        "parent_name": task.parent.name if task.parent else None,
+        "requires_instrument": bool(task.requires_instrument),
+        "requires_human": bool(task.requires_human),
+        "allow_split": bool(task.allow_split),
+        "allow_transfer": bool(task.allow_transfer),
+    }
+
+
+def task_audit_detail(db, task, verb: str, before: dict | None = None) -> dict:
+    current = task_audit_snapshot(db, task)
+    project = task.project
+    target_display = " · ".join(
+        part for part in [project.code if project else None, task.name] if part
+    )
+    changes = _snapshot_changes(before, current, TASK_AUDIT_FIELDS) if before is not None else []
+    summary = _change_summary(verb, target_display, changes)
+    return structured_audit_detail(
+        "task",
+        summary,
+        target_display,
+        changes=changes,
+        context={"project_id": task.project_id, "project_code": project.code if project else None},
+    )
+
+
+def task_deleted_audit_detail(db, task) -> dict:
+    detail = task_audit_detail(db, task, "删除任务")
+    detail["snapshot"] = task_audit_snapshot(db, task)
+    return detail
+
+
+def _snapshot_changes(before: dict, current: dict, labels: dict[str, str]) -> list[dict]:
+    return [
+        {"field": labels.get(key, key), "before": before.get(key), "after": value}
+        for key, value in current.items()
+        if before.get(key) != value
+    ]
+
+
+def _change_summary(verb: str, target_display: str, changes: list[dict]) -> str:
+    target_display = _shorten(target_display, 60)
+    if not changes:
+        return f"{verb}【{target_display}】"
+    visible = changes[:2]
+    change_text = "；".join(
+        f"{item['field']} {_shorten(_audit_value(item['before']), 40)} → {_shorten(_audit_value(item['after']), 40)}"
+        for item in visible
+    )
+    suffix = f"；另有 {len(changes) - 2} 项" if len(changes) > 2 else ""
+    return f"{verb}【{target_display}】：{change_text}{suffix}"
+
+
+def _audit_value(value) -> str:
+    if value is None or value == "":
+        return "未设置"
+    if value is True:
+        return "是"
+    if value is False:
+        return "否"
+    if isinstance(value, list):
+        return "、".join(str(item) for item in value) or "无"
+    return str(value)
+
+
+def _shorten(value: str, limit: int) -> str:
+    return value if len(value) <= limit else f"{value[:limit - 1]}…"
 
 
 def user_audit_snapshot(user) -> dict:

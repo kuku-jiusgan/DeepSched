@@ -13,6 +13,7 @@ class ApprovalGateCreate(BaseModel):
     name: str = "方案签批"
     predecessor_task_id: int
     unlock_task_ids: list[int] = Field(min_length=1)
+    assignee_id: int | None = None
 
 
 class ApprovalGateSubmit(BaseModel):

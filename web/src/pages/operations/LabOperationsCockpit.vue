@@ -228,11 +228,11 @@ const utilizationMap = computed(() => new Map(utilization.value.map(item => [ite
 const feedScrollDuration = computed(() => `${Math.max(instruments.value.length * 9, 42)}s`)
 const warningTasks = computed(() => {
   const latestSlotByTask = new Map<number, TimeSlot>()
-  for (const slot of slots.value.filter(isWarningTask)) {
+  for (const slot of slots.value) {
     const current = latestSlotByTask.get(slot.task_id)
     if (!current || dayjs(slot.plan_end).isAfter(current.plan_end)) latestSlotByTask.set(slot.task_id, slot)
   }
-  return [...latestSlotByTask.values()].sort((left, right) => warningSortTime(right) - warningSortTime(left))
+  return [...latestSlotByTask.values()].filter(isWarningTask).sort((left, right) => warningSortTime(right) - warningSortTime(left))
 })
 const isWarningScrollEnabled = computed(() => warningTasks.value.length > WARNING_SCROLL_THRESHOLD)
 const warningCopyCount = computed(() => isWarningScrollEnabled.value ? 2 : 1)
@@ -290,11 +290,11 @@ function instrumentPhotoClass(code: string) {
 }
 function isWarningTask(slot: TimeSlot) {
   const executionStatus = displayTaskStatus(slot)
-  return slot.delay_status === 'delayed' && !isTaskCompleted(executionStatus)
+  return !isTaskCompleted(executionStatus) && now.value.isAfter(dayjs(slot.plan_end))
 }
 function warningSortTime(slot: TimeSlot) { return dayjs(slot.delay_reported_at || slot.plan_end || slot.plan_start).valueOf() }
-function warningTaskStatus(slot: TimeSlot) { const delayText = slot.delay_hours && slot.delay_hours > 0 ? `延期 ${slot.delay_hours}h` : `延期 ${formatDelayDuration(slot)}`; return `${taskStatusText(displayTaskStatus(slot))} · ${delayText}` }
-function warningTaskReason(slot: TimeSlot) { return slot.delay_reason || `计划结束 ${formatDateTime(slot.plan_end)}，${taskStatusText(displayTaskStatus(slot))}` }
+function warningTaskStatus(slot: TimeSlot) { return `${taskStatusText(displayTaskStatus(slot))} · 超时 ${formatDelayDuration(slot)}` }
+function warningTaskReason(slot: TimeSlot) { return `计划结束 ${formatDateTime(slot.plan_end)}，当前仍未完成` }
 function taskStatusText(status: string) { return taskStatusLabel(status) }
 function displayTaskStatus(slot: TimeSlot) { return slot.execution_status || slot.task_status || slot.status }
 function formatDelayDuration(slot: TimeSlot) { const end = slot.actual_end ? dayjs(slot.actual_end) : now.value; const minutes = Math.max(1, end.diff(dayjs(slot.plan_end), 'minute')); const hours = Math.floor(minutes / 60); const remainingMinutes = minutes % 60; return hours ? `${hours}小时${remainingMinutes ? `${remainingMinutes}分钟` : ''}` : `${minutes}分钟` }

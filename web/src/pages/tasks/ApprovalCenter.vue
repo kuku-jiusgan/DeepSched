@@ -39,10 +39,10 @@
         </template>
       </a-table-column>
       <a-table-column title="负责人" dataIndex="assignee_name" width="6%" class-name="manager-column" ellipsis />
-      <a-table-column title="预计签批" width="11%" class-name="compact-time-column">
+      <a-table-column title="预计签批" width="11%" class-name="compact-time-column" :responsive="['lg']">
         <template #default="{ record }">{{ formatCompactDateTime(record.expected_approval_at) }}</template>
       </a-table-column>
-      <a-table-column title="最迟签批" width="11%" class-name="compact-time-column">
+      <a-table-column title="最迟签批" width="11%" class-name="compact-time-column" :responsive="['xl']">
         <template #default="{ record }">{{ formatCompactDateTime(record.latest_approval_at) }}</template>
       </a-table-column>
       <a-table-column title="风险/结果" width="14%">

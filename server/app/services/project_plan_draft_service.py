@@ -79,7 +79,7 @@ def commit_project_plan_drafts(
                 else item.switchover_hours
             ),
             assignee_id=(
-                project.manager_id if item.is_external_gate
+                (item.assignee_id or project.manager_id) if item.is_external_gate
                 else None if is_parent
                 else item.assignee_id
             ),

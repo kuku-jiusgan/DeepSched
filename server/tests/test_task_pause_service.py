@@ -256,6 +256,51 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertLessEqual(target_slots[-1].plan_end, source_slots[0].plan_start)
         self.assertLessEqual(source_slots[-1].plan_end, intermediate_slots[0].plan_start)
 
+    def test_pause_and_switch_reorders_future_task_after_target_queue(self):
+        future_task = Task(
+            project_id=self.project_a.id,
+            name="后续任务",
+            task_type="FFKF_001",
+            requires_instrument=True,
+            status="scheduled",
+            allow_split=False,
+        )
+        self.db.add(future_task)
+        self.db.flush()
+        future_slot = TimeSlot(
+            task_id=future_task.id,
+            instrument_id=self.instrument.id,
+            plan_start=self.target_slot.plan_end + timedelta(days=5),
+            plan_end=self.target_slot.plan_end + timedelta(days=5, hours=2),
+            status="scheduled",
+            tier="confirmed",
+        )
+        original_future_start = future_slot.plan_start
+        self.db.add(future_slot)
+        self.db.commit()
+
+        pause_and_switch_task(
+            self.db, self.source_slot.id, "切换任务", self.operator, self.target_slot.id,
+        )
+
+        self.assertLessEqual(
+            self.target_slot.plan_end,
+            self.db.query(TimeSlot).filter(TimeSlot.task_id == future_task.id).one().plan_start,
+        )
+        self.assertLess(
+            self.db.query(TimeSlot).filter(TimeSlot.task_id == future_task.id).one().plan_start,
+            original_future_start,
+        )
+
+    def test_pause_and_switch_rejects_task_that_exceeds_project_end_date(self):
+        self.source_task.project.end_date = datetime.now() + timedelta(hours=1)
+        self.db.commit()
+
+        with self.assertRaisesRegex(DomainConflictError, "切换后无法"):
+            pause_and_switch_task(
+                self.db, self.source_slot.id, "切换任务", self.operator, self.target_slot.id,
+            )
+
     def _future_slots(self, task_id: int) -> list[TimeSlot]:
         return (
             self.db.query(TimeSlot)

@@ -23,7 +23,8 @@ class DetectionTaskNotFoundError(Exception):
 
 
 SYSTEM_ADMIN_ROLE = "系统管理员"
-FULL_DETECTION_TASK_VIEW_ROLES = {SYSTEM_ADMIN_ROLE, "项目管理员"}
+FULL_DETECTION_TASK_ACCESS_ROLES = {SYSTEM_ADMIN_ROLE, "分析所所长", "技术组长"}
+FULL_DETECTION_TASK_VIEW_ROLES = FULL_DETECTION_TASK_ACCESS_ROLES | {"项目管理员"}
 
 
 def list_detection_tasks(db, user) -> list[Project]:
@@ -223,6 +224,6 @@ def _get_detection_task(db, detection_id: int, user=None) -> Project:
 
 def _can_view_detection_task(project: Project, user) -> bool:
     return (
-        has_role(user, SYSTEM_ADMIN_ROLE)
+        any(has_role(user, role) for role in FULL_DETECTION_TASK_ACCESS_ROLES)
         or any(task.assignee_id == user.id for task in project.tasks)
     )

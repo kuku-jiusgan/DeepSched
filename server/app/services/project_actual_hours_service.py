@@ -65,7 +65,7 @@ def _actual_ranges_by_task(task_ids, segments, slots) -> dict[int, list[TimeRang
         if slot.id in segmented_slot_ids or slot.status not in {"completed", "running"} or not slot.actual_start:
             continue
         start = max(slot.actual_start, slot.plan_start)
-        end = min(slot.actual_end or now, slot.plan_end)
+        end = slot.actual_end or now
         if end > start:
             result[slot.task_id].append((start, end))
     return result

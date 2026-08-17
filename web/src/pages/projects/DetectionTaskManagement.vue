@@ -127,10 +127,10 @@ const filteredTasks = computed(() => tasks.value.filter(item => {
 const columns = [
   { title: '任务编号', key: 'code', width: 140 }, { title: '检测任务名称', dataIndex: 'name', key: 'name' },
   { title: '执行人', key: 'manager', width: 100 }, { title: '预计耗时', key: 'duration', width: 90 },
-  { title: '实际工时', key: 'actualHours', width: 90 },
-  { title: '计划时间窗', key: 'window', width: 220 }, { title: '仪器', key: 'instruments', ellipsis: true },
-  { title: '优先级', key: 'priority', width: 80 }, { title: '状态', key: 'status', width: 90 },
-  { title: '操作', key: 'actions', width: 150 },
+  { title: '实际工时', key: 'actualHours', width: 80, responsive: ['xl'] },
+  { title: '计划时间窗', key: 'window', width: 190 }, { title: '仪器', key: 'instruments', ellipsis: true, responsive: ['lg'] },
+  { title: '优先级', key: 'priority', width: 70, responsive: ['xl'] }, { title: '状态', key: 'status', width: 80 },
+  { title: '操作', key: 'actions', width: 120 },
 ]
 const priorityOptions = [{ label: '一级（最高）', value: 1 }, { label: '二级', value: 2 }, { label: '三级', value: 3 }]
 

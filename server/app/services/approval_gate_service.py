@@ -47,6 +47,7 @@ class ApprovalGateInvalidError(Exception):
 def create_approval_gate(db, project_id: int, data: ApprovalGateCreate, user: User) -> ApprovalGateOut:
     project = _project_or_404(db, project_id)
     _ensure_can_operate(project, user)
+    assignee_id = _approval_assignee_id(db, project, data.assignee_id)
     tasks = db.query(Task).filter(Task.project_id == project_id).all()
     task_by_id = {task.id: task for task in tasks}
     predecessor = task_by_id.get(data.predecessor_task_id)
@@ -72,7 +73,7 @@ def create_approval_gate(db, project_id: int, data: ApprovalGateCreate, user: Us
         requires_human=False,
         est_duration_hours=None,
         switchover_hours=0,
-        assignee_id=project.manager_id,
+        assignee_id=assignee_id,
         status="waiting_external",
         is_external_gate=True,
         gate_status="not_submitted",
@@ -120,6 +121,7 @@ def list_approval_gates(
             if gate.project and (
                 any(has_role(user, role) for role in APPROVAL_WORKSPACE_ALL_VIEW_ROLES)
                 or gate.assignee_id == user.id
+                or _is_project_member(gate.project, user)
             )
         ]
     else:
@@ -426,7 +428,7 @@ def _gate_out(db, gate: Task, user: User) -> ApprovalGateOut:
         moved_tasks=gate.approval_moved_tasks or 0,
         project_expected_completion=expected_completion,
         can_operate=(
-            _can_operate(project, user) or gate.assignee_id == user.id
+            _can_operate_gate_task(gate, user)
         ) and not has_role(user, "项目管理员"),
     )
 
@@ -523,13 +525,41 @@ def _can_operate(project: Project, user: User) -> bool:
     return has_any_role(user, APPROVAL_WRITE_ROLES) or project.manager_id == user.id
 
 
+def _approval_assignee_id(db, project: Project, assignee_id: int | None) -> int | None:
+    if assignee_id is None:
+        return project.manager_id
+    assignee = db.query(User.id).filter(
+        User.id == assignee_id,
+        User.is_active.is_(True),
+    ).first()
+    if not assignee:
+        raise ApprovalGateInvalidError("方案签批负责人不存在或已停用")
+    return assignee_id
+
+
+def _is_project_member(project: Project, user: User) -> bool:
+    return project.manager_id == user.id or any(
+        task.assignee_id == user.id
+        for task in project.tasks
+        if not task.is_external_gate
+    )
+
+
+def _can_operate_gate_task(gate: Task, user: User) -> bool:
+    return (
+        has_any_role(user, APPROVAL_WRITE_ROLES)
+        or gate.assignee_id == user.id
+        or _is_project_member(gate.project, user)
+    )
+
+
 def _ensure_can_operate(project: Project, user: User) -> None:
     if not _can_operate(project, user):
         raise ApprovalGatePermissionError("无权操作该项目的方案签批")
 
 
 def _ensure_can_operate_gate(gate: Task, user: User) -> None:
-    if gate.assignee_id != user.id and not _can_operate(gate.project, user):
+    if not _can_operate_gate_task(gate, user):
         raise ApprovalGatePermissionError("无权操作该方案签批任务")
 
 

@@ -40,8 +40,8 @@ def calculate_instrument_utilization(
             scheduled_hours=round(scheduled_hours, 1),
             actual_run_hours=round(actual_hours, 1),
             expected_utilization_rate=_rate(scheduled_hours, available_hours, percent_scale),
-            actual_utilization_rate=_rate(actual_hours, available_hours, percent_scale),
-            utilization_rate=_rate(actual_hours, available_hours, percent_scale),
+            actual_utilization_rate=min(_rate(actual_hours, available_hours, percent_scale), percent_scale),
+            utilization_rate=min(_rate(actual_hours, available_hours, percent_scale), percent_scale),
             buffer_consumed_rate=0,
         ))
     return result
@@ -111,10 +111,22 @@ def _actual_ranges(
         TaskExecutionSegment.instrument_id == instrument_id,
         TaskExecutionSegment.started_at < window_end,
     ).all()
+    slot_by_id = {slot.id: slot for slot in slots}
+    missing_slot_ids = {segment.slot_id for segment in segments if segment.slot_id not in slot_by_id}
+    if missing_slot_ids:
+        slot_by_id.update({slot.id: slot for slot in db.query(TimeSlot).filter(TimeSlot.id.in_(missing_slot_ids)).all()})
     ranges = [
-        (segment.started_at, segment.ended_at or window_end)
+        (
+            max(segment.started_at, window_start),
+            min(
+                segment.ended_at or window_end,
+                slot_by_id[segment.slot_id].plan_end if segment.slot_id in slot_by_id else window_end,
+                window_end,
+            ),
+        )
         for segment in segments
         if (segment.ended_at or window_end) > window_start
+        and segment.started_at < window_end
     ]
     segmented_slot_ids = {segment.slot_id for segment in segments}
     ranges.extend(

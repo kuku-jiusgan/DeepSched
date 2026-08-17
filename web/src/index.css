@@ -287,3 +287,18 @@ h3 { font-size: 1.1rem; font-weight: 600; }
   flex-wrap: wrap;
   margin-bottom: var(--space-md);
 }
+
+/* Dense data-table baseline. Individual pages decide which secondary columns hide. */
+.ant-table-wrapper .ant-table-thead > tr > th {
+  white-space: nowrap;
+  word-break: keep-all;
+}
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  word-break: keep-all;
+}
+@media (max-width: 1280px) {
+  .ant-table-wrapper .ant-table { font-size: 12px; }
+  .ant-table-wrapper .ant-table-thead > tr > th,
+  .ant-table-wrapper .ant-table-tbody > tr > td { padding: 8px 6px; }
+  .ant-table-wrapper .ant-btn-link { padding-inline: 4px; }
+}

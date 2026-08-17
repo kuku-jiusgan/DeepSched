@@ -41,6 +41,7 @@ from app.services.audit_log_service import (
     project_audit_detail,
     project_audit_snapshot,
     record_audit_log,
+    task_audit_detail,
 )
 from app.services.user_role_service import has_role
 from app.services.task_reorder_service import reorder_project_tasks, TaskReorderInvalidError
@@ -181,7 +182,7 @@ def add_task(
     proj_id: int,
     data: TaskCreate,
     db: Session = Depends(get_db),
-    _user=Depends(require_project_editor_by_proj_id),
+    user=Depends(require_project_editor_by_proj_id),
 ):
     try:
         validate_task_references(
@@ -215,6 +216,14 @@ def add_task(
     except ProjectHoursExceededError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc))
+    record_audit_log(
+        db,
+        user.display_name or user.username,
+        "task_created",
+        "task",
+        task.id,
+        task_audit_detail(db, task, "新增任务"),
+    )
     db.commit()
     db.refresh(task)
     return _task_to_out(task, db)
@@ -226,7 +235,12 @@ def delete_task(
     user=Depends(require_task_editor),
 ):
     try:
-        delete_task_plan(db, task_id, allow_completed=has_role(user, "系统管理员"))
+        delete_task_plan(
+            db,
+            task_id,
+            allow_completed=has_role(user, "系统管理员"),
+            actor_name=user.display_name or user.username,
+        )
         return {"detail": "已删除"}
     except PlanChangeNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -238,10 +252,13 @@ def update_task(
     task_id: int,
     data: TaskUpdate,
     db: Session = Depends(get_db),
-    _user=Depends(require_task_editor),
+    user=Depends(require_task_editor),
 ):
     try:
-        return _task_to_out(update_task_plan(db, task_id, data), db)
+        return _task_to_out(
+            update_task_plan(db, task_id, data, user.display_name or user.username),
+            db,
+        )
     except PlanChangeNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except PlanChangeInvalidError as exc:
@@ -250,10 +267,16 @@ def update_task(
 @router.post("/{proj_id}/tasks/reorder", response_model=dict)
 def reorder_tasks(
     proj_id: int, data: TaskReorder, db: Session = Depends(get_db),
-    _user=Depends(require_project_editor_by_proj_id),
+    user=Depends(require_project_editor_by_proj_id),
 ):
     try:
-        reorder_project_tasks(db, proj_id, data.parent_id, data.task_ids)
+        reorder_project_tasks(
+            db,
+            proj_id,
+            data.parent_id,
+            data.task_ids,
+            user.display_name or user.username,
+        )
         return {"detail": "任务顺序已保存"}
     except TaskReorderInvalidError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

@@ -111,12 +111,12 @@ const columns = [
   { title: '用户名', dataIndex: 'username', key: 'username', width: 120 },
   { title: '显示名称', dataIndex: 'display_name', key: 'display_name', width: 120 },
   { title: '角色', dataIndex: 'role', key: 'role', width: 110 },
-  { title: '邮箱', dataIndex: 'email', key: 'email', width: 180, ellipsis: true },
+  { title: '邮箱', dataIndex: 'email', key: 'email', width: 180, ellipsis: true, responsive: ['xl'] },
   { title: '手机号', dataIndex: 'phone', key: 'phone', width: 130 },
-  { title: '企业微信', dataIndex: 'wecom_id', key: 'wecom_id', width: 130, ellipsis: true },
+  { title: '企业微信', dataIndex: 'wecom_id', key: 'wecom_id', width: 130, ellipsis: true, responsive: ['lg'] },
   { title: '状态', dataIndex: 'is_active', key: 'is_active', width: 70 },
-  { title: '创建时间', key: 'created_at', width: 140 },
-  { title: '操作', key: 'actions', width: 200 },
+  { title: '创建时间', key: 'created_at', width: 140, responsive: ['xl'] },
+  { title: '操作', key: 'actions', width: 150 },
 ]
 
 async function fetchData() {

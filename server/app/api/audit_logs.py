@@ -1,37 +1,73 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.users import require_authenticated_user
 from app.core.database import get_db
 from app.models import Instrument, Project, Task, TaskDependency, TaskTypeConfig, TimeSlot, User
 from app.services.audit_log_service import list_audit_logs, project_audit_detail
+from app.services.audit_log_export_service import export_audit_logs
+from app.services.audit_log_presentation_service import audit_log_categories, present_audit_record
+from app.services.translation_catalog import catalog_payload
 from app.services.role_permission_service import permissions_for_roles
 from app.services.user_role_service import user_roles
 
 
 router = APIRouter(prefix="/api/v1/audit-logs", tags=["audit-logs"])
 
+@router.get("/translation-catalog")
+def get_translation_catalog(user: User = Depends(require_authenticated_user)):
+    return catalog_payload()
+
+
+@router.get("/categories", response_model=list[dict[str, str]])
+def get_audit_log_categories(
+    db: Session = Depends(get_db), user: User = Depends(require_authenticated_user),
+):
+    _ensure_audit_log_access(db, user)
+    return audit_log_categories()
+
+
+@router.get("/export", response_class=StreamingResponse)
+def export_audit_log_records(
+    keyword: str | None = None, action: str | None = None, category: str | None = None,
+    user_name: str | None = None,
+    start_at: datetime | None = Query(default=None), end_at: datetime | None = Query(default=None),
+    db: Session = Depends(get_db), user: User = Depends(require_authenticated_user),
+):
+    _ensure_audit_log_access(db, user)
+    records = _audit_log_records(db, keyword, action, category, user_name, start_at, end_at)
+    filename = f"audit-logs-{date.today().isoformat()}.xlsx"
+    return StreamingResponse(export_audit_logs(records), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
 
 @router.get("")
 def get_audit_logs(
     keyword: str | None = None,
     action: str | None = None,
+    category: str | None = None,
     user_name: str | None = None,
     start_at: datetime | None = Query(default=None),
     end_at: datetime | None = Query(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(require_authenticated_user),
 ):
-    permission = next(
-        item for item in permissions_for_roles(db, user_roles(user))
-        if item["page_key"] == "/system/audit-logs"
-    )
+    _ensure_audit_log_access(db, user)
+    return _audit_log_records(db, keyword, action, category, user_name, start_at, end_at)
+
+
+def _ensure_audit_log_access(db: Session, user: User) -> None:
+    permission = next(item for item in permissions_for_roles(db, user_roles(user)) if item["page_key"] == "/system/audit-logs")
     if not permission["can_view"]:
         raise HTTPException(status_code=403, detail="当前角色没有查看操作日志的权限")
-    return [
-        {
+
+
+def _audit_log_records(db: Session, keyword=None, action=None, category=None, user_name=None, start_at=None, end_at=None) -> list[dict]:
+    records = [
+        present_audit_record({
             "id": item.id,
             "user_name": _operator_display_name(db, item.user_name),
             "action": item.action,
@@ -39,8 +75,19 @@ def get_audit_logs(
             "target_id": item.target_id,
             "detail": _enriched_detail(db, item),
             "created_at": item.created_at,
-        }
-        for item in list_audit_logs(db, keyword, action, user_name, start_at, end_at)
+        })
+        for item in list_audit_logs(db, None, action, user_name, start_at, end_at)
+    ]
+    normalized_keyword = (keyword or "").strip().lower()
+    return [
+        record for record in records
+        if (not category or record["category"] == category)
+        and (
+            not normalized_keyword
+            or normalized_keyword in record["user_name"].lower()
+            or normalized_keyword in str(record["summary"]).lower()
+            or normalized_keyword in str(record["target_display"]).lower()
+        )
     ]
 
 
@@ -55,6 +102,19 @@ def _operator_display_name(db: Session, operator: str) -> str:
 
 def _enriched_detail(db: Session, item) -> dict:
     detail = dict(item.detail or {})
+    path = str(detail.get("path") or "")
+    slot_match = re.search(r"/timeslots/(\d+)", path)
+    if slot_match and not detail.get("task_id"):
+        slot = db.query(TimeSlot).filter(TimeSlot.id == int(slot_match.group(1))).first()
+        if slot:
+            detail["task_id"] = slot.task_id
+            detail["target_display"] = f"{slot.plan_start:%Y-%m-%d} · {slot.instrument.name if slot.instrument else '未指定仪器'} · {slot.plan_start:%H:%M}–{slot.plan_end:%H:%M}"
+    task_match = re.search(r"/projects/tasks/(\d+)", path)
+    if task_match and not detail.get("task_id"):
+        task = db.query(Task).filter(Task.id == int(task_match.group(1))).first()
+        if task:
+            detail["task_id"] = task.id
+            detail["target_display"] = " · ".join(part for part in [task.project.code if task.project else None, task.name] if part)
     if item.action == "project_plan_drafts_committed" and not detail.get("task_details"):
         detail = _legacy_project_plan_detail(db, item.target_id, detail)
     if item.action == "schedule_insert_confirmed" and not detail.get("insert_summary"):
@@ -67,6 +127,8 @@ def _enriched_detail(db: Session, item) -> dict:
         if project:
             detail.update(project_audit_detail(project))
     task_id = detail.get("task_id")
+    if not task_id and item.target_type in {"task", "approval_gate"} and item.target_id:
+        task_id = item.target_id
     slot = None
     if not task_id and item.target_type == "time_slot" and item.target_id:
         slot = db.query(TimeSlot).filter(TimeSlot.id == item.target_id).first()
@@ -88,7 +150,46 @@ def _enriched_detail(db: Session, item) -> dict:
                 project.name if project else None,
                 task.name,
             ] if part)
+            if item.target_type == "approval_gate":
+                top_task = task
+                while top_task.parent:
+                    top_task = top_task.parent
+                detail["target_display"] = " · ".join(part for part in [
+                    project.code if project else None,
+                    top_task.name,
+                    "方案",
+                ] if part)
+    _enrich_related_schedule_entities(db, detail)
     return detail
+
+
+def _enrich_related_schedule_entities(db: Session, detail: dict) -> None:
+    """将历史日志中的 ID 转为项目/任务/时间段业务名称。"""
+    previous_task_id = detail.get("previous_task_id")
+    if previous_task_id:
+        previous_task = db.query(Task).filter(Task.id == previous_task_id).first()
+        if previous_task:
+            project = previous_task.project
+            detail["previous_task_id"] = " · ".join(part for part in [
+                project.code if project else None,
+                previous_task.name,
+            ] if part)
+    previous_slot_id = detail.get("previous_last_slot_id")
+    if previous_slot_id:
+        previous_slot = db.query(TimeSlot).filter(TimeSlot.id == previous_slot_id).first()
+        if previous_slot and previous_slot.plan_start and previous_slot.plan_end:
+            detail["previous_last_slot_id"] = (
+                f"{previous_slot.plan_start:%Y-%m-%d} "
+                f"{previous_slot.plan_start:%H:%M}–{previous_slot.plan_end:%H:%M}"
+            )
+    prior_slot_id = detail.get("previous_slot_id")
+    if prior_slot_id:
+        prior_slot = db.query(TimeSlot).filter(TimeSlot.id == prior_slot_id).first()
+        if prior_slot and prior_slot.plan_start and prior_slot.plan_end:
+            detail["previous_slot_id"] = (
+                f"{prior_slot.plan_start:%Y-%m-%d} "
+                f"{prior_slot.plan_start:%H:%M}–{prior_slot.plan_end:%H:%M}"
+            )
 
 
 def _legacy_insert_detail(db: Session, detail: dict) -> dict:

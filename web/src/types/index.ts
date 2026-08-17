@@ -43,6 +43,15 @@ export interface ProjectHoursTask {
   depth: number;
   planned_hours: number;
   actual_hours: number;
+  instrument_codes: string[];
+  planned_start: string | null;
+  planned_end: string | null;
+  actual_start: string | null;
+  actual_end: string | null;
+  schedule_judgement: string;
+  delay_hours: number;
+  pause_count: number;
+  pause_reasons: string[];
 }
 
 export interface ProjectHoursItem {
@@ -51,6 +60,9 @@ export interface ProjectHoursItem {
   project_name: string;
   client_name: string | null;
   manager_name: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  project_status: string;
   task_count: number;
   planned_hours: number;
   actual_hours: number;
