@@ -9,6 +9,7 @@ from app.services.scheduler_helpers import (
     is_allowed_calendar_day,
     natural_day_boundary,
 )
+from app.services.schedule_slot_change_log_service import record_slot_created
 
 ACTIVE_EXECUTION_STATUSES = {"running", "paused", "interrupted"}
 
@@ -223,8 +224,7 @@ def _create_slot(
     ).first()
     if duplicate:
         return 0
-    db.add(
-        TimeSlot(
+    slot = TimeSlot(
             task_id=task.id,
             schedule_run_id=schedule_run_id,
             instrument_id=instrument.id if instrument else None,
@@ -233,5 +233,6 @@ def _create_slot(
             tier=tier,
             status="scheduled",
         )
-    )
+    db.add(slot)
+    record_slot_created(db, slot, "replan")
     return 1

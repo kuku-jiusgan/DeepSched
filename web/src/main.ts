@@ -1,6 +1,6 @@
 ﻿import { createApp } from 'vue'
 import {
-  Alert, Badge, Button, Card, Checkbox, Col, ConfigProvider, DatePicker,
+  Alert, Badge, Button, Card, Checkbox, Col, Collapse, ConfigProvider, DatePicker,
   Descriptions, Divider, Drawer, Dropdown, Empty, Form, Input, InputNumber,
   Layout, Menu, Modal, Popconfirm, Popover, Radio, Row, Segmented, Select,
   Skeleton, Space, Spin, Switch, Table, Tabs, Tag, TimePicker, Tooltip,
@@ -17,7 +17,7 @@ dayjs.locale('zh-cn')
 
 const app = createApp(App)
 const antComponents = [
-  Alert, Badge, Button, Card, Checkbox, Col, ConfigProvider, DatePicker,
+  Alert, Badge, Button, Card, Checkbox, Col, Collapse, ConfigProvider, DatePicker,
   Descriptions, Divider, Drawer, Dropdown, Empty, Form, Input, InputNumber,
   Layout, Menu, Modal, Popconfirm, Popover, Radio, Row, Segmented, Select,
   Skeleton, Space, Spin, Switch, Table, Tabs, Tag, TimePicker, Tooltip,

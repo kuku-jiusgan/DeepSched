@@ -90,6 +90,20 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
 
         self.assertEqual([frozen_slot.id], [slot.id for slot in fixed_slots])
 
+    def test_future_running_frozen_slot_is_still_fixed(self):
+        frozen_slot = TimeSlot(
+            task_id=1,
+            instrument_id=1,
+            plan_start=datetime.now() + timedelta(days=1),
+            plan_end=datetime.now() + timedelta(days=1, hours=4),
+            status="running",
+            tier="frozen",
+        )
+        self.db.add(frozen_slot)
+        self.db.commit()
+
+        self.assertEqual([frozen_slot.id], [slot.id for slot in load_fixed_slots(self.db)])
+
     def test_only_slots_for_relevant_resources_are_loaded(self):
         project = Project(code="P1", name="测试项目", priority=3)
         self.db.add(project)

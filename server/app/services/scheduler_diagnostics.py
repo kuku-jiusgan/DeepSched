@@ -164,21 +164,25 @@ def schedule_infeasibility_message(
         if available_units >= required_units:
             continue
 
-        required_hours = required_units * TIME_UNIT_MINUTES / 60
+        project_tasks = [
+            item for item in tasks
+            if item.project_id == task.project_id
+        ]
+        required_hours = sum(
+            (item.est_duration_hours or 4) + (item.switchover_hours or 0)
+            for item in project_tasks
+        )
+        required_units = to_units(required_hours)
         available_hours = available_units * TIME_UNIT_MINUTES / 60
         earliest_time = units_to_datetime(earliest_start, horizon_start)
-        reason = (
-            "受已开始、冻结或已完成的前置任务限制"
-            if fixed_predecessor_ends
-            else "受项目时间窗和有效工作时段限制"
-        )
         return (
-            f"时间配置冲突：项目【{project.name}】的任务【{task.name}】无法在项目时间窗内完成。"
-            f"项目时间：{_format_datetime(project.start_date)} 至 "
-            f"{_format_datetime(project.end_date)}；最早可开始时间："
-            f"{_format_datetime(earliest_time)}（{reason}）；任务需要约 "
-            f"{required_hours:g} 小时，剩余有效工时约 {available_hours:g} 小时。"
-            "请延长项目结束时间、缩短任务工时，或调整前置任务排程。"
+            f"排程失败：项目【{project.name}】整体任务无法在项目时间窗内完成。"
+            f"触发任务【{task.name}】；项目时间："
+            f"{_format_datetime(project.start_date)} 至 {_format_datetime(project.end_date)}；"
+            f"最早可开始时间：{_format_datetime(earliest_time)}；"
+            f"任务需要约 {required_hours:g} 小时，剩余有效工时约 {available_hours:g} 小时；"
+            f"项目累计任务工时：{required_hours:g} 小时。"
+            "请延长项目结束时间或缩短任务工时。"
         )
 
     return _project_summary_message(
@@ -245,12 +249,7 @@ def _project_summary_message(
     details = "；".join(project_details)
     return (
         f"排程失败：未找到同时满足全部约束的排程方案。"
-        f"{details}。这不是系统故障，请按以下顺序检查："
-        f"1）项目开始/结束时间是否覆盖所有任务；"
-        f"2）前置任务是否形成循环，或把后续任务推到项目结束时间之后；"
-        f"3）负责人在有效工作时段内是否有足够空闲时间；"
-        f"4）指定仪器是否可用且没有被其他排程占满；"
-        f"5）任务工时和切换工时是否填写过大。"
+        f"{details}。"
         f"调整后请重新点击“保存并开始排程”。"
     )
 

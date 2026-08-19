@@ -43,6 +43,15 @@ def _is_protected_slot(slot: TimeSlot) -> bool:
     )
 
 
+def _is_future_unstarted_running(slot: TimeSlot) -> bool:
+    return (
+        slot.tier != "frozen"
+        and slot.status == "running"
+        and slot.actual_start is None
+        and slot.plan_start > datetime.now()
+    )
+
+
 def load_fixed_slots(
     db,
     excluded_task_ids: set[int] | None = None,
@@ -55,7 +64,8 @@ def load_fixed_slots(
     slots = query.order_by(TimeSlot.instrument_id, TimeSlot.plan_start, TimeSlot.id).all()
     fixed_slots = [
         slot for slot in slots
-        if slot.status != "completed" or (slot.actual_start and slot.actual_end)
+        if not _is_future_unstarted_running(slot)
+        and (slot.status != "completed" or (slot.actual_start and slot.actual_end))
     ]
     if excluded_task_ids:
         fixed_slots = [

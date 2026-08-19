@@ -8,6 +8,7 @@ from app.core.database import Base
 from app.models import Instrument, Project, Task, TimeSlot
 from app.services.project_plan_apply_service import (
     _build_project_impacts,
+    _priority_insert_dependencies,
     _project_impact_message,
 )
 from app.services.schedule_insert_service import (
@@ -95,6 +96,30 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         )
 
         self.assertEqual([], [task.id for task in movable])
+
+    def test_detection_priority_insert_enforces_selected_task_first(self):
+        selected_project = Project(
+            code="A", name="二级检测", priority=2, project_kind="detection",
+        )
+        movable_project = Project(code="B", name="三级项目", priority=3)
+        self.db.add_all([selected_project, movable_project])
+        self.db.flush()
+        selected = Task(
+            project=selected_project, name="元素杂质检测", task_type="test",
+            instrument_ids=[1], assignee_id=10,
+        )
+        movable = Task(
+            project=movable_project, name="方法验证", task_type="test",
+            instrument_ids=[1], assignee_id=20,
+        )
+        self.db.add_all([selected, movable])
+        self.db.flush()
+
+        dependencies = _priority_insert_dependencies(
+            selected_project, [selected], [movable],
+        )
+
+        self.assertEqual([(movable.id, selected.id)], dependencies)
 
     def test_project_impact_reports_delay_and_deadline_risk(self):
         project, task = self._scheduled_project("B", 3, 1)

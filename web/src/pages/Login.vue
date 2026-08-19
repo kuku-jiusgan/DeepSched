@@ -46,7 +46,7 @@
             <a-button type="primary" @click="handleLogin" size="large" block :loading="loading">登 录</a-button>
           </a-form-item>
           <a-divider plain>或</a-divider>
-          <a-button size="large" block @click="startWeComLogin"><WechatOutlined /> 企业微信登录</a-button>
+          <a-button size="large" block @click="startWeComLogin"><WechatOutlined /> {{ isWeComClient() ? '企业微信登录' : '企业微信扫码登录' }}</a-button>
           <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
         </a-form>
       </section>
@@ -97,9 +97,12 @@ async function startWeComLogin() {
   isWeComFlow.value = true
   isWeComSuccess.value = false
   loading.value = true
-  wecomStatus.value = '正在连接企业微信'
+  wecomStatus.value = isWeComClient() ? '正在连接企业微信' : '正在生成企业微信扫码登录'
   try {
-    const response = await axios.get('/api/v1/wecom-auth/authorize-url')
+    const endpoint = isWeComClient()
+      ? '/api/v1/wecom-auth/authorize-url'
+      : '/api/v1/wecom-auth/scan-authorize-url'
+    const response = await axios.get(endpoint)
     window.location.assign(response.data.authorize_url)
   } catch (error: unknown) {
     showWeComError(error)

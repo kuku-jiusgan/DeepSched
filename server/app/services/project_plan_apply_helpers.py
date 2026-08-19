@@ -36,7 +36,7 @@ def load_approval_resource_queue_tasks(
     return [
         task for task in tasks
         if task.id not in approval_context.downstream_task_ids
-        and task.status in {"pending", "scheduled", "blocked"}
+        and task.status in {"pending", "scheduled", "blocked", "running"}
         and not task_has_protected_slot(db, task.id)
     ]
 
@@ -58,8 +58,8 @@ def apply_success_message(
 ) -> str:
     if approval_context:
         return (
-            "签批后任务已插入到当前顶级任务后"
-            if moved else "签批后任务已插入到当前顶级任务后，未顺延其他任务"
+            "签批后任务已重新排程，部分未受保护任务已顺延"
+            if moved else "签批后任务已重新排程，未顺延其他任务"
         )
     return "排程完成"
 

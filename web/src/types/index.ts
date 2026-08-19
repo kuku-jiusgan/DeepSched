@@ -7,6 +7,7 @@ export interface Project {
   actual_hours?: number;
   priority: number;
   status: string;
+  delivery_status?: 'on_time' | 'at_risk' | 'overdue' | null;
   manager_id?: number | null;
   manager_name?: string;
   start_date?: string;

@@ -121,6 +121,7 @@ class ProjectOut(BaseModel):
     actual_hours: float = 0
     priority: int
     status: str
+    delivery_status: Optional[str] = None
     manager_id: Optional[int] = None
     manager_name: Optional[str] = None
     start_date: Optional[datetime] = None

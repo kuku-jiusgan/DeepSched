@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Project
+from app.models import Project, Task
 from app.schemas.schemas import ProjectCreate
 from app.services.project_plan_change_service import PlanChangeInvalidError, update_project_plan
 from app.services.project_service import ProjectCodeExistsError, create_project
@@ -82,6 +82,23 @@ class ProjectServiceTest(unittest.TestCase):
         self.assertIsNone(updated.start_date.tzinfo)
         self.assertEqual(datetime(2026, 7, 14, 0, 0), updated.start_date)
         self.assertEqual(datetime(2026, 7, 20, 23, 59, 59, 999999), updated.end_date)
+
+    def test_update_project_rejects_estimated_hours_below_current_tasks(self):
+        project = Project(name="项目", code="PRJ-005", priority=1, estimated_hours=80)
+        self.db.add(project)
+        self.db.flush()
+        self.db.add(Task(project_id=project.id, name="任务", task_type="test", est_duration_hours=80))
+        self.db.commit()
+
+        with self.assertRaisesRegex(PlanChangeInvalidError, "不能低于当前任务总工时 80 小时"):
+            update_project_plan(
+                self.db,
+                project.id,
+                ProjectCreate(name="项目", code="PRJ-005", priority=1, estimated_hours=77),
+            )
+
+        self.db.refresh(project)
+        self.assertEqual(80, project.estimated_hours)
 
     def test_create_project_uses_local_day_boundaries(self):
         project = create_project(

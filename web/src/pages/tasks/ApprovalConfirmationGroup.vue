@@ -32,7 +32,6 @@
             </span>
           </a-tooltip>
           <a-button v-if="gate.schedule_status === 'confirmation_required'" v-operation="'confirm_impact'" size="small" class="workspace-action-button workspace-action-button-warning" @click="confirmImpact(gate)">确认排程影响</a-button>
-          <a-button size="small" class="workspace-action-button workspace-action-button-secondary" @click="viewHistory">查看详情</a-button>
         </div>
       </article>
     </div>
@@ -71,7 +70,6 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
@@ -83,7 +81,6 @@ interface Props { approvalGates: ApprovalGate[] }
 
 const props = defineProps<Props>()
 const emit = defineEmits<{ refreshed: [] }>()
-const router = useRouter()
 const displayGates = computed(() => props.approvalGates)
 const expectedModalOpen = ref(false)
 const expectedSubmitting = ref(false)
@@ -198,7 +195,6 @@ function confirmImpact(gate: ApprovalGate) {
   })
 }
 
-function viewHistory() { router.push('/tasks/approvals') }
 function taskNames(tasks: ApprovalGateTaskRef[]) { return tasks.map(task => task.name).join('、') || '-' }
 function incompletePredecessors(gate: ApprovalGate) {
   return gate.predecessor_tasks.filter(task => !isTaskCompleted(task.status))

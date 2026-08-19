@@ -40,7 +40,18 @@ def build_approval_schedule_context(db, gate: Task) -> ApprovalScheduleContext:
     ).all()
     downstream_ids = _downstream_ids(dependencies, {gate.id}) - {gate.id}
     branch_ids = _branch_task_ids(gate, task_by_id, dependencies)
-    anchor_at = _branch_anchor_at(db, branch_ids - downstream_ids)
+    branch_anchor_at = _branch_anchor_at(db, branch_ids - downstream_ids)
+    if gate.gate_status == "approved":
+        # 正式签批立即进入排程：接在相关仪器当前运行任务之后；若没有
+        # 运行任务，则从当前时间开始，不等待原先填写的预计签批时间。
+        anchor_at = _active_resource_anchor(db, downstream_ids)
+    else:
+        # 预计签批只用于预测，后续任务不能早于预计签批时间。
+        approval_at = gate.expected_approval_at
+        anchor_at = max(
+            (value for value in (branch_anchor_at, approval_at) if value is not None),
+            default=None,
+        )
     return ApprovalScheduleContext(
         gate_id=gate.id,
         downstream_task_ids=downstream_ids,
@@ -137,3 +148,34 @@ def _branch_anchor_at(db, task_ids: set[int]) -> datetime | None:
     ).all()
     fallback_ends = [task.updated_at for task in completed_tasks if task.updated_at]
     return max(fallback_ends, default=None)
+
+
+def _active_resource_anchor(db, task_ids: set[int]) -> datetime:
+    now = datetime.now()
+    if not task_ids:
+        return now
+    instrument_ids = {
+        instrument_id
+        for instrument_id, in db.query(TimeSlot.instrument_id).filter(
+            TimeSlot.task_id.in_(task_ids),
+            TimeSlot.instrument_id.isnot(None),
+        ).distinct().all()
+    }
+    instrument_ids.update(
+        int(instrument_id)
+        for task in db.query(Task).filter(Task.id.in_(task_ids)).all()
+        for instrument_id in (task.instrument_ids or [])
+    )
+    if not instrument_ids:
+        return now
+    running_ends = [
+        slot.plan_end
+        for slot in db.query(TimeSlot).filter(
+            TimeSlot.instrument_id.in_(instrument_ids),
+            TimeSlot.status == "running",
+            TimeSlot.actual_start.isnot(None),
+            TimeSlot.actual_end.is_(None),
+        ).all()
+        if slot.plan_end
+    ]
+    return max([now, *running_ends])

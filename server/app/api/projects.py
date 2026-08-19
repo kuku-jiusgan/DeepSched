@@ -124,6 +124,7 @@ def ensure_project_info_write_permission(token: str, db: Session):
 def project_response(project: Project, db: Session, actual_hours: float | None = None) -> dict:
     data = ProjectOut.model_validate(project).model_dump()
     data["status"] = calculate_project_status(project)
+    data["delivery_status"] = get_project_health(db, project).summary.delivery_status
     data["actual_hours"] = actual_hours if actual_hours is not None else project_actual_hours_map(db, [project]).get(project.id, 0)
     return data
 

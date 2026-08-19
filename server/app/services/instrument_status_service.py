@@ -1,6 +1,7 @@
 from typing import Iterable, Optional
 
 from app.models import Instrument, TimeSlot
+from app.services.schedule_slot_change_log_service import record_slot_deleted
 
 
 PROTECTED_STATUSES = {"fault", "maintenance"}
@@ -46,6 +47,8 @@ def refresh_instrument_statuses(db, instrument_ids: Iterable[int | None]) -> Non
 
 
 def delete_time_slots_and_refresh(db, query, synchronize_session=False) -> int:
+    for slot in query.all():
+        record_slot_deleted(db, slot)
     instrument_ids = {
         instrument_id
         for instrument_id, in query.with_entities(TimeSlot.instrument_id).distinct().all()

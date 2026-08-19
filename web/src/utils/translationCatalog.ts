@@ -2,7 +2,7 @@
 const labels: Record<string, string> = {
   pending: '待处理', ready: '待处理', scheduled: '待执行', running: '运行中',
   paused: '已暂停', blocked: '已阻塞', interrupted: '已中断', done: '已完成',
-  completed: '已完成', waiting_external: '等待外部签批', success: '成功', failed: '失败',
+  completed: '已完成', waiting_external: '等待外部签批', waiting_approval: '等待客户签批', success: '成功', failed: '失败',
   system: '系统', account: '账号与权限', project: '项目与计划', task: '任务管理',
   schedule: '排程与执行', resource: '仪器与资源', instrument: '仪器', time_slot: '任务排程时间段',
   schedule_queue_compacted: '压紧排程队列', schedule_generated: '生成排程',

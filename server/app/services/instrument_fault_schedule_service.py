@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from sqlalchemy import or_
+
 from app.models import Instrument, InstrumentFault, Task, TaskDependency, TimeSlot
 from app.services.instrument_status_service import delete_time_slots_and_refresh
 from app.services.instrument_fault_notification_service import (
@@ -43,16 +45,15 @@ def shift_faulted_instrument_slots(
     if not affected_slots:
         return _impact([], 0, 0, 0, 0)
 
-    first_start = min(slot.plan_start for slot in affected_slots)
-    shift_to = max(estimated_resolved_at, first_start)
-    if shift_to <= first_start:
-        return evaluate_fault_impact(db, instrument, reported_at, estimated_resolved_at)
-
-    delay_minutes = _rounded_delay_minutes(shift_to - first_start)
     affected_task_ids = _affected_task_ids(db, affected_slots)
     movable_slots = _movable_slots(db, affected_task_ids, reported_at)
     if not movable_slots:
         return _impact([], 0, 0, 0, 0)
+    first_start = min(slot.plan_start for slot in movable_slots)
+    shift_to = max(estimated_resolved_at, first_start)
+    if shift_to <= first_start:
+        return evaluate_fault_impact(db, instrument, reported_at, estimated_resolved_at)
+    delay_minutes = _rounded_delay_minutes(shift_to - first_start)
 
     original_windows = capture_task_schedule_windows(
         db,
@@ -130,11 +131,13 @@ def evaluate_fault_impact(
     if not affected_slots:
         return _impact([], 0, 0, 0, 0)
 
-    first_start = min(slot.plan_start for slot in affected_slots)
-    shift_to = max(estimated_resolved_at, first_start)
-    delay_minutes = _rounded_delay_minutes(shift_to - first_start)
     affected_task_ids = _affected_task_ids(db, affected_slots)
     slots = _movable_slots(db, affected_task_ids, reported_at)
+    if not slots:
+        return _impact([], 0, 0, 0, 0)
+    first_start = min(slot.plan_start for slot in slots)
+    shift_to = max(estimated_resolved_at, first_start)
+    delay_minutes = _rounded_delay_minutes(shift_to - first_start)
     snapshots_by_task = _group_slot_snapshots(slots)
     details = [
         _preview_shifted_task(db, snapshots, delay_minutes)
@@ -193,6 +196,10 @@ def _movable_slots(db, task_ids: set[int], cutoff: datetime) -> list[TimeSlot]:
             TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
             TimeSlot.actual_end.is_(None),
             TimeSlot.plan_end > cutoff,
+            or_(
+                TimeSlot.actual_start.is_(None),
+                TimeSlot.actual_start >= cutoff,
+            ),
         )
         .order_by(TimeSlot.plan_start, TimeSlot.id)
         .all()

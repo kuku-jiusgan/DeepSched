@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import not_, select
+from sqlalchemy import and_, not_, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.models import Instrument, Task
@@ -13,8 +13,19 @@ def load_scheduler_data(
     excluded_task_ids: set[int] | None = None,
 ):
     child_parent_ids = select(Task.parent_id).where(Task.parent_id.isnot(None))
-    query = db.query(Task).filter(
+    # 等待方案签批的下游任务也必须进入预测排程，否则签批完成后才会
+    # 首次占用资源，导致已排任务被突然挤压。外部签批节点本身仍排除，
+    # 它不占用仪器/人员资源；下游任务会由 approval gate context 施加
+    # 预计签批时间边界，并在持久化时标记为 forecast。
+    schedulable_status = or_(
         Task.status.in_(["pending", "ready"]),
+        and_(
+            Task.status == "waiting_external",
+            Task.predecessors.any(),
+        ),
+    )
+    query = db.query(Task).filter(
+        schedulable_status,
         Task.is_external_gate.is_(False),
         not_(Task.id.in_(child_parent_ids)),
     ).options(

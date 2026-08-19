@@ -49,7 +49,7 @@ import { taskStatusColor, taskStatusLabel } from '@/utils/statusMeta'
 const props = defineProps<{ items: ProjectArrangementItem[] }>()
 const days = computed(() => buildProjectArrangementDays(props.items).sort((left, right) => {
   const today = dayjs().startOf('day')
-  const rank = (day: typeof left) => !day.date ? 3 : day.date.isSame(today, 'day') ? 0 : day.date.isAfter(today, 'day') ? 1 : 2
+  const rank = (day: typeof left) => !day.date ? 3 : day.date.isBefore(today, 'day') ? 0 : day.date.isSame(today, 'day') ? 1 : 2
   return rank(left) - rank(right) || (left.date?.valueOf() || Number.MAX_SAFE_INTEGER) - (right.date?.valueOf() || Number.MAX_SAFE_INTEGER)
 }))
 const isHistoryExpanded = ref(false)

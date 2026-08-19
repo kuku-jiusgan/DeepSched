@@ -38,7 +38,7 @@
         <template v-else-if="column.key === 'start'">{{ record.start_date ? dayjs(record.start_date).format('YYYY-MM-DD') : '-' }}</template>
         <template v-else-if="column.key === 'end'">{{ record.end_date ? dayjs(record.end_date).format('YYYY-MM-DD') : '-' }}</template>
         <template v-else-if="column.key === 'code'">
-          <a-button type="link" size="small" style="padding:0;font-family:monospace;font-weight:600;font-size:12px" @click="handleViewDetail(record.id)">{{ record.code }}</a-button>
+          <a-button type="link" size="small" :class="{ 'project-code-overdue': record.delivery_status === 'overdue' }" style="padding:0;font-family:monospace;font-weight:600;font-size:12px" @click="handleViewDetail(record.id)">{{ record.code }}</a-button>
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space :size="0">

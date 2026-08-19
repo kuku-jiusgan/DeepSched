@@ -70,9 +70,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, h, ref, watch } from 'vue'
 import dayjs from 'dayjs'
-import { Empty, message } from 'ant-design-vue'
+import { Empty, message, Modal } from 'ant-design-vue'
 import { getTaskSwitchCandidates, pauseTask } from '@/services/api'
 import type { TaskSwitchCandidate } from '@/services/api'
 import type { WorkspaceTask } from '@/domains/tasks/workspaceTask'
@@ -137,7 +137,12 @@ async function submit() {
     emit('completed')
   } catch (error: unknown) {
     const candidate = error as { response?: { data?: { detail?: string } } }
-    message.error(candidate.response?.data?.detail || '暂停任务失败')
+    const detail = candidate.response?.data?.detail || '暂停任务失败'
+    Modal.error({
+      title: '暂停并切换失败',
+      content: h('div', { style: { whiteSpace: 'pre-line' } }, detail),
+      okText: '确认',
+    })
   } finally {
     isSubmitting.value = false
   }
@@ -178,4 +183,5 @@ function formatWindow(candidate: TaskSwitchCandidate) {
   justify-content: flex-end;
   gap: 8px;
 }
+
 </style>

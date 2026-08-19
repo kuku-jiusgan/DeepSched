@@ -16,6 +16,7 @@ from app.services.user_role_service import user_roles
 
 
 AUTHORIZE_URL = "https://open.weixin.qq.com/connect/oauth2/authorize"
+SCAN_AUTHORIZE_URL = "https://open.work.weixin.qq.com/wwopen/sso/qrConnect"
 GET_USER_INFO_URL = "https://qyapi.weixin.qq.com/cgi-bin/auth/getuserinfo"
 
 
@@ -44,6 +45,20 @@ def build_authorize_url(db, callback_url: str, state_expire_seconds: int) -> str
         "agentid": config.wecom_agent_id,
     })
     return f"{AUTHORIZE_URL}?{query}#wechat_redirect"
+
+
+def build_scan_authorize_url(db, callback_url: str, state_expire_seconds: int) -> str:
+    """Build the browser QR-login URL; client OAuth remains unchanged."""
+    config = _load_config(db)
+    state = _create_state(config.wecom_secret, state_expire_seconds)
+    _store_state(db, state, state_expire_seconds)
+    query = urllib.parse.urlencode({
+        "appid": config.wecom_corp_id,
+        "agentid": config.wecom_agent_id,
+        "redirect_uri": callback_url,
+        "state": state,
+    })
+    return f"{SCAN_AUTHORIZE_URL}?{query}"
 
 
 def login_with_wecom(db, code: str, state: str, state_expire_seconds: int, idle_timeout_seconds: int) -> dict:

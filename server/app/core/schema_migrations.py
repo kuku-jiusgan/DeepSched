@@ -2,10 +2,11 @@ from sqlalchemy import inspect, text
 
 
 def ensure_runtime_schema(engine) -> None:
-    from app.models import ScheduleCalendarSnapshot, TaskNightRun
+    from app.models import ScheduleCalendarSnapshot, ScheduleSlotChangeLog, TaskNightRun
 
     TaskNightRun.__table__.create(bind=engine, checkfirst=True)
     ScheduleCalendarSnapshot.__table__.create(bind=engine, checkfirst=True)
+    ScheduleSlotChangeLog.__table__.create(bind=engine, checkfirst=True)
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
 

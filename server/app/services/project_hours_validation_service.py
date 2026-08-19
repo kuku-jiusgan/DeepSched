@@ -1,4 +1,8 @@
 from app.models import Project, Task
+import logging
+
+
+_logger = logging.getLogger(__name__)
 
 
 class ProjectHoursExceededError(Exception):
@@ -11,6 +15,14 @@ def validate_project_estimated_hours(db, project_id: int) -> None:
         return
 
     total_hours = project_top_level_task_hours(db, project_id)
+    _logger.warning(
+        "项目工时校验: project_id=%s code=%s estimated_hours=%s "
+        "top_level_hours=%s",
+        project.id,
+        project.code,
+        project.estimated_hours,
+        total_hours,
+    )
     if total_hours <= float(project.estimated_hours):
         return
 

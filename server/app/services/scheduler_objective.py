@@ -18,9 +18,11 @@ def add_scheduler_objective(
     sibling_counts: dict[int, int],
     stability_penalties: list | None = None,
     dependency_gap_penalties: list | None = None,
+    early_start_penalties: list | None = None,
 ) -> None:
     stability_penalties = stability_penalties or []
     dependency_gap_penalties = dependency_gap_penalties or []
+    early_start_penalties = early_start_penalties or []
     weighted_tardiness = [
         task_tardiness[task.id] * int(task.priority_weight * 10)
         for task in tasks
@@ -70,7 +72,8 @@ def add_scheduler_objective(
         parent_group_completions.append(group_completion)
 
     model.Minimize(
-        sum(stability_penalties) * 10_000
+        sum(early_start_penalties) * 100_000
+        + sum(stability_penalties) * 10_000
         + (sum(weighted_tardiness) + makespan) * 1000
         + sum(priority_completion) * 10
         + sum(parent_group_completions) * sibling_group_completion_weight

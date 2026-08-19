@@ -218,6 +218,29 @@ class TimeSlot(Base):
     instrument = relationship("Instrument", back_populates="time_slots")
 
 
+class ScheduleSlotChangeLog(Base):
+    __tablename__ = "schedule_slot_change_log"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    schedule_run_id = Column(String(64))
+    slot_id = Column(Integer)
+    task_id = Column(Integer, nullable=False)
+    project_id = Column(Integer)
+    instrument_id = Column(Integer)
+    change_type = Column(String(20), nullable=False)
+    reason_type = Column(String(40), nullable=False, default="replan")
+    reason_task_id = Column(Integer)
+    reason_event_id = Column(Integer)
+    before_start = Column(DateTime)
+    before_end = Column(DateTime)
+    after_start = Column(DateTime)
+    after_end = Column(DateTime)
+    before_status = Column(String(20))
+    after_status = Column(String(20))
+    detail = Column(JSON)
+    operator_id = Column(Integer)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
 class TaskExecutionSegment(Base):
     __tablename__ = "task_execution_segment"
     id = Column(Integer, primary_key=True, autoincrement=True)

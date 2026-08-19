@@ -331,14 +331,28 @@ def scan_approval_deadlines(db) -> int:
 
 
 def _apply_gate_schedule(db, gate: Task, is_forecast: bool):
-    from app.services.project_plan_apply_service import apply_project_plan
+    from app.services.project_plan_apply_service import (
+        apply_project_plan,
+        confirm_project_plan_insert,
+    )
     from app.services.approval_gate_schedule_context import build_approval_schedule_context
 
+    approval_context = build_approval_schedule_context(db, gate)
     result = apply_project_plan(
         db,
         gate.project_id,
-        approval_context=build_approval_schedule_context(db, gate),
+        approval_context=approval_context,
     )
+    # 预计签批和正式签批都直接落地下游排程，不把跨项目影响确认暴露给前端。
+    if result.status == "insert_confirmation_required" and result.preview_token:
+        result = confirm_project_plan_insert(
+            db,
+            ProjectPlanInsertConfirmRequest(
+                project_id=gate.project_id,
+                preview_token=result.preview_token,
+            ),
+            approval_context=approval_context,
+        )
     gate = _gate_or_404(db, gate.id)
     _store_schedule_result(db, gate, result, is_forecast)
     db.commit()

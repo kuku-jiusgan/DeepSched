@@ -66,8 +66,10 @@ class SchedulerService:
         stability_task_ids: set[int] | None = None,
         additional_dependencies: list[tuple[int, int]] | None = None,
         earliest_start_bounds: dict[int, datetime] | None = None,
+        relaxed_project_end_task_ids: set[int] | None = None,
         advance_notification_reason: str = "重新排程",
         emit_advance_notifications: bool = True,
+        early_start_task_ids: set[int] | None = None,
     ) -> dict:
         tasks, instruments = load_scheduler_data(
             self.db,
@@ -195,7 +197,7 @@ class SchedulerService:
                 if t.project.start_date:
                     p_start_u = datetime_to_units(t.project.start_date, horizon_start)
                     p_start_unit = max(0, p_start_u)
-                if t.project.end_date:
+                if t.project.end_date and t.id not in (relaxed_project_end_task_ids or set()):
                     p_end_u = datetime_to_units(t.project.end_date, horizon_start)
                     p_end_unit = min(total_units, p_end_u)
             approval_bound = approval_bounds.get(t.id)
@@ -458,6 +460,12 @@ class SchedulerService:
             model.Add(gap >= task_starts[task_id] - task_ends[predecessor_id])
             dependency_gap_penalties.append(gap)
 
+        early_start_penalties = [
+            task_starts[task_id]
+            for task_id in (early_start_task_ids or set())
+            if task_id in task_starts
+        ]
+
         # === Project split penalty: discourage spreading one project across many instruments ===
         project_to_tasks = {}
         for t in tasks:
@@ -519,6 +527,7 @@ class SchedulerService:
             },
             stability_penalties,
             dependency_gap_penalties,
+            early_start_penalties,
         )
 
         solver = cp_model.CpSolver()

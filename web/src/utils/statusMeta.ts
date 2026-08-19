@@ -18,6 +18,7 @@ export type TaskStatus =
   | 'done'
   | 'completed'
   | 'waiting_external'
+  | 'waiting_approval'
 
 const taskStatusMetaMap: Record<TaskStatus, StatusMeta> = {
   pending: { label: '待处理', color: '#94a3b8', group: 'pending', isTerminal: false },
@@ -30,6 +31,7 @@ const taskStatusMetaMap: Record<TaskStatus, StatusMeta> = {
   done: { label: '已完成', color: '#7c3aed', group: 'completed', isTerminal: true },
   completed: { label: '已完成', color: '#7c3aed', group: 'completed', isTerminal: true },
   waiting_external: { label: '等待外部签批', color: '#d97706', group: 'active', isTerminal: false },
+  waiting_approval: { label: '等待客户签批', color: '#2563eb', group: 'active', isTerminal: false },
 }
 
 const fallbackStatusMeta: StatusMeta = {

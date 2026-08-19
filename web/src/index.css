@@ -287,6 +287,7 @@ h3 { font-size: 1.1rem; font-weight: 600; }
   flex-wrap: wrap;
   margin-bottom: var(--space-md);
 }
+.project-code-overdue { color: #dc2626 !important; }
 
 /* Dense data-table baseline. Individual pages decide which secondary columns hide. */
 .ant-table-wrapper .ant-table-thead > tr > th {

@@ -9,7 +9,7 @@ from app.domain.errors import DomainConflictError
 from app.models import Instrument, Project, Task, TaskDependency, TaskExecutionSegment, TimeSlot, User
 from app.services.schedule_completion_service import complete_task_and_shift
 from app.services.task_execution_service import start_task_execution
-from app.services.task_pause_service import list_switch_candidates, pause_and_switch_task
+from app.services.task_pause_service import _approval_ready_time, list_switch_candidates, pause_and_switch_task
 
 
 class TaskPauseServiceTest(unittest.TestCase):
@@ -175,7 +175,7 @@ class TaskPauseServiceTest(unittest.TestCase):
         target_slots = self._task_slots(self.target_task.id)
         source_slots = self._future_slots(self.source_task.id)
         self.assertEqual(300, self._total_minutes(target_slots))
-        self.assertEqual(300, self._total_minutes(source_slots))
+        self.assertEqual(240, self._total_minutes(source_slots))
         self.assertLessEqual(target_slots[-1].plan_end, source_slots[0].plan_start)
         self.assertTrue(all(slot.status == "running" for slot in target_slots))
         self.assertTrue(all(slot.status == "paused" for slot in source_slots))
@@ -207,6 +207,7 @@ class TaskPauseServiceTest(unittest.TestCase):
     def test_pause_and_switch_shifts_all_slots_of_intermediate_tasks(self):
         now = datetime.now()
         self.source_task.assignee_id = self.operator.id
+        self.source_task.requires_human = True
         self.target_slot.plan_start = now + timedelta(hours=5)
         self.target_slot.plan_end = now + timedelta(hours=8)
         intermediate_task = Task(
@@ -296,10 +297,35 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.source_task.project.end_date = datetime.now() + timedelta(hours=1)
         self.db.commit()
 
-        with self.assertRaisesRegex(DomainConflictError, "切换后无法"):
+        with self.assertRaisesRegex(DomainConflictError, "【重排失败】"):
             pause_and_switch_task(
                 self.db, self.source_slot.id, "切换任务", self.operator, self.target_slot.id,
             )
+
+    def test_approval_gate_sets_downstream_earliest_start(self):
+        expected_approval_at = datetime.now() + timedelta(days=7)
+        gate = Task(
+            project_id=self.project_a.id,
+            name="方案签批",
+            task_type="SP_GATE",
+            is_external_gate=True,
+            gate_status="waiting_approval",
+            expected_approval_at=expected_approval_at,
+            status="waiting_approval",
+        )
+        downstream = Task(
+            project_id=self.project_a.id,
+            name="方法验证",
+            task_type="FFYZ_001",
+            requires_instrument=True,
+            status="scheduled",
+        )
+        self.db.add_all([gate, downstream])
+        self.db.flush()
+        self.db.add(TaskDependency(task_id=downstream.id, predecessor_id=gate.id))
+        self.db.commit()
+
+        self.assertEqual(expected_approval_at, _approval_ready_time(self.db, downstream))
 
     def _future_slots(self, task_id: int) -> list[TimeSlot]:
         return (

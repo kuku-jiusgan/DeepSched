@@ -397,6 +397,7 @@ def _load_lower_priority_movable_tasks(
     selected_instrument_ids: set[int],
     include_same_priority: bool = False,
     unstarted_projects_only: bool = False,
+    minimum_start: datetime | None = None,
 ) -> list[Task]:
     priority_filter = (
         Project.priority >= insert_priority
@@ -424,7 +425,7 @@ def _load_lower_priority_movable_tasks(
             TimeSlot.task_id == task.id,
             TimeSlot.tier.in_(["confirmed", "forecast"]),
             TimeSlot.status.in_(["scheduled", "blocked"]),
-            TimeSlot.plan_start >= datetime.now(),
+            TimeSlot.plan_end > (minimum_start or datetime.now()),
             *(
                 [TimeSlot.instrument_id.in_(selected_instrument_ids)]
                 if selected_instrument_ids

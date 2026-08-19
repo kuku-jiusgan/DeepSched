@@ -511,7 +511,10 @@ function openTemplateImport() {
 async function loadInstruments() {
   try {
     const insts = await getInstruments({ include_unavailable: true })
-    instrumentOptions.value = insts.map(i => ({ label: i.code, value: i.id }))
+    instrumentOptions.value = insts.map(instrument => ({
+      label: [instrument.code, instrument.name, instrument.model].filter(Boolean).join(' · '),
+      value: instrument.id,
+    }))
   } catch (e) { console.error("loadInstruments failed:", e) }
 }
 async function loadUsers() {

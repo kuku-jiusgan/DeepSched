@@ -13,7 +13,6 @@ PAGE_CATALOG = [
     ("/kanban/human-gantt", "人力甘特图", "资源看板", []),
     ("/tasks/workspace", "个人工作台", "任务管理", [("start", "开始任务"), ("complete", "完成任务"), ("pause", "暂停任务"), ("interrupt", "中断任务"), ("delay", "报告延期"), ("night_run", "夜间运行"), ("submit", "提交方案"), ("approve", "确认方案"), ("confirm_impact", "确认排程影响")]),
     ("/tasks/agenda", "我的安排", "任务管理", [("start", "开始任务"), ("complete", "完成任务"), ("pause", "暂停任务"), ("delay", "报告延期")]),
-    ("/tasks/approvals", "方案签批查询", "任务管理", []),
     ("/tasks/faults", "故障提报", "任务管理", [("create", "提报故障"), ("resolve", "解除故障")]),
     ("/projects/detection-tasks", "检测任务管理", "项目管理", [("create", "新建"), ("edit", "编辑"), ("delete", "删除")]),
     ("/projects/ledger", "项目台账管理", "项目管理", [("create", "新建项目"), ("edit", "编辑项目"), ("delete", "删除项目"), ("task_edit", "维护任务")]),

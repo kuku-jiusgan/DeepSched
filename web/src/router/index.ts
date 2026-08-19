@@ -26,7 +26,6 @@ const routes = [
       { path: 'kanban/human-gantt', component: () => import('@/pages/kanban/HumanGantt.vue') },
       { path: 'tasks/workspace', component: () => import('@/pages/tasks/PersonalWorkspace.vue') },
       { path: 'tasks/agenda', component: () => import('@/pages/tasks/MyAgenda.vue') },
-      { path: 'tasks/approvals', component: () => import('@/pages/tasks/ApprovalCenter.vue') },
       { path: 'tasks/faults', component: () => import('@/pages/tasks/InstrumentFaults.vue') },
       { path: 'projects/ledger', component: () => import('@/pages/ProjectBoard.vue') },
       { path: 'projects/detection-tasks', component: () => import('@/pages/projects/DetectionTaskManagement.vue') },

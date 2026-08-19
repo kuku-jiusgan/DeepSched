@@ -81,13 +81,22 @@ def apply_project_plan(
         approval_context=approval_context,
     )
     if stable_result.status == "applied":
-        # Normal project scheduling preserves existing schedules.  Inserting a
-        # newly saved project ahead of equal-priority work requires the explicit
-        # insert workflow, not an automatic fallback merely because it starts later.
         db.rollback()
-        if approval_context and _load_insert_movable_tasks(
-            db, project, selected_tasks, approval_context,
-        ):
+        # 普通项目也需要参与资源队列重排：同优先级下，截止日期更早的
+        # 新项目应能将尚未开始且未冻结的晚截止项目顺延。可移动任务
+        # 由 _load_insert_movable_tasks 统一过滤，运行中/已开始/已冻结
+        # 的任务不会被纳入。
+        movable_tasks = (
+            _load_insert_movable_tasks(db, project, selected_tasks, approval_context)
+            if project.project_kind == "detection" or hasattr(project, "priority")
+            else []
+        )
+        should_insert = bool(movable_tasks)
+        if should_insert:
+            if project.project_kind == "detection" and approval_context is None:
+                return _execute_replan(
+                    db, project, selected_tasks, movable_tasks, commit=True,
+                )
             try:
                 return _preview_plan_insert(
                     db,
@@ -103,6 +112,15 @@ def apply_project_plan(
             approval_context=approval_context,
         )
     db.rollback()
+
+    if project.project_kind == "detection" and approval_context is None:
+        movable_tasks = _load_insert_movable_tasks(
+            db, project, selected_tasks, approval_context,
+        )
+        if movable_tasks:
+            return _execute_replan(
+                db, project, selected_tasks, movable_tasks, commit=True,
+            )
 
     try:
         return _preview_plan_insert(
@@ -229,9 +247,20 @@ def _execute_replan(
         mode="insert" if movable_tasks else "normal",
         commit=False,
         original_schedule_windows=old_windows,
+        additional_dependencies=(
+            _approval_insert_dependencies(selected_tasks, movable_tasks)
+            if approval_context
+            else _priority_insert_dependencies(project, selected_tasks, movable_tasks)
+        ),
+        relaxed_project_end_task_ids={
+            task.id for task in movable_tasks
+        } if approval_context else None,
         earliest_start_bounds=approval_earliest_bounds(approval_context),
         advance_notification_reason="项目任务保存重排",
         emit_advance_notifications=commit,
+        early_start_task_ids=(
+            approval_context.downstream_task_ids if approval_context else None
+        ),
     )
     if solver_result.get("status") != "ok":
         db.rollback()
@@ -282,6 +311,41 @@ def _execute_replan(
     return response
 
 
+def _approval_insert_dependencies(
+    selected_tasks: list[Task],
+    movable_tasks: list[Task],
+) -> list[tuple[int, int]]:
+    # Shared instruments are modeled by capacity and setup constraints in the
+    # scheduler. They are not business dependencies and must not impose a
+    # cross-project task graph order.
+    return []
+
+
+def _priority_insert_dependencies(
+    project: Project,
+    selected_tasks: list[Task],
+    movable_tasks: list[Task],
+) -> list[tuple[int, int]]:
+    if project.project_kind != "detection":
+        return []
+    dependencies = []
+    for movable in movable_tasks:
+        if int(movable.project.priority or 3) <= int(project.priority or 3):
+            continue
+        movable_instruments = set(movable.instrument_ids or [])
+        for selected in selected_tasks:
+            shares_instrument = bool(
+                movable_instruments & set(selected.instrument_ids or [])
+            )
+            shares_assignee = bool(
+                movable.assignee_id
+                and movable.assignee_id == selected.assignee_id
+            )
+            if shares_instrument or shares_assignee:
+                dependencies.append((movable.id, selected.id))
+    return dependencies
+
+
 def _load_project_candidates(db, project_id: int) -> tuple[Project, list[Task]]:
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
@@ -312,13 +376,19 @@ def _load_insert_movable_tasks(
     approval_context: ApprovalScheduleContext | None = None,
 ) -> list[Task]:
     selected_ids = {task.id for task in selected_tasks}
+    is_detection_priority_insert = project.project_kind == "detection"
     movable = _load_lower_priority_movable_tasks(
         db,
         int(project.priority or 3),
         selected_ids,
         _selected_instrument_ids(selected_tasks),
-        include_same_priority=True,
-        unstarted_projects_only=True,
+        include_same_priority=not is_detection_priority_insert,
+        # 签批插入允许移动“未开始的任务”，即使其所属项目已有其他
+        # 任务开始；项目整体已启动不代表该排程任务已经开始。
+        unstarted_projects_only=(
+            approval_context is None and not is_detection_priority_insert
+        ),
+        minimum_start=approval_context.anchor_at if approval_context else None,
     )
     approval_movable = load_approval_resource_queue_tasks(
         db,
@@ -327,11 +397,19 @@ def _load_insert_movable_tasks(
         approval_context,
         _task_has_protected_slot,
     )
-    return _unique_tasks(
-        movable
-        + _load_later_deadline_movable_tasks(db, project, selected_tasks)
-        + approval_movable
+    deadline_movable = [] if is_detection_priority_insert else (
+        _load_later_deadline_movable_tasks(
+            db, project, selected_tasks,
+            minimum_start=approval_context.anchor_at if approval_context else None,
+        )
     )
+    candidates = _unique_tasks(movable + deadline_movable + approval_movable)
+    if approval_context:
+        candidates = [
+            task for task in candidates
+            if not _has_approved_gate_predecessor(task)
+        ]
+    return candidates
 
 
 
@@ -339,6 +417,7 @@ def _load_later_deadline_movable_tasks(
     db,
     project: Project,
     selected_tasks: list[Task],
+    minimum_start: datetime | None = None,
 ) -> list[Task]:
     """Return future, unstarted tasks from projects with a later deadline.
 
@@ -372,7 +451,7 @@ def _load_later_deadline_movable_tasks(
             TimeSlot.task_id == task.id,
             TimeSlot.tier.in_(MOVABLE_TIERS),
             TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
-            TimeSlot.plan_start >= datetime.now(),
+            TimeSlot.plan_end > (minimum_start or datetime.now()),
             *resource_filters,
         ).first()
         if future_slot:
@@ -404,14 +483,32 @@ def _load_later_deadline_movable_tasks(
 
 
 def _task_has_protected_slot(db, task_id: int) -> bool:
+    now = datetime.now()
     return db.query(TimeSlot.id).filter(
         TimeSlot.task_id == task_id,
+        TimeSlot.plan_end >= now,
         (
             (TimeSlot.tier == "frozen")
             | TimeSlot.status.in_(["running", "completed"])
             | TimeSlot.actual_start.isnot(None)
         ),
     ).first() is not None
+
+
+def _has_approved_gate_predecessor(task: Task) -> bool:
+    """Keep formally approved branches stable during forecast insertion."""
+    pending = list(task.predecessors)
+    visited: set[int] = set()
+    while pending:
+        dependency = pending.pop()
+        predecessor = dependency.predecessor
+        if predecessor.id in visited:
+            continue
+        visited.add(predecessor.id)
+        if predecessor.is_external_gate and predecessor.gate_status == "approved":
+            return True
+        pending.extend(predecessor.predecessors)
+    return False
 
 
 def _selected_tasks_start_today(
@@ -486,7 +583,15 @@ def _build_project_impacts(
             (impact.new_start for impact in project_task_impacts),
             default=None,
         )
-        delay_hours = _hours_between(original_completion, new_completion)
+        # Report the actual shift of the moved tasks.  Project completion can
+        # remain unchanged when another, later task already determines the
+        # project's final end time, which previously produced a misleading
+        # "顺延 0 小时" message.
+        delay_hours = (
+            max([0.0, *(impact.delay_hours for impact in project_task_impacts)])
+            if project_task_impacts
+            else _hours_between(original_completion, new_completion)
+        )
         overdue_hours = _hours_between(project.end_date, new_completion)
         impacts.append(ProjectScheduleImpact(
             project_id=project_id,

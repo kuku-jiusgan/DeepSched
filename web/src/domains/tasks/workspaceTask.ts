@@ -213,14 +213,23 @@ export function canPauseWorkspaceTask(task: WorkspaceTask) {
 
 export function isExceptionConfirmTask(task: WorkspaceTask, now: Dayjs = dayjs()) {
   const isProblemStatus = ['blocked', 'interrupted'].includes(task.execution_status)
-  const isOverdue = Boolean(task.task_window.end)
+  const hasStarted = Boolean(task.actual_window.start)
+  const isCompletionOverdue = hasStarted
+    && Boolean(task.task_window.end)
     && dayjs(task.task_window.end).isBefore(now)
     && !isTaskClosed(task)
-  return task.delay.status === 'delayed'
+  const isStartOverdue = !hasStarted
+    && Boolean(task.task_window.end)
+    && dayjs(task.task_window.end).isBefore(now)
+    && !isTaskClosed(task)
+  // 延期启动在任务已经启动后不再作为异常确认；只有完成节点也超期
+  // 时才回到异常栏。
+  return (!hasStarted && task.delay.status === 'delayed')
     || isProblemStatus
-    || isOverdue
-    || Boolean(task.delay.reason)
-    || Boolean(task.delay.hours)
+    || isStartOverdue
+    || isCompletionOverdue
+    || (!hasStarted && Boolean(task.delay.reason))
+    || (!hasStarted && Boolean(task.delay.hours))
 }
 
 export function actionableSlotId(task: WorkspaceTask) {

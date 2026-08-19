@@ -6,6 +6,7 @@ from app.models import Project, Task, TaskCapabilityRequirement, TaskDependency,
 from app.schemas.schemas import ProjectCreate, TaskUpdate
 from app.services.project_hours_validation_service import (
     ProjectHoursExceededError,
+    project_top_level_task_hours,
     validate_project_estimated_hours,
 )
 from app.services.project_task_rollup_service import recalculate_project_parent_hours
@@ -137,6 +138,13 @@ def update_project_plan(db, project_id: int, data: ProjectCreate) -> Project:
     ).first()
     if duplicate:
         raise PlanChangeInvalidError(f"项目编号 {project_code} 已存在")
+
+    if data.estimated_hours is not None:
+        current_task_hours = project_top_level_task_hours(db, project_id)
+        if float(data.estimated_hours) < current_task_hours:
+            raise PlanChangeInvalidError(
+                f"项目预计工时不能低于当前任务总工时 {current_task_hours:g} 小时"
+            )
 
     schedule_changed = any((
         project.priority != data.priority,

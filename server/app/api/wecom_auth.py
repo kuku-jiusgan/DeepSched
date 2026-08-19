@@ -9,6 +9,7 @@ from app.services.wecom_auth_service import (
     WeComAuthenticationError,
     WeComConfigError,
     build_authorize_url,
+    build_scan_authorize_url,
     login_with_wecom,
 )
 
@@ -27,6 +28,18 @@ def authorize_url(request: Request, db: Session = Depends(get_db)):
     callback_url = settings.WECOM_OAUTH_CALLBACK_URL or f"{str(request.base_url).rstrip('/')}/login"
     try:
         return {"authorize_url": build_authorize_url(db, callback_url, settings.WECOM_OAUTH_STATE_EXPIRE_SECONDS)}
+    except WeComConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.get("/scan-authorize-url")
+def scan_authorize_url(request: Request, db: Session = Depends(get_db)):
+    settings = get_settings()
+    callback_url = settings.WECOM_OAUTH_CALLBACK_URL or f"{str(request.base_url).rstrip('/')}/login"
+    try:
+        return {"authorize_url": build_scan_authorize_url(
+            db, callback_url, settings.WECOM_OAUTH_STATE_EXPIRE_SECONDS,
+        )}
     except WeComConfigError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
