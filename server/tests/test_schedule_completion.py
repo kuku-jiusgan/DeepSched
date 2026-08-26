@@ -362,9 +362,9 @@ class ScheduleCompletionTest(unittest.TestCase):
             TimeSlot.task_id == candidate.id,
             TimeSlot.lifecycle_status == "active",
         ).one()
-        self.assertEqual(1, result["moved_tasks"])
-        self.assertEqual(datetime(2026, 7, 13, 15, 0), moved_slot.plan_start)
-        self.assertEqual(datetime(2026, 7, 13, 17, 0), moved_slot.plan_end)
+        self.assertEqual(2, result["moved_tasks"])
+        self.assertEqual(datetime(2026, 7, 13, 14, 0), moved_slot.plan_start)
+        self.assertEqual(datetime(2026, 7, 13, 16, 0), moved_slot.plan_end)
 
     def test_forward_shift_respects_open_instrument_fault_window(self):
         instrument = self.db.get(Instrument, 1)

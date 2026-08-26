@@ -338,7 +338,13 @@ def _forward_shift_instrument_queue(
         for task_id, slots in original_slots.items()
     }
     movable_tasks = {
-        task.id: is_movable_task(db, task, instrument_id, released_at, assignee_id)
+        task.id: is_movable_task(
+            db,
+            task,
+            instrument_id,
+            released_at,
+            assignee_id if assignee_id is not None else task.assignee_id,
+        )
         for task in candidate_tasks
     }
     movable_prefix = []

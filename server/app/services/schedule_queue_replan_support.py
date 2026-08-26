@@ -16,7 +16,8 @@ def load_forward_shift_candidates(
     released_at: datetime,
     assignee_id: int | None = None,
 ) -> list[Task]:
-    resource_filter = _resource_filter(instrument_id, assignee_id)
+    assignee_ids = _affected_assignee_ids(db, instrument_id, assignee_id, released_at)
+    resource_filter = _resource_filter(instrument_id, assignee_ids)
     if resource_filter is None:
         return []
     rows = (
@@ -40,16 +41,30 @@ def load_forward_shift_candidates(
     return sorted(tasks.values(), key=lambda task: (first_starts[task.id], task.id))
 
 
-def _resource_filter(instrument_id: int | None, assignee_id: int | None):
+def _affected_assignee_ids(db, instrument_id: int | None, assignee_id: int | None, released_at: datetime) -> set[int]:
+    assignee_ids = {assignee_id} if assignee_id is not None else set()
+    if instrument_id is None:
+        return assignee_ids
+    rows = db.query(Task.assignee_id).join(TimeSlot, TimeSlot.task_id == Task.id).filter(
+        TimeSlot.instrument_id == instrument_id,
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.plan_end >= released_at,
+        Task.assignee_id.isnot(None),
+    ).distinct().all()
+    assignee_ids.update(value for value, in rows)
+    return assignee_ids
+
+
+def _resource_filter(instrument_id: int | None, assignee_ids: set[int]):
     if instrument_id is not None:
         resource_filter = TimeSlot.instrument_id == instrument_id
-        if assignee_id is not None:
+        if assignee_ids:
             resource_filter = resource_filter | (
-                Task.requires_human.is_(True) & (Task.assignee_id == assignee_id)
+                Task.requires_human.is_(True) & Task.assignee_id.in_(assignee_ids)
             )
         return resource_filter
-    if assignee_id is not None:
-        return Task.requires_human.is_(True) & (Task.assignee_id == assignee_id)
+    if assignee_ids:
+        return Task.requires_human.is_(True) & Task.assignee_id.in_(assignee_ids)
     return None
 
 
