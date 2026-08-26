@@ -57,7 +57,6 @@ def shift_faulted_instrument_slots(
     if shift_to <= first_start:
         return evaluate_fault_impact(db, instrument, reported_at, estimated_resolved_at)
     delay_minutes = _rounded_delay_minutes(shift_to - first_start)
-
     original_windows = capture_task_schedule_windows(
         db,
         {slot.task_id for slot in movable_slots},
@@ -156,6 +155,7 @@ def _affected_slots(db, instrument_id: int, reported_at: datetime) -> list[TimeS
         .filter(
             TimeSlot.instrument_id == instrument_id,
             TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+            TimeSlot.lifecycle_status == "active",
             TimeSlot.plan_end > reported_at,
             TimeSlot.actual_end.is_(None),
         )
@@ -206,6 +206,7 @@ def _movable_slots(db, task_ids: set[int], cutoff: datetime) -> list[TimeSlot]:
         .filter(
             TimeSlot.task_id.in_(task_ids),
             TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+            TimeSlot.lifecycle_status == "active",
             TimeSlot.actual_end.is_(None),
             TimeSlot.plan_end > cutoff,
             or_(
