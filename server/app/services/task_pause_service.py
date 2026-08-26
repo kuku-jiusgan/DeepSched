@@ -13,12 +13,19 @@ from app.services.schedule_delay_service import _load_working_options
 from app.services.schedule_forward_slot_service import build_forward_slots
 from app.services.schedule_slot_change_log_service import supersede_slot
 from app.services.task_execution_service import ensure_running_state_consistent, predecessors_completed, start_task_execution
-from app.services.task_progress_service import planned_task_minutes, remaining_task_minutes
+from app.services.task_progress_service import planned_task_minutes
 from app.services.task_pause_followup_service import target_followup_groups
+from app.services.task_pause_window_service import (
+    CANDIDATE_SLOT_STATUSES,
+    instrument_queue_end as _instrument_queue_end,
+    intermediate_task_slots as _intermediate_task_slots,
+    remaining_minutes as _remaining_task_minutes,
+    slot_minutes as _slot_minutes,
+    task_queue_slots as _task_queue_slots,
+)
 
 
 CANDIDATE_TASK_STATUSES = {"pending", "scheduled", "paused", "blocked", "interrupted"}
-CANDIDATE_SLOT_STATUSES = {"scheduled", "paused", "interrupted", "blocked"}
 
 
 def list_switch_candidates(db, source_slot_id: int) -> list[dict]:
@@ -314,24 +321,6 @@ def _task_label_with_top_level(task: Task) -> str:
     return " · ".join(reversed(names))
 
 
-def _instrument_queue_end(db, instrument_id: int | None, switch_time: datetime) -> datetime | None:
-    if instrument_id is None:
-        return None
-    return max(
-        (
-            slot.plan_end
-            for slot in db.query(TimeSlot).filter(
-                TimeSlot.instrument_id == instrument_id,
-                TimeSlot.plan_start >= switch_time,
-                TimeSlot.actual_start.is_(None),
-                TimeSlot.status.in_(CANDIDATE_SLOT_STATUSES),
-                TimeSlot.lifecycle_status == "active",
-            ).all()
-        ),
-        default=None,
-    )
-
-
 def _ensure_reordered_projects_within_deadline(db, projects: set, options: dict) -> None:
     for project in projects:
         projected_end = projected_project_completion(db, project, options)
@@ -342,124 +331,6 @@ def _ensure_reordered_projects_within_deadline(db, projects: set, options: dict)
             f"此次切换预计导致项目【{label}】最晚于 {projected_end:%Y-%m-%d %H:%M} 完成，"
             f"超过项目截止时间 {project.end_date:%Y-%m-%d %H:%M}，禁止切换！"
         )
-
-
-def _task_queue_slots(db, anchor: TimeSlot) -> list[TimeSlot]:
-    slots = (
-        db.query(TimeSlot)
-        .filter(
-            TimeSlot.task_id == anchor.task_id,
-            TimeSlot.instrument_id == anchor.instrument_id,
-            TimeSlot.status.in_(["scheduled", "running", "paused", "blocked", "interrupted"]),
-            TimeSlot.actual_end.is_(None),
-            TimeSlot.lifecycle_status == "active",
-        )
-        .order_by(TimeSlot.plan_start, TimeSlot.id)
-        .all()
-    )
-    if all(slot.id != anchor.id for slot in slots):
-        slots.append(anchor)
-    return sorted(slots, key=lambda slot: (slot.plan_start, slot.id))
-
-
-def _intermediate_task_slots(
-    db,
-    source_slot: TimeSlot,
-    target_slot: TimeSlot,
-    switch_time: datetime,
-    target_original_end: datetime,
-) -> list[list[TimeSlot]]:
-    instrument_slots = (
-        db.query(TimeSlot)
-        .filter(
-            TimeSlot.instrument_id == source_slot.instrument_id,
-            TimeSlot.task_id.notin_([source_slot.task_id, target_slot.task_id]),
-            TimeSlot.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
-            TimeSlot.actual_start.is_(None),
-            TimeSlot.plan_start >= switch_time,
-            TimeSlot.plan_start < target_original_end,
-            TimeSlot.lifecycle_status == "active",
-        )
-        .order_by(TimeSlot.plan_start, TimeSlot.id)
-        .all()
-    )
-    human_slots = []
-    if source_slot.task.requires_human and source_slot.task.assignee_id is not None:
-        human_slots = (
-            db.query(TimeSlot)
-            .join(Task, Task.id == TimeSlot.task_id)
-            .filter(
-                Task.requires_human.is_(True),
-                Task.assignee_id == source_slot.task.assignee_id,
-                TimeSlot.task_id.notin_([source_slot.task_id, target_slot.task_id]),
-                TimeSlot.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
-                TimeSlot.actual_start.is_(None),
-                TimeSlot.plan_start >= switch_time,
-                TimeSlot.plan_start < target_original_end,
-                TimeSlot.lifecycle_status == "active",
-            )
-            .order_by(TimeSlot.plan_start, TimeSlot.id)
-            .all()
-        )
-    slots = sorted(
-        {slot.id: slot for slot in [*instrument_slots, *human_slots]}.values(),
-        key=lambda slot: (slot.plan_start, slot.id),
-    )
-    grouped: dict[int, list[TimeSlot]] = {}
-    for slot in slots:
-        grouped.setdefault(slot.task_id, []).append(slot)
-    if not grouped:
-        return []
-    all_slots = (
-        db.query(TimeSlot)
-        .filter(
-            TimeSlot.task_id.in_(grouped),
-            TimeSlot.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
-            TimeSlot.actual_start.is_(None),
-            TimeSlot.plan_start >= switch_time,
-        )
-        .order_by(TimeSlot.plan_start, TimeSlot.id)
-        .all()
-    )
-    complete_groups: dict[int, list[TimeSlot]] = {task_id: [] for task_id in grouped}
-    for slot in all_slots:
-        complete_groups[slot.task_id].append(slot)
-    return [complete_groups[task_id] for task_id in grouped]
-
-
-def _slot_minutes(slots: list[TimeSlot]) -> int:
-    return sum(
-        max(0, int((slot.plan_end - slot.plan_start).total_seconds() / 60))
-        for slot in slots
-    )
-
-
-def _remaining_slot_minutes(
-    slots: list[TimeSlot], from_time: datetime, active_slot: TimeSlot,
-) -> int:
-    """Return only the unexecuted portion of a task queue from the switch time."""
-    minutes = 0
-    for slot in slots:
-        if slot.id == active_slot.id and slot.actual_start is None:
-            start = slot.plan_start
-        else:
-            if slot.plan_end <= from_time:
-                continue
-            start = max(slot.plan_start, from_time)
-        minutes += max(0, int((slot.plan_end - start).total_seconds() / 60))
-    return minutes
-
-
-def _remaining_task_minutes(
-    task: Task,
-    legacy_slots: list[TimeSlot] | None = None,
-    switch_time: datetime | None = None,
-    active_slot: TimeSlot | None = None,
-) -> int:
-    """Use the task progress ledger as the only source of remaining work."""
-    if task.est_duration_hours is None and legacy_slots is not None and switch_time and active_slot:
-        return _remaining_slot_minutes(legacy_slots, switch_time, active_slot)
-    return remaining_task_minutes(task)
 
 
 def _save_reordered_ranges(
