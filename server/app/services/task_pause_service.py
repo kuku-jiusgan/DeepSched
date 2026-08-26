@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.domain.errors import DomainConflictError, DomainNotFoundError, DomainValidationError
-from app.models import Task, TaskExecutionSegment, TimeSlot
+from app.models import Task, TaskDependency, TaskExecutionSegment, TimeSlot
 from app.services.approval_gate_service import unapproved_gate_context
 from app.services.audit_log_service import record_audit_log
 from app.services.instrument_status_service import refresh_instrument_status
@@ -12,6 +12,7 @@ from app.services.project_completion_projection_service import projected_project
 from app.services.schedule_delay_service import _load_working_options
 from app.services.schedule_forward_slot_service import build_forward_slots
 from app.services.schedule_slot_change_log_service import supersede_slot
+from app.services.schedule_replan_closure_service import collect_replan_task_ids
 from app.services.task_execution_service import ensure_running_state_consistent, predecessors_completed, start_task_execution
 from app.services.task_progress_service import planned_task_minutes, remaining_task_minutes
 from app.services.task_pause_followup_service import target_followup_groups
@@ -369,40 +370,33 @@ def _intermediate_task_slots(
     switch_time: datetime,
     target_original_end: datetime,
 ) -> list[list[TimeSlot]]:
-    instrument_slots = (
+    seed_task_ids = {source_slot.task_id, target_slot.task_id}
+    assignee_ids = {
+        task.assignee_id
+        for task in (source_slot.task, target_slot.task)
+        if task.requires_human and task.assignee_id is not None
+    }
+    closure_ids = collect_replan_task_ids(
+        db,
+        seed_task_ids,
+        {source_slot.instrument_id} if source_slot.instrument_id is not None else set(),
+        assignee_ids,
+        switch_time,
+    ) - seed_task_ids
+    closure_ids -= _dependency_descendant_ids(db, seed_task_ids)
+    if not closure_ids:
+        return []
+    slots = (
         db.query(TimeSlot)
         .filter(
-            TimeSlot.instrument_id == source_slot.instrument_id,
-            TimeSlot.task_id.notin_([source_slot.task_id, target_slot.task_id]),
+            TimeSlot.task_id.in_(closure_ids),
             TimeSlot.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
             TimeSlot.actual_start.is_(None),
-            TimeSlot.plan_start >= switch_time,
-            TimeSlot.plan_start < target_original_end,
+            TimeSlot.plan_end > switch_time,
             TimeSlot.lifecycle_status == "active",
         )
         .order_by(TimeSlot.plan_start, TimeSlot.id)
         .all()
-    )
-    human_slots = []
-    if source_slot.task.requires_human and source_slot.task.assignee_id is not None:
-        human_slots = (
-            db.query(TimeSlot)
-            .join(Task, Task.id == TimeSlot.task_id)
-            .filter(
-                Task.requires_human.is_(True),
-                Task.assignee_id == source_slot.task.assignee_id,
-                TimeSlot.task_id.notin_([source_slot.task_id, target_slot.task_id]),
-                TimeSlot.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
-                TimeSlot.actual_start.is_(None),
-                TimeSlot.plan_start >= switch_time,
-                TimeSlot.plan_start < target_original_end,
-            )
-            .order_by(TimeSlot.plan_start, TimeSlot.id)
-            .all()
-        )
-    slots = sorted(
-        {slot.id: slot for slot in [*instrument_slots, *human_slots]}.values(),
-        key=lambda slot: (slot.plan_start, slot.id),
     )
     grouped: dict[int, list[TimeSlot]] = {}
     for slot in slots:
@@ -424,6 +418,21 @@ def _intermediate_task_slots(
     for slot in all_slots:
         complete_groups[slot.task_id].append(slot)
     return [complete_groups[task_id] for task_id in grouped]
+
+
+def _dependency_descendant_ids(db, seed_task_ids: set[int]) -> set[int]:
+    descendants: set[int] = set()
+    frontier = set(seed_task_ids)
+    while frontier:
+        rows = db.query(TaskDependency.task_id).filter(
+            TaskDependency.predecessor_id.in_(frontier),
+        ).all()
+        next_ids = {task_id for (task_id,) in rows} - descendants - seed_task_ids
+        if not next_ids:
+            break
+        descendants.update(next_ids)
+        frontier = next_ids
+    return descendants
 
 
 def _slot_minutes(slots: list[TimeSlot]) -> int:
