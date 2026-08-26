@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import or_
@@ -39,6 +40,9 @@ class InstrumentFaultScheduleConflict(Exception):
         self.impact = impact
 
 
+_logger = logging.getLogger(__name__)
+
+
 def shift_faulted_instrument_slots(
     db,
     instrument: Instrument,
@@ -74,6 +78,14 @@ def shift_faulted_instrument_slots(
             reported_at,
             estimated_resolved_at,
         )
+    _logger.warning(
+        "instrument_fault_legacy_replan instrument_id=%s task_ids=%s reasons=%s",
+        instrument.id,
+        sorted(affected_task_ids),
+        ",".join(_fault_replan_fallback_reasons(
+            db, affected_task_ids, movable_slots,
+        )),
+    )
     snapshots_by_task = _group_slot_snapshots(movable_slots)
     delete_time_slots_and_refresh(
         db,
@@ -151,6 +163,47 @@ def _can_use_cp_sat_fault_replan(
         )
         for task in tasks.values()
     )
+
+
+def _fault_replan_fallback_reasons(
+    db,
+    task_ids: set[int],
+    movable_slots: list[TimeSlot],
+) -> list[str]:
+    """Return explicit reasons why a fault replan cannot be rebuilt by CP-SAT."""
+    reasons: set[str] = set()
+    slot_task_ids = {slot.task_id for slot in movable_slots}
+    if not movable_slots:
+        reasons.add("no_movable_slots")
+    if not slot_task_ids <= task_ids:
+        reasons.add("incomplete_slot_closure")
+    if any(slot.status != "scheduled" for slot in movable_slots):
+        reasons.add("non_scheduled_slot")
+    if any(slot.tier == "frozen" for slot in movable_slots):
+        reasons.add("frozen_slot")
+    if any(
+        slot.actual_start is not None or slot.actual_end is not None
+        for slot in movable_slots
+    ):
+        reasons.add("actual_execution_slot")
+
+    tasks = _tasks_by_id(db, task_ids)
+    if len(tasks) != len(task_ids):
+        reasons.add("missing_task")
+    for task in tasks.values():
+        if task.status not in {"pending", "ready", "scheduled"}:
+            reasons.add("non_rebuildable_task_status")
+        if task.execution_segments:
+            reasons.add("execution_history")
+        if any(
+            slot.actual_start is not None or slot.actual_end is not None
+            for slot in task.time_slots
+            if slot.lifecycle_status == "active"
+        ):
+            reasons.add("actual_execution_slot")
+        if task.requires_human and task.assignee_id is None:
+            reasons.add("missing_assignee")
+    return sorted(reasons) or ["unknown"]
 
 
 def _replan_fault_with_cp_sat(

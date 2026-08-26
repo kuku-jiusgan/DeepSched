@@ -8,7 +8,11 @@ from sqlalchemy.orm import sessionmaker
 from app.core.database import Base
 from app.models import AuditLog, Instrument, InstrumentFault, Project, Task, TaskDependency, TaskExecutionSegment, TimeSlot, User
 from app.services.instrument_fault_service import list_open_faults, resolve_fault
-from app.services.instrument_fault_schedule_service import evaluate_fault_impact, shift_faulted_instrument_slots
+from app.services.instrument_fault_schedule_service import (
+    _fault_replan_fallback_reasons,
+    evaluate_fault_impact,
+    shift_faulted_instrument_slots,
+)
 from app.services.fault_replan_context_service import build_fault_replan_context
 from app.services.fault_replan_result_service import build_fault_impact_details
 from app.services.scheduler import _supersede_replaceable_slots
@@ -257,6 +261,36 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         self.assertFalse(replan.called)
         self.db.refresh(task)
         self.assertEqual("blocked", task.status)
+
+    def test_fault_fallback_reasons_identify_execution_and_metadata(self):
+        project = Project(name="故障回退诊断项目", code="FAULT-DIAGNOSTIC")
+        instrument = Instrument(code="ZBYY-002-0013", name="回退诊断仪器")
+        task = Task(
+            project=project, name="回退诊断任务", task_type="test",
+            status="paused", requires_instrument=True, requires_human=True,
+        )
+        self.db.add_all([project, instrument, task])
+        self.db.flush()
+        slot = TimeSlot(
+            task_id=task.id, instrument_id=instrument.id,
+            plan_start=datetime(2026, 8, 10, 8, 30),
+            plan_end=datetime(2026, 8, 10, 10, 30), status="paused",
+            actual_start=datetime(2026, 8, 10, 8, 30),
+        )
+        self.db.add(slot)
+        self.db.flush()
+
+        reasons = _fault_replan_fallback_reasons(self.db, {task.id}, [slot])
+
+        self.assertEqual(
+            [
+                "actual_execution_slot",
+                "missing_assignee",
+                "non_rebuildable_task_status",
+                "non_scheduled_slot",
+            ],
+            reasons,
+        )
 
     def test_fault_preview_uses_same_resource_closure_as_replan(self):
         assignee = User(username="preview", display_name="预览技术员", role="技术员", is_active=True)
