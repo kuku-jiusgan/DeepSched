@@ -53,6 +53,26 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
 
         self.assertEqual({executed.id, scheduled.id}, {slot.id for slot in fixed_slots})
 
+    def test_superseded_slot_does_not_reserve_fixed_capacity(self):
+        active_slot = TimeSlot(
+            task_id=1, instrument_id=1,
+            plan_start=datetime(2026, 7, 15, 8, 30),
+            plan_end=datetime(2026, 7, 15, 10, 0),
+            status="scheduled",
+        )
+        superseded_slot = TimeSlot(
+            task_id=2, instrument_id=1,
+            plan_start=datetime(2026, 7, 15, 10, 0),
+            plan_end=datetime(2026, 7, 15, 12, 0),
+            status="scheduled", lifecycle_status="superseded",
+        )
+        self.db.add_all([active_slot, superseded_slot])
+        self.db.commit()
+
+        fixed_slots = load_fixed_slots(self.db)
+
+        self.assertEqual([active_slot.id], [slot.id for slot in fixed_slots])
+
     def test_manual_task_slot_is_loaded_as_fixed(self):
         manual_slot = TimeSlot(
             task_id=1, instrument_id=None,
