@@ -87,7 +87,7 @@ def is_movable_task(
     slots = db.query(TimeSlot).filter(
         TimeSlot.task_id == task.id,
         TimeSlot.status == "scheduled",
-        TimeSlot.plan_start >= released_at,
+        TimeSlot.plan_end > released_at,
         TimeSlot.actual_start.is_(None),
         TimeSlot.lifecycle_status == "active",
     ).all()
