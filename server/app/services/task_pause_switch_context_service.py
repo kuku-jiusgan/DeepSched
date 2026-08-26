@@ -23,6 +23,7 @@ class PauseSwitchQueueEntry:
 @dataclass(frozen=True)
 class PauseSwitchContext:
     switch_time: datetime
+    queue_end: datetime
     replaceable_slots: list[TimeSlot]
     queue: list[PauseSwitchQueueEntry]
 
@@ -41,6 +42,14 @@ class PauseSwitchContext:
     @property
     def paused_source_task_id(self) -> int:
         return next(entry.task.id for entry in self.queue if entry.status == "paused")
+
+    @property
+    def queue_dependencies(self) -> list[tuple[int, int]]:
+        return [
+            (entry.task.id, predecessor.task.id)
+            for predecessor, entry in zip(self.queue, self.queue[1:])
+            if entry.task.id != predecessor.task.id
+        ]
 
 
 def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot, started_at: datetime) -> PauseSwitchContext:
@@ -62,7 +71,7 @@ def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot,
     queue.append(PauseSwitchQueueEntry(source_slot.task, None, remaining_minutes(source_slot.task, source_slots, switch_time, source_slot), "paused", source_slot))
     queue.extend(_followup_entries(source_followups))
     queue.extend(PauseSwitchQueueEntry(group[0].task, None, slot_minutes(group), group[0].status, group[0]) for group in intermediate_groups)
-    return PauseSwitchContext(switch_time, replaceable, queue)
+    return PauseSwitchContext(switch_time, queue_end, replaceable, queue)
 
 
 def _followup_entries(groups: list[list[TimeSlot]]) -> list[PauseSwitchQueueEntry]:

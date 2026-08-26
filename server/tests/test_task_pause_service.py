@@ -30,6 +30,7 @@ class TaskPauseServiceTest(unittest.TestCase):
             name="方法开发A",
             task_type="FFKF_001",
             requires_instrument=True,
+            assignee_id=self.operator.id,
             status="scheduled",
         )
         self.target_task = Task(
@@ -37,6 +38,7 @@ class TaskPauseServiceTest(unittest.TestCase):
             name="方法开发B",
             task_type="FFKF_001",
             requires_instrument=True,
+            assignee_id=self.operator.id,
             status="scheduled",
         )
         self.db.add_all([self.source_task, self.target_task])
@@ -207,9 +209,9 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertIsNotNone(self.target_slot.actual_start)
         self.assertIsNone(self.target_slot.actual_end)
         self.assertLess(self.target_slot.plan_start, original_target_start)
-        self.assertGreaterEqual(self.target_slot.plan_start, self.target_slot.actual_start)
+        self.assertLessEqual(self.target_slot.plan_start, self.target_slot.actual_start)
         self.assertLess(
-            self.target_slot.plan_start - self.target_slot.actual_start,
+            self.target_slot.actual_start - self.target_slot.plan_start,
             timedelta(minutes=30),
         )
         self.assertEqual(2, self.db.query(TaskExecutionSegment).count())
@@ -386,6 +388,7 @@ class TaskPauseServiceTest(unittest.TestCase):
             name="后续任务",
             task_type="FFKF_001",
             requires_instrument=True,
+            assignee_id=self.operator.id,
             status="scheduled",
             allow_split=False,
         )
@@ -415,7 +418,7 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.source_task.project.end_date = datetime.now() + timedelta(hours=1)
         self.db.commit()
 
-        with self.assertRaisesRegex(DomainConflictError, "预计导致项目"):
+        with self.assertRaisesRegex(DomainConflictError, "有效时间窗口不足"):
             pause_and_switch_task(
                 self.db, self.source_slot.id, "切换任务", self.operator, self.target_slot.id,
             )

@@ -25,13 +25,19 @@ def natural_day_boundary(now: datetime, days: int) -> datetime:
     return next_boundary - timedelta(microseconds=1)
 
 
-def time_horizon(start_at: datetime | None = None) -> tuple[datetime, datetime, int]:
+def time_horizon(
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> tuple[datetime, datetime, int]:
     now = (start_at or datetime.now()).replace(second=0, microsecond=0)
     remaining_minutes = (-now.minute) % TIME_UNIT_MINUTES
     if remaining_minutes:
         now += timedelta(minutes=remaining_minutes)
     horizon_start = now
-    horizon_end = now + timedelta(days=HORIZON_DAYS)
+    default_end = now + timedelta(days=HORIZON_DAYS)
+    horizon_end = min(default_end, end_at) if end_at else default_end
+    if horizon_end <= horizon_start:
+        raise ValueError("排程时间窗口结束时间必须晚于开始时间")
     total_units = int(
         (horizon_end - horizon_start).total_seconds()
         / 60

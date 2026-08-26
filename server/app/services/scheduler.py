@@ -100,7 +100,10 @@ class SchedulerService:
         replaceable_task_ids: set[int] | None = None,
         replaceable_after: datetime | None = None,
         planning_start_at: datetime | None = None,
+        planning_end_at: datetime | None = None,
         preserved_status_task_ids: set[int] | None = None,
+        preserved_slot_ids: set[int] | None = None,
+        setup_exempt_task_pairs: set[frozenset[int]] | None = None,
     ) -> dict:
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -139,7 +142,10 @@ class SchedulerService:
             return {"status": "error", "message": "没有可用仪器"}
 
         constraints = get_solver_constraints(self.db)
-        horizon_start, horizon_end, total_units = time_horizon(planning_start_at)
+        horizon_start, horizon_end, total_units = time_horizon(
+            planning_start_at,
+            planning_end_at,
+        )
         ensure_calendar_range(self.db, horizon_start.date(), horizon_end.date())
         approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
         if earliest_start_bounds:
@@ -443,6 +449,7 @@ class SchedulerService:
             total_units,
         )
         switch_penalties = []
+        setup_exempt_task_pairs = setup_exempt_task_pairs or set()
         tasks_by_id = {t.id: t for t in tasks}
 
         for inst in instruments:
@@ -473,9 +480,10 @@ class SchedulerService:
                     model.Add(a_before_b == 0).OnlyEnforceIf(pB.Not())
                     model.Add(b_before_a == 0).OnlyEnforceIf(pB.Not())
 
-                    # Setup time between cross-project tasks
-                    model.Add(startB >= endA + CROSS_PROJECT_SETUP_UNITS).OnlyEnforceIf([pA, pB, a_before_b])
-                    model.Add(startA >= endB + CROSS_PROJECT_SETUP_UNITS).OnlyEnforceIf([pA, pB, b_before_a])
+                    if frozenset((tA_id, tB_id)) not in setup_exempt_task_pairs:
+                        # Setup time between ordinary cross-project tasks.
+                        model.Add(startB >= endA + CROSS_PROJECT_SETUP_UNITS).OnlyEnforceIf([pA, pB, a_before_b])
+                        model.Add(startA >= endB + CROSS_PROJECT_SETUP_UNITS).OnlyEnforceIf([pA, pB, b_before_a])
 
                     # Collect cross-project co-presence for penalty
                     both_present = model.NewBoolVar(f"both_{tA_id}_{tB_id}_on_{inst.id}")
@@ -661,31 +669,33 @@ class SchedulerService:
                 )
                 diagnostic_message = diagnostic["message"]
                 current_deadline = next(
-                    task.project.end_date for task in tasks
-                    if task.project_id == current_project_id
+                    (task.project.end_date for task in tasks
+                     if task.project_id == current_project_id and task.project.end_date),
+                    None,
                 )
-                job = create_deadline_recommendation_job(
-                    current_project_id,
-                    [task.id for task in tasks],
-                    current_deadline,
-                    horizon_start,
-                    horizon_end,
-                    instrument_prefix_sums,
-                    diagnostic["schedule_failure"],
-                    {
-                        "project_ids": project_ids,
-                        "mode": mode,
-                        "task_ids": task_ids,
-                        "excluded_task_ids": excluded_task_ids,
-                        "additional_dependencies": additional_dependencies,
-                        "earliest_start_bounds": earliest_start_bounds,
-                        "relaxed_project_end_task_ids": relaxed_project_end_task_ids,
-                        "early_start_task_ids": early_start_task_ids,
-                        "rollback_on_conflict": False,
-                    },
-                )
-                if job:
-                    diagnostic["schedule_failure"]["recommendation_job"] = job
+                if current_deadline:
+                    job = create_deadline_recommendation_job(
+                        current_project_id,
+                        [task.id for task in tasks],
+                        current_deadline,
+                        horizon_start,
+                        horizon_end,
+                        instrument_prefix_sums,
+                        diagnostic["schedule_failure"],
+                        {
+                            "project_ids": project_ids,
+                            "mode": mode,
+                            "task_ids": task_ids,
+                            "excluded_task_ids": excluded_task_ids,
+                            "additional_dependencies": additional_dependencies,
+                            "earliest_start_bounds": earliest_start_bounds,
+                            "relaxed_project_end_task_ids": relaxed_project_end_task_ids,
+                            "early_start_task_ids": early_start_task_ids,
+                            "rollback_on_conflict": False,
+                        },
+                    )
+                    if job:
+                        diagnostic["schedule_failure"]["recommendation_job"] = job
             except Exception as exc:
                 diagnostic_message = f"排程诊断失败：{exc}"
             response = {
@@ -702,6 +712,7 @@ class SchedulerService:
             replaceable_task_ids or set(),
             "CP-SAT局部重排",
             replaceable_after,
+            preserved_slot_ids,
         )
         schedule_run_id = _new_schedule_run_id()
         save_schedule_calendar_snapshot(
@@ -838,6 +849,7 @@ def _supersede_replaceable_slots(
     task_ids: set[int],
     reason: str,
     replaceable_after: datetime | None,
+    preserved_slot_ids: set[int] | None = None,
 ) -> None:
     if not task_ids:
         return
@@ -853,7 +865,10 @@ def _supersede_replaceable_slots(
         # A slot crossing the replan boundary still reserves future capacity.
         # Keep only slots wholly finished before that boundary.
         slots = [slot for slot in slots if slot.plan_end > replaceable_after]
+    preserved_slot_ids = preserved_slot_ids or set()
     for slot in slots:
+        if slot.id in preserved_slot_ids:
+            continue
         supersede_slot(db, slot, reason)
     db.flush()
 

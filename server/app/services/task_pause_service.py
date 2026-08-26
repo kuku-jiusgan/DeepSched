@@ -4,17 +4,11 @@ from datetime import datetime
 
 from app.domain.errors import DomainConflictError, DomainNotFoundError, DomainValidationError
 from app.models import Task, TaskExecutionSegment, TimeSlot
-from app.services.approval_gate_service import unapproved_gate_context
 from app.services.audit_log_service import record_audit_log
 from app.services.instrument_status_service import refresh_instrument_status
-from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
-from app.services.project_completion_projection_service import projected_project_completion
-from app.services.schedule_delay_service import _load_working_options
-from app.services.schedule_forward_slot_service import build_forward_slots
-from app.services.schedule_slot_change_log_service import supersede_slot
 from app.services.task_execution_service import ensure_running_state_consistent, predecessors_completed, start_task_execution
 from app.services.task_progress_service import planned_task_minutes
-from app.services.task_pause_switch_context_service import build_pause_switch_context
+from app.services.task_pause_solver_service import replan_pause_switch
 from app.services.task_pause_window_service import (
     CANDIDATE_SLOT_STATUSES,
 )
@@ -49,6 +43,8 @@ def list_switch_candidates(db, source_slot_id: int) -> list[dict]:
     for slot in slots:
         task = slot.task
         if task.id in seen_task_ids or not predecessors_completed(task):
+            continue
+        if task.requires_human and task.assignee_id is None:
             continue
         seen_task_ids.add(task.id)
         candidates.append(_candidate_out(slot, task))
@@ -117,195 +113,14 @@ def _insert_target_into_source_schedule(
     target_slot: TimeSlot,
     started_at: datetime,
 ) -> None:
-    context = build_pause_switch_context(db, source_slot, target_slot, started_at)
-    switch_time = context.switch_time
-
-    historical_source_start = source_slot.actual_start or switch_time
-    source_slot.plan_start = min(historical_source_start, switch_time)
-    source_slot.plan_end = switch_time
-    target_slot.plan_start = switch_time
-    target_slot.plan_end = switch_time
-
-    for slot in context.replaceable_slots:
-        supersede_slot(db, slot, "暂停切换重排")
-    db.flush()
-
-    queue = context.queue
-    options = _load_working_options(db, switch_time)
-    instrument_ends: dict[int, datetime] = {}
-    assignee_ends: dict[int, datetime] = {}
-    for entry in queue:
-        task = entry.task
-        reusable_slot = entry.reusable_slot
-        duration_minutes = entry.duration_minutes
-        status = entry.status
-        template_slot = entry.template_slot
-        if duration_minutes <= 0:
-            continue
-        resource_bounds = [switch_time]
-        if template_slot.instrument_id is not None:
-            resource_bounds.append(instrument_ends.get(template_slot.instrument_id, switch_time))
-        if task.requires_human and task.assignee_id is not None:
-            resource_bounds.append(assignee_ends.get(task.assignee_id, switch_time))
-        base_start = max(resource_bounds)
-        earliest_start = max(
-            base_start,
-            _dependency_ready_time(db, task) or base_start,
-            _approval_ready_time(db, task) or base_start,
-        )
-        ranges = build_forward_slots(
-            db,
-            task,
-            template_slot.instrument_id,
-            duration_minutes,
-            earliest_start,
-            options,
-        )
-        if not ranges:
-            ranges_without_deadline = build_forward_slots(
-                db,
-                task,
-                template_slot.instrument_id,
-                duration_minutes,
-                earliest_start,
-                options,
-            )
-            is_deadline_conflict = bool(
-                task.project
-                and task.project.end_date
-                and ranges_without_deadline
-                and ranges_without_deadline[-1][1] > task.project.end_date
-            )
-            raise DomainConflictError(
-                _reorder_conflict_message(
-                    source_slot.task,
-                    task,
-                    duration_minutes,
-                    earliest_start,
-                    is_deadline_conflict,
-                )
-            )
-        _save_reordered_ranges(
-            db,
-            task,
-            reusable_slot,
-            ranges,
-            template_slot.instrument_id,
-            status,
-            template_slot,
-        )
-        db.flush()
-        task_end = ranges[-1][1]
-        if template_slot.instrument_id is not None:
-            instrument_ends[template_slot.instrument_id] = task_end
-        if task.requires_human and task.assignee_id is not None:
-            assignee_ends[task.assignee_id] = task_end
-    _ensure_reordered_projects_within_deadline(
-        db,
-        {entry.task.project for entry in queue if entry.task.project and entry.task.project.end_date},
-        options,
-    )
-    rebuild_instrument_bridge_reservations(db)
+    replan_pause_switch(db, source_slot, target_slot, started_at)
 
 
 def _approval_ready_time(db, task: Task) -> datetime | None:
+    from app.services.approval_gate_service import unapproved_gate_context
+
     bounds, _ = unapproved_gate_context(db, [task])
     return bounds.get(task.id)
-
-
-def _dependency_ready_time(db, task: Task) -> datetime | None:
-    ready_times: list[datetime] = []
-    for dependency in task.predecessors:
-        predecessor = dependency.predecessor
-        if predecessor.is_external_gate:
-            continue
-        slots = db.query(TimeSlot).filter(
-            TimeSlot.task_id == predecessor.id,
-            TimeSlot.lifecycle_status == "active",
-        ).all()
-        actual_ends = [slot.actual_end for slot in slots if slot.actual_end]
-        plan_ends = [slot.plan_end for slot in slots]
-        if predecessor.status in {"done", "completed"} and actual_ends:
-            ready_times.append(max(actual_ends))
-        elif plan_ends:
-            ready_times.append(max(plan_ends))
-    return max(ready_times, default=None)
-
-
-def _reorder_conflict_message(
-    current_task: Task,
-    task: Task,
-    duration_minutes: int,
-    earliest_start: datetime,
-    is_deadline_conflict: bool,
-) -> str:
-    task_label = _task_label_with_top_level(task)
-    project_code = task.project.code if task.project else "未知项目"
-    project_name = task.project.name if task.project else "未知项目"
-    deadline = task.project.end_date if task.project else None
-    deadline_text = deadline.strftime("%Y-%m-%d %H:%M") if deadline else "未设置项目截止时间"
-    if deadline and (earliest_start >= deadline or is_deadline_conflict):
-        reason = "已超出项目结题日期"
-        suggestion = "建议进行项目延期后再进行排程"
-    else:
-        reason = "没有满足仪器、人员或连续作业约束的可用时段"
-        suggestion = "请调整资源安排或项目时间后再进行排程"
-    return (
-        f"【重排失败】{current_task.name} 无法重排\n\n"
-        f"失败原因：任务【{task_label}】{reason}\n"
-        f"所属项目：{project_code} · {project_name}\n"
-        f"结题时间：{deadline.strftime('%Y-%m-%d') if deadline else '未设置'}\n"
-        f"{suggestion}"
-    )
-
-
-def _task_label_with_top_level(task: Task) -> str:
-    names = [task.name]
-    current = task
-    seen: set[int] = set()
-    while current.parent_id and current.parent_id not in seen:
-        seen.add(current.id)
-        parent = current.parent
-        if parent is None:
-            break
-        names.append(parent.name)
-        current = parent
-    return " · ".join(reversed(names))
-
-
-def _ensure_reordered_projects_within_deadline(db, projects: set, options: dict) -> None:
-    for project in projects:
-        projected_end = projected_project_completion(db, project, options)
-        if projected_end <= project.end_date:
-            continue
-        label = " · ".join(part for part in [project.code, project.name] if part)
-        raise DomainConflictError(
-            f"此次切换预计导致项目【{label}】最晚于 {projected_end:%Y-%m-%d %H:%M} 完成，"
-            f"超过项目截止时间 {project.end_date:%Y-%m-%d %H:%M}，禁止切换！"
-        )
-
-
-def _save_reordered_ranges(
-    db,
-    task: Task,
-    reusable_slot: TimeSlot | None,
-    ranges: list[tuple[datetime, datetime]],
-    instrument_id: int | None,
-    status: str,
-    template: TimeSlot,
-) -> None:
-    for index, (start, end) in enumerate(ranges):
-        slot = reusable_slot if index == 0 and reusable_slot is not None else TimeSlot(
-            task_id=task.id,
-            schedule_run_id=template.schedule_run_id,
-            instrument_id=instrument_id,
-            tier=template.tier,
-        )
-        slot.plan_start = start
-        slot.plan_end = end
-        slot.status = status
-        if slot is not reusable_slot:
-            db.add(slot)
 
 
 def _running_source(db, slot_id: int) -> tuple[TimeSlot, Task]:

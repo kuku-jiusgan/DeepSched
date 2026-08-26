@@ -19,10 +19,15 @@ def replan_resource_closure(
     commit: bool = False,
     remaining_duration_minutes: dict[int, int] | None = None,
     planning_start_at: datetime | None = None,
+    planning_end_at: datetime | None = None,
     replaceable_after: datetime | None = None,
     max_iterations: int = 3,
     expand_closure: bool = True,
     preserved_status_task_ids: set[int] | None = None,
+    additional_dependencies: list[tuple[int, int]] | None = None,
+    preserved_slot_ids: set[int] | None = None,
+    setup_exempt_task_pairs: set[frozenset[int]] | None = None,
+    solver_time_limit: float = 30.0,
 ) -> dict:
     """Run the authoritative CP-SAT replan for a resource-impact closure."""
     if not seed_task_ids:
@@ -68,8 +73,13 @@ def replan_resource_closure(
                 remaining_duration_minutes=remaining_duration_minutes,
                 replaceable_task_ids=closure_ids,
                 planning_start_at=planning_start_at,
+                planning_end_at=planning_end_at,
                 replaceable_after=replaceable_after,
                 preserved_status_task_ids=preserved_status_task_ids,
+                additional_dependencies=additional_dependencies,
+                preserved_slot_ids=preserved_slot_ids,
+                setup_exempt_task_pairs=setup_exempt_task_pairs,
+                solver_time_limit=solver_time_limit,
                 rollback_on_conflict=False,
             )
             if last_result.get("status") != "ok":
