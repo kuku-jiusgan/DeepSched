@@ -10,6 +10,9 @@ from app.services.instrument_fault_notification_service import (
     notify_fault_rescheduled_assignees,
     notify_fault_schedule_risks,
 )
+from app.services.fault_replan_context_service import build_fault_replan_context
+from app.services.fault_replan_result_service import build_fault_impact_details
+from app.services.resource_replan_service import replan_resource_closure
 from app.services.schedule_advance_notification_service import (
     capture_task_schedule_windows,
     notify_rescheduled_tasks_delayed,
@@ -61,6 +64,16 @@ def shift_faulted_instrument_slots(
         db,
         {slot.task_id for slot in movable_slots},
     )
+    if _can_use_cp_sat_fault_replan(db, affected_task_ids, movable_slots):
+        return _replan_fault_with_cp_sat(
+            db,
+            instrument,
+            affected_task_ids,
+            movable_slots,
+            original_windows,
+            reported_at,
+            estimated_resolved_at,
+        )
     snapshots_by_task = _group_slot_snapshots(movable_slots)
     delete_time_slots_and_refresh(
         db,
@@ -106,6 +119,76 @@ def shift_faulted_instrument_slots(
         f"仪器“{instrument.name}”故障",
     )
     return _impact(details, len(movable_slots), len(details), notified_users, risk_count)
+
+
+def _can_use_cp_sat_fault_replan(
+    db,
+    task_ids: set[int],
+    movable_slots: list[TimeSlot],
+) -> bool:
+    """Only delegate states that scheduler persistence can recreate losslessly."""
+    if not movable_slots or {slot.task_id for slot in movable_slots} != task_ids:
+        return False
+    if any(
+        slot.status != "scheduled"
+        or slot.tier == "frozen"
+        or slot.actual_start is not None
+        or slot.actual_end is not None
+        for slot in movable_slots
+    ):
+        return False
+    tasks = _tasks_by_id(db, task_ids)
+    return len(tasks) == len(task_ids) and all(
+        not task.requires_human or task.assignee_id is not None
+        for task in tasks.values()
+    )
+
+
+def _replan_fault_with_cp_sat(
+    db,
+    instrument: Instrument,
+    task_ids: set[int],
+    movable_slots: list[TimeSlot],
+    original_windows: dict[int, tuple[datetime, datetime]],
+    reported_at: datetime,
+    estimated_resolved_at: datetime,
+) -> dict:
+    context = build_fault_replan_context(
+        db, task_ids, reported_at, estimated_resolved_at,
+    )
+    result = replan_resource_closure(
+        db,
+        seed_task_ids=context["task_ids"],
+        released_at=reported_at,
+        current_project_id=_tasks_by_id(db, task_ids)[min(task_ids)].project_id,
+        earliest_start_bounds=context["earliest_start_bounds"],
+        remaining_duration_minutes=context["remaining_duration_minutes"],
+        planning_start_at=context["planning_start_at"],
+        replaceable_after=context["replaceable_after"],
+        advance_notification_reason=f"仪器“{instrument.name}”故障",
+        commit=False,
+    )
+    if result.get("status") != "ok":
+        raise InstrumentFaultScheduleConflict(
+            result.get("message", "仪器故障后无法完成统一重排"),
+            _impact([], 0, 0, 0, 0),
+        )
+    details = build_fault_impact_details(db, set(original_windows), original_windows)
+    tasks = _tasks_by_id(db, {detail["task_id"] for detail in details})
+    notified_users = notify_fault_rescheduled_assignees(
+        db, instrument, tasks.values(), estimated_resolved_at, len(movable_slots),
+    )
+    risk_details = [detail for detail in details if not detail["can_shift"]]
+    if risk_details:
+        notify_fault_schedule_risks(
+            db, instrument, risk_details, estimated_resolved_at,
+        )
+    notify_rescheduled_tasks_delayed(
+        db, original_windows, f"仪器“{instrument.name}”故障",
+    )
+    return _impact(
+        details, len(movable_slots), len(details), notified_users, len(risk_details),
+    )
 
 
 def fault_affected_tasks(db, fault: InstrumentFault) -> list[dict]:
