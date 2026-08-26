@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.database import Base
 from app.models import Instrument, Project, Task, TaskDependency, TimeSlot, User
 from app.services.task_pause_service import pause_and_switch_task
+from app.services.task_pause_switch_context_service import build_pause_switch_context
 from app.services.task_execution_service import start_task_execution
 
 
@@ -64,6 +65,30 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
         ordinary_slots = self._active_slots(ordinary)
         self.assertLessEqual(source_end, followup_slots[0].plan_start)
         self.assertLessEqual(followup_slots[-1].plan_end, ordinary_slots[0].plan_start)
+        self.assertEqual(source_parent.id, source_followup.parent_id)
+
+    def test_switch_context_exposes_bounded_solver_input_in_queue_order(self):
+        source_parent, source, source_followup = self._task_group(self.project_a, "A")
+        _, target, target_followup = self._task_group(self.project_b, "B")
+        now = datetime.now().replace(second=0, microsecond=0)
+        source_slot = self._slot(source, now - timedelta(hours=1), now + timedelta(hours=2))
+        target_slot = self._slot(target, now + timedelta(hours=2), now + timedelta(hours=5))
+        self._slot(target_followup, now + timedelta(hours=5), now + timedelta(hours=6), False)
+        self._slot(source_followup, now + timedelta(hours=6), now + timedelta(hours=8), False)
+        self.db.add_all([
+            TaskDependency(task_id=target_followup.id, predecessor_id=target.id, dependency_type="continuous_successor"),
+            TaskDependency(task_id=source_followup.id, predecessor_id=source.id, dependency_type="continuous_successor"),
+        ])
+        self.db.commit()
+
+        context = build_pause_switch_context(self.db, source_slot, target_slot, now)
+
+        self.assertEqual(
+            [target.id, target_followup.id, source.id, source_followup.id],
+            [entry.task.id for entry in context.queue],
+        )
+        self.assertEqual(source.id, context.paused_source_task_id)
+        self.assertEqual(set(context.remaining_duration_minutes), context.task_ids)
         self.assertEqual(source_parent.id, source_followup.parent_id)
 
     def _task_group(self, project: Project, suffix: str) -> tuple[Task, Task, Task]:

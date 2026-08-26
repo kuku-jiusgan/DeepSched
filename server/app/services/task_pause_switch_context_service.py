@@ -26,6 +26,22 @@ class PauseSwitchContext:
     replaceable_slots: list[TimeSlot]
     queue: list[PauseSwitchQueueEntry]
 
+    @property
+    def task_ids(self) -> set[int]:
+        return {entry.task.id for entry in self.queue}
+
+    @property
+    def remaining_duration_minutes(self) -> dict[int, int]:
+        return {
+            entry.task.id: entry.duration_minutes
+            for entry in self.queue
+            if entry.duration_minutes > 0
+        }
+
+    @property
+    def paused_source_task_id(self) -> int:
+        return next(entry.task.id for entry in self.queue if entry.status == "paused")
+
 
 def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot, started_at: datetime) -> PauseSwitchContext:
     switch_time = started_at.replace(second=0, microsecond=0)
