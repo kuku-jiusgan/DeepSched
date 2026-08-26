@@ -419,9 +419,19 @@ def _downstream_tasks(db, task: Task) -> list[Task]:
 
 
 def _replace_dependencies(db, task_id: int, predecessor_ids: list[int]) -> None:
+    existing_types = {
+        dependency.predecessor_id: dependency.dependency_type
+        for dependency in db.query(TaskDependency).filter(
+            TaskDependency.task_id == task_id,
+        ).all()
+    }
     db.query(TaskDependency).filter(TaskDependency.task_id == task_id).delete()
     for predecessor_id in sorted(set(predecessor_ids)):
-        db.add(TaskDependency(task_id=task_id, predecessor_id=predecessor_id))
+        db.add(TaskDependency(
+            task_id=task_id,
+            predecessor_id=predecessor_id,
+            dependency_type=existing_types.get(predecessor_id, "predecessor"),
+        ))
 
 
 def _project_tasks(db, project_id: int) -> list[Task]:

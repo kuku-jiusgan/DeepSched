@@ -109,6 +109,36 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
         self.assertEqual("客户方案签批", updated.name)
         self.assertEqual(self.gate_owner.id, updated.assignee_id)
 
+    def test_task_plan_edit_preserves_continuous_successor_dependency_type(self):
+        parent = Task(
+            project_id=self.project.id, name="标准计划", task_type="group",
+        )
+        method = Task(
+            project_id=self.project.id, parent=parent, name="方法开发",
+            task_type="FFKF_001", status="scheduled",
+        )
+        scheme = Task(
+            project_id=self.project.id, parent=parent, name="方案撰写",
+            task_type="QCFA_001", status="scheduled",
+        )
+        self.db.add_all([parent, method, scheme])
+        self.db.flush()
+        self.db.add(TaskDependency(
+            task_id=scheme.id, predecessor_id=method.id,
+            dependency_type="continuous_successor",
+        ))
+        self.db.commit()
+
+        update_task_plan(
+            self.db, scheme.id, TaskUpdate(predecessor_ids=[method.id]),
+        )
+
+        dependency = self.db.query(TaskDependency).filter(
+            TaskDependency.task_id == scheme.id,
+            TaskDependency.predecessor_id == method.id,
+        ).one()
+        self.assertEqual("continuous_successor", dependency.dependency_type)
+
     def test_hours_over_project_limit_rolls_back_whole_batch(self):
         data = ProjectPlanDraftCommitIn(tasks=[
             self._task(-1, "超限任务", "FFKF_001", 101),
