@@ -59,6 +59,7 @@ def _load_status_data(db, instruments, current_slots):
     instrument_ids = [instrument.id for instrument in instruments]
     slots = db.query(TimeSlot).filter(
         TimeSlot.instrument_id.in_(instrument_ids),
+        TimeSlot.lifecycle_status == "active",
         TimeSlot.status.in_(ACTIVE_SLOT_STATUSES | {"completed", "scheduled"}),
     ).all() if instrument_ids else []
     next_slots = {}

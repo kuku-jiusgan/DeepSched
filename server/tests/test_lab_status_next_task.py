@@ -147,6 +147,36 @@ class LabStatusNextTaskTest(unittest.TestCase):
         self.assertEqual("idle", item["status"])
         self.assertEqual("idle", self.db.get(Instrument, instrument.id).status)
 
+    def test_superseded_next_slot_is_not_reported(self):
+        now = datetime.now()
+        project = Project(id=1, name="历史槽项目", code="XM-005")
+        instrument = Instrument(id=1, code="LCMS-01", name="液质联用仪", status="idle")
+        task = Task(id=1, project_id=1, name="有效后续任务", task_type="FFYZ_001", status="scheduled")
+        self.db.add_all([
+            project,
+            instrument,
+            task,
+            TimeSlot(
+                task_id=1, instrument_id=1,
+                plan_start=now + timedelta(hours=1),
+                plan_end=now + timedelta(hours=2),
+                status="scheduled", lifecycle_status="superseded",
+            ),
+            TimeSlot(
+                task_id=1, instrument_id=1,
+                plan_start=now + timedelta(hours=3),
+                plan_end=now + timedelta(hours=4),
+                status="scheduled", lifecycle_status="active",
+            ),
+        ])
+        self.db.commit()
+
+        item = lab_status(self.db)[0]
+
+        self.assertEqual("有效后续任务", item["next_task"])
+        expected_start = now + timedelta(hours=3)
+        self.assertEqual(expected_start.isoformat(), item["next_start"])
+
 
 if __name__ == "__main__":
     unittest.main()
