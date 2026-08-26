@@ -8,12 +8,8 @@ from ortools.sat.python import cp_model
 from app.models import Task, TimeSlot
 from app.core.config import get_settings
 from app.services.schedule_rule_service import get_solver_constraints
-from app.services.schedule_conflict_service import (
-    ScheduleConflictError,
-    ensure_no_dependency_conflicts,
-    ensure_no_human_conflicts,
-    ensure_no_instrument_conflicts,
-)
+from app.services.schedule_conflict_service import ScheduleConflictError
+from app.services.schedule_replan_validation_service import ensure_replan_consistent
 from app.services.scheduler_fixed_slots import (
     add_human_capacity_constraints,
     add_instrument_capacity_constraints,
@@ -745,14 +741,11 @@ class SchedulerService:
         )
 
         try:
-            ensure_no_instrument_conflicts(self.db, schedule_run_id)
-            ensure_no_human_conflicts(self.db, schedule_run_id)
-            ensure_no_dependency_conflicts(self.db, business_task_deps, schedule_run_id)
-            ensure_no_dependency_conflicts(
+            ensure_replan_consistent(
                 self.db,
-                queue_task_deps,
                 schedule_run_id,
-                task_slots_from_run_only=True,
+                business_task_deps,
+                queue_task_deps,
             )
         except ScheduleConflictError as exc:
             if rollback_on_conflict:

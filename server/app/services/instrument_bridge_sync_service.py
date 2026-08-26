@@ -44,6 +44,17 @@ def valid_bridge_reservations(db, query) -> list[InstrumentBridgeReservation]:
     return [reservation for reservation in query.all() if _is_current(db, reservation)]
 
 
+def stale_bridge_reservation_ids(
+    db,
+    schedule_run_id: str | None = None,
+) -> list[int]:
+    """Return derived bridge reservations that no longer match active task slots."""
+    query = db.query(InstrumentBridgeReservation)
+    if schedule_run_id is not None:
+        query = query.filter(InstrumentBridgeReservation.schedule_run_id == schedule_run_id)
+    return [reservation.id for reservation in query.all() if not _is_current(db, reservation)]
+
+
 def invalidate_task_bridge_reservations(db, task_id: int) -> int:
     return db.query(InstrumentBridgeReservation).filter(
         (InstrumentBridgeReservation.task_id == task_id)
