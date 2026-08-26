@@ -334,6 +334,8 @@ def _dependency_ready_time(db, task: Task | None) -> datetime | None:
         return None
     return db.query(TimeSlot.plan_end).filter(
         TimeSlot.task_id.in_(predecessor_ids),
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
     ).order_by(TimeSlot.plan_end.desc()).limit(1).scalar()
 
 
