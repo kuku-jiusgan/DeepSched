@@ -118,6 +118,35 @@ class ResourceReplanServiceTest(unittest.TestCase):
         self.assertEqual([external.id], result["external_conflict_task_ids"])
         self.assertEqual(0, self.db.query(TimeSlot).filter(TimeSlot.task_id == task.id).count())
 
+    def test_bounded_replan_commits_when_window_has_no_external_conflict(self):
+        project = Project(name="受限重排成功项目", code="RESOURCE-BOUNDED-OK")
+        task = Task(project=project, name="窗口内任务", task_type="test", status="scheduled")
+        self.db.add_all([project, task])
+        self.db.commit()
+        start = datetime(2026, 8, 26, 8, 30)
+
+        def generate(**_kwargs):
+            self.db.add(TimeSlot(
+                task_id=task.id, plan_start=start,
+                plan_end=start + timedelta(hours=1), status="scheduled",
+            ))
+            self.db.flush()
+            return {"status": "ok", "schedule_run_id": "bounded-ok-run"}
+
+        with patch(
+            "app.services.resource_replan_service.SchedulerService.generate",
+            side_effect=generate,
+        ), patch(
+            "app.services.resource_replan_service.external_conflict_task_ids",
+            return_value=set(),
+        ):
+            result = replan_resource_closure(
+                self.db, {task.id}, start, project.id, expand_closure=False,
+            )
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual(1, self.db.query(TimeSlot).filter(TimeSlot.task_id == task.id).count())
+
 
 if __name__ == "__main__":
     unittest.main()
