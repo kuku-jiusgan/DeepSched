@@ -16,6 +16,7 @@ from app.services.task_delay_status_service import mark_task_delayed
 from app.services.task_progress_service import planned_task_minutes
 from app.services.schedule_forward_slot_service import has_instrument_unavailable_window
 from app.services.schedule_replan_closure_service import collect_replan_task_ids
+from app.services.resource_replan_service import replan_resource_closure
 from app.services.scheduler_helpers import is_allowed_calendar_day
 from app.domain.errors import DomainNotFoundError, DomainValidationError
 
@@ -63,22 +64,35 @@ def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operato
         raise ScheduleDelayNotFoundError("任务没有可延期的排程时段")
 
     slot = final_slot
-    delay = timedelta(minutes=delay_minutes)
     cutoff = slot.plan_end
     affected_slot_ids = _affected_slot_ids(db, task, slot, cutoff)
     affected_task_ids = _task_ids_for_slots(db, affected_slot_ids)
     affected_task_ids = _expand_resource_closure(db, affected_task_ids, cutoff)
     passive_task_ids = affected_task_ids - {task.id}
     original_windows = capture_task_schedule_windows(db, passive_task_ids)
+    remaining_minutes = _replan_remaining_minutes(db, affected_task_ids, cutoff)
+    remaining_minutes[task.id] = remaining_minutes.get(task.id, 0) + delay_minutes
 
     try:
-        shifted_count = _apply_delay_with_working_hours(
-            db,
-            slot,
-            affected_slot_ids - {slot.id},
-            delay,
-            cutoff,
-        )
+        if _can_use_cp_sat_replan(db, affected_task_ids):
+            result = replan_resource_closure(
+                db,
+                affected_task_ids,
+                cutoff,
+                task.project_id,
+                earliest_start_bounds={task_id: cutoff for task_id in affected_task_ids},
+                remaining_duration_minutes=remaining_minutes,
+                planning_start_at=cutoff,
+                replaceable_after=cutoff,
+                advance_notification_reason=f"任务“{task.name}”延期",
+            )
+            if result.get("status") != "ok":
+                raise ScheduleDelayInvalidError(result.get("message", "延期后的排程失败"))
+            shifted_count = result.get("timeslots_created", 0)
+        else:
+            shifted_count = _apply_delay_with_working_hours(
+                db, slot, affected_slot_ids - {slot.id}, timedelta(minutes=delay_minutes), cutoff,
+            )
     except ScheduleDelayInvalidError:
         _logger.exception(
             "schedule_delay_rejected task_id=%s slot_id=%s project_id=%s "
@@ -104,6 +118,30 @@ def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operato
         "affected_tasks": len(affected_task_ids),
         "reason": clean_reason,
     }
+
+
+def _can_use_cp_sat_replan(db, task_ids: set[int]) -> bool:
+    rows = db.query(Task.requires_human, Task.assignee_id).filter(Task.id.in_(task_ids)).all()
+    return all(not requires_human or assignee_id is not None for requires_human, assignee_id in rows)
+
+
+def _replan_remaining_minutes(
+    db,
+    task_ids: set[int],
+    cutoff: datetime,
+) -> dict[int, int]:
+    rows = db.query(TimeSlot).filter(
+        TimeSlot.task_id.in_(task_ids),
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.status == "scheduled",
+        TimeSlot.actual_start.is_(None),
+        TimeSlot.plan_start >= cutoff,
+    ).all()
+    minutes: dict[int, int] = {}
+    for item in rows:
+        duration = int((item.plan_end - item.plan_start).total_seconds() / 60)
+        minutes[item.task_id] = minutes.get(item.task_id, 0) + duration
+    return minutes
 
 
 def _final_task_slot(db, task_id: int) -> TimeSlot | None:
