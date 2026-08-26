@@ -342,7 +342,10 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
             )
 
     def _only_slot(self, task_id: int) -> TimeSlot:
-        return self.db.query(TimeSlot).filter(TimeSlot.task_id == task_id).one()
+        return self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == task_id,
+            TimeSlot.lifecycle_status == "active",
+        ).one()
 
 
 if __name__ == "__main__":
