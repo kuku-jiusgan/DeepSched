@@ -127,7 +127,7 @@ def _can_use_cp_sat_fault_replan(
     movable_slots: list[TimeSlot],
 ) -> bool:
     """Only delegate states that scheduler persistence can recreate losslessly."""
-    if not movable_slots or {slot.task_id for slot in movable_slots} != task_ids:
+    if not movable_slots or not {slot.task_id for slot in movable_slots} <= task_ids:
         return False
     if any(
         slot.status != "scheduled"
@@ -139,7 +139,16 @@ def _can_use_cp_sat_fault_replan(
         return False
     tasks = _tasks_by_id(db, task_ids)
     return len(tasks) == len(task_ids) and all(
-        not task.requires_human or task.assignee_id is not None
+        task.status in {"pending", "ready", "scheduled", "blocked"}
+        and not task.execution_segments
+        and not any(
+            slot.actual_start is not None or slot.actual_end is not None
+            for slot in task.time_slots
+            if slot.lifecycle_status == "active"
+        )
+        and (
+            not task.requires_human or task.assignee_id is not None
+        )
         for task in tasks.values()
     )
 

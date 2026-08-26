@@ -183,6 +183,47 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         self.assertLess(old_slot.plan_start, reported_at)
         self.assertGreaterEqual(active_slot.plan_start, estimated_resolved_at)
 
+    def test_fault_includes_unslotted_pending_successor_in_cp_sat_closure(self):
+        assignee = User(username="closure", display_name="闭包技术员", role="技术员", is_active=True)
+        project = Project(name="故障闭包项目", code="FAULT-CLOSURE")
+        instrument = Instrument(code="ZBYY-002-0010", name="故障闭包仪器")
+        root_task = Task(
+            project=project, name="仪器任务", task_type="test", status="scheduled",
+            requires_instrument=True, requires_human=True, assignee=assignee,
+        )
+        successor = Task(
+            project=project, name="未排后继任务", task_type="test", status="pending",
+            requires_human=True, assignee=assignee,
+        )
+        self.db.add_all([assignee, project, instrument, root_task, successor])
+        self.db.flush()
+        self.db.add_all([
+            TaskDependency(task_id=successor.id, predecessor_id=root_task.id),
+            TimeSlot(
+                task_id=root_task.id, instrument_id=instrument.id,
+                plan_start=datetime(2026, 8, 10, 8, 30),
+                plan_end=datetime(2026, 8, 10, 10, 30), status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        with patch(
+            "app.services.instrument_fault_schedule_service.replan_resource_closure",
+            return_value={"status": "ok", "schedule_run_id": "closure-test"},
+        ) as replan, patch(
+            "app.services.instrument_fault_schedule_service.build_fault_impact_details",
+            return_value=[],
+        ), patch(
+            "app.services.instrument_fault_notification_service.push_by_rule", return_value=0,
+        ), patch(
+            "app.services.instrument_fault_schedule_service.notify_rescheduled_tasks_delayed",
+        ):
+            shift_faulted_instrument_slots(
+                self.db, instrument, datetime(2026, 8, 10, 8, 45), datetime(2026, 8, 11, 8, 45),
+            )
+
+        self.assertEqual({root_task.id, successor.id}, replan.call_args.kwargs["seed_task_ids"])
+
     def test_fault_cascades_to_dependencies_but_not_manual_same_owner_task(self):
         assignee = User(
             username="analyst",
