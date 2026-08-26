@@ -25,6 +25,7 @@ from app.services.schedule_completion_service import (
     _select_completed_slot,
     complete_task_and_shift,
 )
+from app.services.schedule_rule_service import sync_rules
 from app.services.task_execution_service import TaskExecutionInvalidError
 
 
@@ -55,12 +56,12 @@ class ScheduleCompletionTest(unittest.TestCase):
         ])
 
     def _enable_maintenance_avoidance(self) -> None:
-        self.db.add(ScheduleRule(
-            category="constraint",
-            name="维护窗口避让",
-            code="maintenance_avoidance",
-            is_enabled=True,
-        ))
+        sync_rules(self.db, commit=False)
+        rule = self.db.query(ScheduleRule).filter(
+            ScheduleRule.code == "maintenance_avoidance",
+        ).one()
+        rule.is_enabled = True
+        self.db.flush()
 
     def test_non_instrument_forward_filters_by_assignee(self):
         current = Task(project_id=1, name="current", task_type="test", status="completed", assignee_id=7, requires_human=True)
