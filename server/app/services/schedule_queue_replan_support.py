@@ -26,7 +26,7 @@ def load_forward_shift_candidates(
         .filter(
             Task.status.in_(["pending", "scheduled", "blocked", "waiting_external"]),
             TimeSlot.status == "scheduled",
-            TimeSlot.plan_start >= released_at,
+            TimeSlot.plan_end > released_at,
             TimeSlot.actual_start.is_(None),
             TimeSlot.lifecycle_status == "active",
         )
@@ -48,6 +48,7 @@ def _affected_assignee_ids(db, instrument_id: int | None, assignee_id: int | Non
     rows = db.query(Task.assignee_id).join(TimeSlot, TimeSlot.task_id == Task.id).filter(
         TimeSlot.instrument_id == instrument_id,
         TimeSlot.lifecycle_status == "active",
+        TimeSlot.status.in_(["scheduled", "running", "paused", "blocked", "interrupted"]),
         TimeSlot.plan_end >= released_at,
         Task.assignee_id.isnot(None),
     ).distinct().all()
