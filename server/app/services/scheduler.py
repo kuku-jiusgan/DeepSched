@@ -100,6 +100,7 @@ class SchedulerService:
         replaceable_task_ids: set[int] | None = None,
         replaceable_after: datetime | None = None,
         planning_start_at: datetime | None = None,
+        preserved_status_task_ids: set[int] | None = None,
     ) -> dict:
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -729,6 +730,7 @@ class SchedulerService:
             split_unit_presences=split_unit_presences,
             forecast_task_ids=forecast_task_ids,
             instrument_bridges=instrument_bridges,
+            preserved_status_task_ids=preserved_status_task_ids,
         )
 
         try:

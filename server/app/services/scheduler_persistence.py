@@ -32,6 +32,7 @@ def persist_slots(
     split_unit_presences=None,
     forecast_task_ids: set[int] | None = None,
     instrument_bridges: list[dict] | None = None,
+    preserved_status_task_ids: set[int] | None = None,
 ) -> int:
     now = datetime.now()
     frozen_boundary = natural_day_boundary(now, freeze_days)
@@ -41,10 +42,12 @@ def persist_slots(
     created = 0
     split_unit_presences = split_unit_presences or {}
     forecast_task_ids = forecast_task_ids or set()
+    preserved_status_task_ids = preserved_status_task_ids or set()
     for task in tasks:
         # Active execution slots are managed by task execution services; a new
         # schedule run must not replace their state with scheduled slots.
-        if task.status in ACTIVE_EXECUTION_STATUSES:
+        is_preserved = task.id in preserved_status_task_ids
+        if task.status in ACTIVE_EXECUTION_STATUSES and not is_preserved:
             continue
         assigned_instrument = _assigned_instrument(task, instruments, solver, presences)
         if task.requires_instrument and assigned_instrument is None:
@@ -62,8 +65,10 @@ def persist_slots(
                 confirmed_boundary,
                 schedule_run_id,
                 force_forecast=task.id in forecast_task_ids,
+                status=task.status if is_preserved else "scheduled",
             )
-            task.status = "scheduled"
+            if not is_preserved:
+                task.status = "scheduled"
             continue
 
         start_unit = solver.Value(task_starts[task.id])
@@ -99,6 +104,7 @@ def persist_slots(
                     confirmed_boundary,
                     schedule_run_id,
                     force_forecast=task.id in forecast_task_ids,
+                    status=task.status if is_preserved else "scheduled",
                 )
                 chunk_start = None
 
@@ -116,8 +122,10 @@ def persist_slots(
                 confirmed_boundary,
                 schedule_run_id,
                 force_forecast=task.id in forecast_task_ids,
+                status=task.status if is_preserved else "scheduled",
             )
-        task.status = "scheduled"
+        if not is_preserved:
+            task.status = "scheduled"
 
     rebuild_instrument_bridge_reservations(db, schedule_run_id)
 
@@ -139,6 +147,7 @@ def _persist_split_task_slots(
     confirmed_boundary,
     schedule_run_id,
     force_forecast: bool = False,
+    status: str = "scheduled",
 ) -> int:
     selected_units = sorted(
         unit for (task_id, instrument_id, unit), presence in split_unit_presences.items()
@@ -165,7 +174,7 @@ def _persist_split_task_slots(
             frozen_boundary,
             confirmed_boundary,
             schedule_run_id,
-            force_forecast=force_forecast,
+            force_forecast=force_forecast, status=status,
         )
         chunk_start = unit
         previous_unit = unit
@@ -179,7 +188,7 @@ def _persist_split_task_slots(
         frozen_boundary,
         confirmed_boundary,
         schedule_run_id,
-        force_forecast=force_forecast,
+        force_forecast=force_forecast, status=status,
     )
     return created
 
@@ -204,6 +213,7 @@ def _create_slot(
     confirmed_boundary,
     schedule_run_id,
     force_forecast: bool = False,
+    status: str = "scheduled",
 ) -> int:
     if force_forecast:
         tier = "forecast"
@@ -218,7 +228,7 @@ def _create_slot(
         TimeSlot.instrument_id == (instrument.id if instrument else None),
         TimeSlot.plan_start == start,
         TimeSlot.plan_end == end,
-        TimeSlot.status.in_(["scheduled", "running", "paused", "blocked", "interrupted"]),
+        TimeSlot.status == status,
     ).first()
     if duplicate:
         return 0
@@ -229,7 +239,7 @@ def _create_slot(
             plan_start=start,
             plan_end=end,
             tier=tier,
-            status="scheduled",
+            status=status,
         )
     db.add(slot)
     record_slot_created(db, slot, "replan")

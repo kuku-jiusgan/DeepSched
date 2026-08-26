@@ -22,6 +22,7 @@ def replan_resource_closure(
     replaceable_after: datetime | None = None,
     max_iterations: int = 3,
     expand_closure: bool = True,
+    preserved_status_task_ids: set[int] | None = None,
 ) -> dict:
     """Run the authoritative CP-SAT replan for a resource-impact closure."""
     if not seed_task_ids:
@@ -68,6 +69,7 @@ def replan_resource_closure(
                 replaceable_task_ids=closure_ids,
                 planning_start_at=planning_start_at,
                 replaceable_after=replaceable_after,
+                preserved_status_task_ids=preserved_status_task_ids,
                 rollback_on_conflict=False,
             )
             if last_result.get("status") != "ok":
