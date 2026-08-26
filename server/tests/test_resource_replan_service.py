@@ -87,6 +87,37 @@ class ResourceReplanServiceTest(unittest.TestCase):
         self.db.expire_all()
         self.assertEqual(1, self.db.query(TimeSlot).filter(TimeSlot.task_id == task.id).count())
 
+    def test_bounded_replan_rejects_external_conflict_without_expanding(self):
+        project = Project(name="受限重排项目", code="RESOURCE-BOUNDED")
+        task = Task(project=project, name="窗口内任务", task_type="test", status="scheduled")
+        external = Task(project=project, name="窗口外任务", task_type="test", status="scheduled")
+        self.db.add_all([project, task, external])
+        self.db.commit()
+        start = datetime(2026, 8, 26, 8, 30)
+
+        def generate(**_kwargs):
+            self.db.add(TimeSlot(
+                task_id=task.id, plan_start=start,
+                plan_end=start + timedelta(hours=1), status="scheduled",
+            ))
+            self.db.flush()
+            return {"status": "ok", "schedule_run_id": "bounded-run"}
+
+        with patch(
+            "app.services.resource_replan_service.SchedulerService.generate",
+            side_effect=generate,
+        ), patch(
+            "app.services.resource_replan_service.external_conflict_task_ids",
+            return_value={external.id},
+        ):
+            result = replan_resource_closure(
+                self.db, {task.id}, start, project.id, expand_closure=False,
+            )
+
+        self.assertEqual("error", result["status"])
+        self.assertEqual([external.id], result["external_conflict_task_ids"])
+        self.assertEqual(0, self.db.query(TimeSlot).filter(TimeSlot.task_id == task.id).count())
+
 
 if __name__ == "__main__":
     unittest.main()

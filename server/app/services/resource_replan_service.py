@@ -21,6 +21,7 @@ def replan_resource_closure(
     planning_start_at: datetime | None = None,
     replaceable_after: datetime | None = None,
     max_iterations: int = 3,
+    expand_closure: bool = True,
 ) -> dict:
     """Run the authoritative CP-SAT replan for a resource-impact closure."""
     if not seed_task_ids:
@@ -28,20 +29,20 @@ def replan_resource_closure(
     seed_tasks = db.query(Task).filter(Task.id.in_(seed_task_ids)).all()
     if not seed_tasks:
         raise ValueError("资源重排没有找到种子任务")
-    rows = [(task.assignee_id,) for task in seed_tasks]
-    assignee_ids = {value for (value,) in rows if value is not None}
-    instrument_rows = db.query(TimeSlot.instrument_id).filter(
-        TimeSlot.task_id.in_(seed_task_ids), TimeSlot.instrument_id.isnot(None),
-    ).distinct().all()
-    closure_ids = collect_replan_task_ids(
-        db,
-        set(seed_task_ids),
-        {value for (value,) in instrument_rows},
-        assignee_ids,
-        released_at,
-    )
-    if not closure_ids:
-        closure_ids = set(seed_task_ids)
+    closure_ids = set(seed_task_ids)
+    if expand_closure:
+        rows = [(task.assignee_id,) for task in seed_tasks]
+        assignee_ids = {value for (value,) in rows if value is not None}
+        instrument_rows = db.query(TimeSlot.instrument_id).filter(
+            TimeSlot.task_id.in_(seed_task_ids), TimeSlot.instrument_id.isnot(None),
+        ).distinct().all()
+        closure_ids = collect_replan_task_ids(
+            db,
+            closure_ids,
+            {value for (value,) in instrument_rows},
+            assignee_ids,
+            released_at,
+        ) or closure_ids
     closure_projects = {
         project_id for (project_id,) in db.query(Task.project_id).filter(
             Task.id.in_(closure_ids),
@@ -81,6 +82,13 @@ def replan_resource_closure(
                 if commit:
                     db.commit()
                 return last_result
+            if not expand_closure:
+                savepoint.rollback()
+                return {
+                    "status": "error",
+                    "message": "受限重排窗口与窗口外任务发生资源冲突",
+                    "external_conflict_task_ids": sorted(external_ids),
+                }
             closure_ids.update(external_ids)
             closure_projects.update(
                 project_id for (project_id,) in db.query(Task.project_id).filter(
