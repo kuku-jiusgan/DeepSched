@@ -107,6 +107,13 @@ class TaskOut(BaseModel):
     approval_schedule_status: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
+class ScheduleDiagnosticOut(BaseModel):
+    schedule_run_id: str
+    horizon_start: datetime
+    horizon_end: datetime
+    generated_at: datetime
+    diagnostic: Optional[dict] = None
+
 class ProjectCreate(BaseModel):
     name: str
     code: str

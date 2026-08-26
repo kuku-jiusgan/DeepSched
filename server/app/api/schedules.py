@@ -11,6 +11,7 @@ from app.schemas.schemas import (
     RescheduleRequest, TaskDelayRequest, TaskDelayResponse,
     NightRunRequest, TaskActionResponse, TaskCompleteRequest, TaskCompleteResponse,
     TaskPauseRequest, TaskSwitchCandidateOut,
+    ScheduleDiagnosticOut,
 )
 from app.services.scheduler import SchedulerService
 from app.services.instrument_bridge_sync_service import valid_bridge_reservations
@@ -60,8 +61,20 @@ from app.repositories.workspace_repository import (
 )
 from app.api.users import require_authenticated_user
 from app.api.access import require_management_user, require_slot_operator
+from app.services.schedule_diagnostic_service import get_schedule_diagnostic
 
 router = APIRouter(prefix="/api/v1/schedules", tags=["schedules"])
+
+@router.get("/runs/{schedule_run_id}/diagnostic", response_model=ScheduleDiagnosticOut)
+def schedule_diagnostic(
+    schedule_run_id: str,
+    db: Session = Depends(get_db),
+    _user=Depends(require_management_user),
+):
+    diagnostic = get_schedule_diagnostic(db, schedule_run_id)
+    if diagnostic is None:
+        raise HTTPException(status_code=404, detail="排程运行记录不存在")
+    return diagnostic
 
 @router.get("/timeslots", response_model=List[TimeSlotOut])
 def list_timeslots(
