@@ -69,7 +69,10 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
 
         impact = self._shift(instrument, datetime(2026, 8, 10, 9, 32), datetime(2026, 8, 12, 9, 32))
 
-        shifted_slots = self.db.query(TimeSlot).filter(TimeSlot.task_id == task.id).order_by(TimeSlot.plan_start).all()
+        shifted_slots = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == task.id,
+            TimeSlot.lifecycle_status == "active",
+        ).order_by(TimeSlot.plan_start).all()
         self.assertEqual(1, len(shifted_slots))
         self.assertEqual(datetime(2026, 8, 12, 10, 0), shifted_slots[0].plan_start)
         self.assertEqual("pending", shifted_slots[0].status)
