@@ -5,6 +5,7 @@ from datetime import datetime
 from app.models import Task, TimeSlot
 from app.services.schedule_replan_closure_service import collect_replan_task_ids
 from app.services.scheduler import SchedulerService
+from app.services.resource_replan_conflict_service import external_conflict_task_ids
 
 
 def replan_resource_closure(
@@ -48,7 +49,7 @@ def replan_resource_closure(
     if not closure_projects:
         raise ValueError("资源重排任务没有关联项目")
     current_project_id = current_project_id or seed_tasks[0].project_id
-    return SchedulerService(db).generate(
+    result = SchedulerService(db).generate(
         project_ids=sorted(closure_projects),
         task_ids=sorted(closure_ids),
         current_project_id=current_project_id,
@@ -60,3 +61,8 @@ def replan_resource_closure(
         planning_start_at=planning_start_at,
         replaceable_after=replaceable_after,
     )
+    if result.get("status") == "ok":
+        result["external_conflict_task_ids"] = sorted(
+            external_conflict_task_ids(db, result["schedule_run_id"], closure_ids),
+        )
+    return result
