@@ -1,0 +1,12 @@
+[Unit]
+Description=Run DeepSched MySQL backup twice daily
+
+[Timer]
+OnCalendar=*-*-* 00:00:00
+OnCalendar=*-*-* 12:00:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=deepsched-mysql-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=DeepSched MySQL backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/zoutengda/DeepSched
+ExecStart=/home/zoutengda/DeepSched/scripts/mysql-backup.sh
