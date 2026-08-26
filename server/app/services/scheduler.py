@@ -100,6 +100,8 @@ class SchedulerService:
         preserved_status_task_ids: set[int] | None = None,
         preserved_slot_ids: set[int] | None = None,
         setup_exempt_task_pairs: set[frozenset[int]] | None = None,
+        fixed_instrument_ids: dict[int, int] | None = None,
+        allow_unassigned_human_task_ids: set[int] | None = None,
     ) -> dict:
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -120,8 +122,13 @@ class SchedulerService:
                 self.db,
                 {task.id for task in tasks},
             )
+        allowed_unassigned = allow_unassigned_human_task_ids or set()
         unassigned_human_tasks = [
-            task for task in tasks if task.requires_human and not task.assignee_id
+            task
+            for task in tasks
+            if task.requires_human
+            and not task.assignee_id
+            and task.id not in allowed_unassigned
         ]
         if unassigned_human_tasks:
             names = "、".join(task.name for task in unassigned_human_tasks[:3])
@@ -161,6 +168,23 @@ class SchedulerService:
             instruments,
             constraints["capability_matching"].is_enabled,
         )
+        if fixed_instrument_ids:
+            invalid_task_ids = []
+            for task_id, instrument_id in fixed_instrument_ids.items():
+                candidates = compat.get(task_id)
+                if candidates is None:
+                    continue
+                compat[task_id] = [
+                    instrument for instrument in candidates
+                    if instrument.id == instrument_id
+                ]
+                if not compat[task_id]:
+                    invalid_task_ids.append(task_id)
+            if invalid_task_ids:
+                return {
+                    "status": "error",
+                    "message": "局部重排任务原仪器当前不可用，无法保持原仪器排程",
+                }
         diagnostic_message = unavailable_instrument_message(self.db, tasks, compat)
         if diagnostic_message:
             return {"status": "error", "message": diagnostic_message}

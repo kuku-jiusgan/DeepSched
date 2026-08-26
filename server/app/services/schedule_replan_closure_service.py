@@ -27,8 +27,19 @@ def collect_replan_task_ids(
             (TaskDependency.task_id.in_(task_ids))
             | (TaskDependency.predecessor_id.in_(task_ids))
         ).all() if task_ids else []
-        for task_id, predecessor_id in dependency_rows:
-            task_ids.update((task_id, predecessor_id))
+        dependency_task_ids = {
+            task_id
+            for pair in dependency_rows
+            for task_id in pair
+        }
+        movable_dependency_ids = {
+            task_id
+            for task_id, in db.query(Task.id).filter(
+                Task.id.in_(dependency_task_ids),
+                Task.status.in_(("pending", "scheduled", "blocked", "waiting_external")),
+            ).all()
+        }
+        task_ids.update(movable_dependency_ids)
         if task_ids:
             rows = db.query(Task.id, Task.assignee_id).filter(Task.id.in_(task_ids)).all()
             assignees.update(assignee_id for _, assignee_id in rows if assignee_id is not None)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -9,6 +9,9 @@ from app.models import AuditLog, Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_status_service import refresh_instrument_status
 from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.services.schedule_advance_notification_service import notify_advanced_task_assignees
+from app.services.schedule_early_completion_replan_service import (
+    replan_released_resource_queue,
+)
 from app.services.schedule_forward_slot_service import build_forward_slots
 from app.services.schedule_slot_change_log_service import record_slot_created, supersede_slot
 from app.services.schedule_queue_replan_support import (
@@ -310,173 +313,13 @@ def _forward_shift_instrument_queue(
     assignee_id: int | None = None,
     previous_project_id: int | None = None,
 ) -> dict:
-    candidate_tasks = _load_forward_shift_candidates(db, instrument_id, released_at, assignee_id)
-    if not candidate_tasks:
-        return {
-            "status": "ok",
-            "message": "任务已完成，无后续任务可前移" if instrument_id is None else "任务已完成，该仪器无后续任务可前移",
-            "moved_tasks": 0,
-        }
-
-    working_options = _load_working_options(db, released_at)
-    original_slots = {
-        task.id: (
-            db.query(TimeSlot)
-            .filter(
-                TimeSlot.task_id == task.id,
-                TimeSlot.status == "scheduled",
-                TimeSlot.actual_start.is_(None),
-                TimeSlot.lifecycle_status == "active",
-            )
-            .order_by(TimeSlot.plan_start)
-            .all()
-        )
-        for task in candidate_tasks
-    }
-    slot_snapshots = {
-        task_id: [_snapshot_slot(slot) for slot in slots]
-        for task_id, slots in original_slots.items()
-    }
-    movable_tasks = {
-        task.id: is_movable_task(
-            db,
-            task,
-            instrument_id,
-            released_at,
-            assignee_id if assignee_id is not None else task.assignee_id,
-        )
-        for task in candidate_tasks
-    }
-    movable_prefix = []
-    for task in candidate_tasks:
-        if not movable_tasks[task.id]:
-            break
-        movable_prefix.append(task)
-    candidate_tasks = movable_prefix
-    original_slots = {task.id: original_slots[task.id] for task in candidate_tasks}
-    slot_snapshots = {task_id: slot_snapshots[task_id] for task_id in original_slots}
-
-    for slots in original_slots.values():
-        for slot in slots:
-            slot.lifecycle_status = "superseded"
-    db.flush()
-
-    moved = 0
-    moved_task_details = []
-    cursors: dict[int | None, datetime] = {}
-    project_cursors = {instrument_id: previous_project_id}
-    setup_minutes = cross_project_setup_minutes(db)
-    for task in candidate_tasks:
-        snapshots = slot_snapshots[task.id]
-        if not snapshots:
-            continue
-
-        original_start = snapshots[0]["plan_start"]
-        original_end = snapshots[-1]["plan_end"]
-        duration_minutes = replan_duration_minutes(task, original_slots[task.id])
-        slot_instrument_id = snapshots[0]["instrument_id"]
-        slot_cursor = cursors.get(slot_instrument_id, released_at)
-        prior_project_id = project_cursors.get(slot_instrument_id)
-        if (
-            slot_instrument_id is not None
-            and prior_project_id is not None
-            and prior_project_id != task.project_id
-        ):
-            slot_cursor += timedelta(minutes=setup_minutes)
-        earliest_start = max(
-            slot_cursor,
-            dependency_ready_time(db, task, released_at),
-            task.earliest_start or released_at,
-            task.project.start_date if task.project and task.project.start_date else released_at,
-        )
-        new_slots = build_forward_slots(
-            db,
-            task,
-            slot_instrument_id,
-            duration_minutes,
-            earliest_start,
-            working_options,
-        )
-
-        dependency_ready = dependency_ready_time(db, task, released_at)
-        if new_slots and new_slots[0][0] < dependency_ready:
-            new_slots = []
-
-        if not new_slots or new_slots[0][0] >= original_start:
-            _restore_active_slots(original_slots[task.id])
-            cursors[slot_instrument_id] = max(slot_cursor, original_end)
-            project_cursors[slot_instrument_id] = task.project_id
-            continue
-
-        generated_minutes = sum(
-            int((end - start).total_seconds() / 60)
-            for start, end in new_slots
-        )
-        if generated_minutes != duration_minutes:
-            raise ScheduleDelayInvalidError(
-                f"任务【{task.name}】重排工时不守恒：应为 {duration_minutes} 分钟，"
-                f"实际生成 {generated_minutes} 分钟"
-            )
-
-        created_slots = []
-        for start, end in new_slots:
-            new_slot = TimeSlot(
-                task_id=task.id,
-                schedule_run_id=snapshots[0].get("schedule_run_id", "legacy"),
-                instrument_id=slot_instrument_id,
-                plan_start=start,
-                plan_end=end,
-                tier=tier_for_start(db, start),
-                status="scheduled",
-            )
-            db.add(new_slot)
-            created_slots.append(new_slot)
-        db.flush()
-        for old_slot in original_slots[task.id]:
-            old_slot.lifecycle_status = "active"
-            supersede_slot(db, old_slot, "任务提前完成后局部重排")
-        for new_slot in created_slots:
-            record_slot_created(db, new_slot, "early_completion_replan")
-        cursors[slot_instrument_id] = new_slots[-1][1]
-        project_cursors[slot_instrument_id] = task.project_id
-        moved += 1
-        moved_task_details.append({
-            "task_id": task.id,
-            "original_start": original_start,
-            "original_end": original_end,
-            "new_start": new_slots[0][0],
-            "new_end": new_slots[-1][1],
-        })
-
-    db.flush()
-    rebuild_instrument_bridge_reservations(db)
-    return {
-        "status": "ok",
-        "message": (
-            f"任务已完成，按责任人前移 {moved} 个任务"
-            if instrument_id is None
-            else f"任务已完成，该仪器跨项目前移 {moved} 个任务"
-        ),
-        "moved_tasks": moved,
-        "moved_task_details": moved_task_details,
-    }
-
-
-def _snapshot_slot(slot: TimeSlot) -> dict:
-    return {
-        "task_id": slot.task_id,
-        "schedule_run_id": slot.schedule_run_id,
-        "instrument_id": slot.instrument_id,
-        "plan_start": slot.plan_start,
-        "plan_end": slot.plan_end,
-        "tier": slot.tier,
-        "status": slot.status,
-    }
-
-
-def _restore_active_slots(slots: list[TimeSlot]) -> None:
-    for slot in slots:
-        slot.lifecycle_status = "active"
+    return replan_released_resource_queue(
+        db,
+        instrument_id,
+        released_at,
+        assignee_id,
+        previous_project_id,
+    )
 
 
 def _active_task_plan_end(db: Session, task_id: int) -> datetime:

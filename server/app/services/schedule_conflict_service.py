@@ -107,6 +107,12 @@ def _in_run(first: TimeSlot, second: TimeSlot, schedule_run_id: str | None) -> b
 
 
 def _effective_slot_range(slot: TimeSlot):
+    # A completed historical segment without an actual end is not a resource
+    # reservation and must not extend a completed predecessor into the future.
+    if slot.status == "completed":
+        if slot.actual_start is None or slot.actual_end is None:
+            return None
+        return slot.actual_start, slot.actual_end
     if slot.actual_start:
         if slot.plan_start > datetime.now():
             return _planned_slot_range(slot)

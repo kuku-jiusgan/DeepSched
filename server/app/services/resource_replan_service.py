@@ -27,6 +27,9 @@ def replan_resource_closure(
     additional_dependencies: list[tuple[int, int]] | None = None,
     preserved_slot_ids: set[int] | None = None,
     setup_exempt_task_pairs: set[frozenset[int]] | None = None,
+    fixed_instrument_ids: dict[int, int] | None = None,
+    allow_unassigned_human_task_ids: set[int] | None = None,
+    emit_advance_notifications: bool = True,
     solver_time_limit: float = 30.0,
 ) -> dict:
     """Run the authoritative CP-SAT replan for a resource-impact closure."""
@@ -79,6 +82,9 @@ def replan_resource_closure(
                 additional_dependencies=additional_dependencies,
                 preserved_slot_ids=preserved_slot_ids,
                 setup_exempt_task_pairs=setup_exempt_task_pairs,
+                fixed_instrument_ids=fixed_instrument_ids,
+                allow_unassigned_human_task_ids=allow_unassigned_human_task_ids,
+                emit_advance_notifications=emit_advance_notifications,
                 solver_time_limit=solver_time_limit,
                 rollback_on_conflict=False,
             )
