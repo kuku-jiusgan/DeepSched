@@ -494,6 +494,7 @@ class ScheduleCalendarSnapshot(Base):
     calendar_days = Column(JSON, nullable=False)
     maintenance_windows = Column(JSON, nullable=False)
     rule_versions = Column(JSON, nullable=False)
+    replan_diagnostic = Column(JSON)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
 

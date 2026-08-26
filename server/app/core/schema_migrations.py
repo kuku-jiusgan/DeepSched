@@ -286,6 +286,16 @@ def ensure_runtime_schema(engine) -> None:
         for index in TimeSlot.__table__.indexes:
             index.create(bind=engine, checkfirst=True)
 
+    if "schedule_calendar_snapshot" in table_names:
+        snapshot_columns = {
+            column["name"] for column in inspector.get_columns("schedule_calendar_snapshot")
+        }
+        if "replan_diagnostic" not in snapshot_columns:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "ALTER TABLE schedule_calendar_snapshot ADD COLUMN replan_diagnostic JSON"
+                ))
+
     if "alert_rule" in table_names:
         alert_columns = {column["name"] for column in inspector.get_columns("alert_rule")}
         with engine.begin() as connection:

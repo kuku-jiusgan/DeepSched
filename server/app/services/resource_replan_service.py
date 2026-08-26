@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 
 from app.models import Task, TimeSlot
+from app.models import ScheduleCalendarSnapshot
 from app.services.schedule_replan_closure_service import collect_replan_task_ids
 from app.services.scheduler import SchedulerService
 from app.services.resource_replan_conflict_service import external_conflict_task_ids
@@ -116,7 +117,7 @@ def replan_resource_closure(
             iteration_diagnostic.update(_solver_result_diagnostic(last_result))
             if last_result.get("status") != "ok":
                 savepoint.rollback()
-                return _finish_replan_result(last_result, diagnostic)
+                return _finish_replan_result(db, last_result, diagnostic)
             external_ids = external_conflict_task_ids(
                 db, last_result["schedule_run_id"], closure_ids,
             )
@@ -126,10 +127,10 @@ def replan_resource_closure(
                 savepoint.commit()
                 if commit:
                     db.commit()
-                return _finish_replan_result(last_result, diagnostic)
+                return _finish_replan_result(db, last_result, diagnostic)
             if not expand_closure:
                 savepoint.rollback()
-                return _finish_replan_result({
+                return _finish_replan_result(db, {
                     "status": "error",
                     "message": "受限重排窗口与窗口外任务发生资源冲突",
                     "external_conflict_task_ids": sorted(external_ids),
@@ -146,7 +147,7 @@ def replan_resource_closure(
     savepoint.rollback()
     last_result["status"] = "error"
     last_result["message"] = "资源重排在限定次数内未消除外部冲突"
-    return _finish_replan_result(last_result, diagnostic)
+    return _finish_replan_result(db, last_result, diagnostic)
 
 
 def _solver_result_diagnostic(result: dict) -> dict:
@@ -155,9 +156,17 @@ def _solver_result_diagnostic(result: dict) -> dict:
     return {key: result[key] for key in keys if key in result}
 
 
-def _finish_replan_result(result: dict, diagnostic: dict) -> dict:
+def _finish_replan_result(db, result: dict, diagnostic: dict) -> dict:
     diagnostic["final_closure_task_ids"] = diagnostic["iterations"][-1]["closure_task_ids"]
     result["replan_diagnostic"] = diagnostic
+    schedule_run_id = result.get("schedule_run_id")
+    if schedule_run_id:
+        snapshot = db.query(ScheduleCalendarSnapshot).filter(
+            ScheduleCalendarSnapshot.schedule_run_id == schedule_run_id,
+        ).first()
+        if snapshot is not None:
+            snapshot.replan_diagnostic = diagnostic
+            db.flush()
     _logger.info(
         "resource_replan status=%s seed_task_ids=%s final_closure_task_ids=%s iterations=%s",
         result.get("status"),
