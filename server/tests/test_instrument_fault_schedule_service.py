@@ -11,6 +11,7 @@ from app.services.instrument_fault_service import list_open_faults, resolve_faul
 from app.services.instrument_fault_schedule_service import shift_faulted_instrument_slots
 from app.services.fault_replan_context_service import build_fault_replan_context
 from app.services.fault_replan_result_service import build_fault_impact_details
+from app.services.scheduler import _supersede_replaceable_slots
 
 
 def working_options(_db, start: datetime) -> dict:
@@ -62,6 +63,25 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         )
         self.assertEqual("2026-08-11T08:30:00", details[0]["shifted_start"])
         self.assertFalse(details[0]["can_shift"])
+
+    def test_replan_supersedes_unstarted_slot_crossing_boundary(self):
+        task = Task(project_id=1, name="跨边界计划任务", task_type="test", status="scheduled")
+        self.db.add(task)
+        self.db.flush()
+        slot = TimeSlot(
+            task_id=task.id,
+            plan_start=datetime(2026, 8, 10, 8, 30),
+            plan_end=datetime(2026, 8, 10, 10, 30),
+            status="scheduled",
+        )
+        self.db.add(slot)
+        self.db.flush()
+
+        _supersede_replaceable_slots(
+            self.db, {task.id}, "CP-SAT局部重排", datetime(2026, 8, 10, 9, 0),
+        )
+
+        self.assertEqual("superseded", slot.lifecycle_status)
 
     def test_fault_shifts_pending_slots_on_faulted_instrument(self):
         project = Project(

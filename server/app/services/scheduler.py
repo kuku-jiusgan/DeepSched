@@ -848,7 +848,9 @@ def _supersede_replaceable_slots(
         TimeSlot.tier != "frozen",
     ).all()
     if replaceable_after is not None:
-        slots = [slot for slot in slots if slot.plan_start >= replaceable_after]
+        # A slot crossing the replan boundary still reserves future capacity.
+        # Keep only slots wholly finished before that boundary.
+        slots = [slot for slot in slots if slot.plan_end > replaceable_after]
     for slot in slots:
         supersede_slot(db, slot, reason)
     db.flush()
