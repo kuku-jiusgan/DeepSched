@@ -15,6 +15,13 @@ def load_dashboard_snapshot(db, cache_key: str):
     return snapshot.payload if snapshot else None
 
 
+def load_latest_dashboard_snapshot(db, cache_key: str):
+    snapshot = db.query(DashboardStatsSnapshot).filter(
+        DashboardStatsSnapshot.cache_key == cache_key,
+    ).first()
+    return snapshot.payload if snapshot else None
+
+
 def save_dashboard_snapshot(db, cache_key: str, payload: dict) -> None:
     snapshot = db.query(DashboardStatsSnapshot).filter(
         DashboardStatsSnapshot.cache_key == cache_key,

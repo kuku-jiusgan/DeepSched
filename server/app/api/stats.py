@@ -18,7 +18,11 @@ from app.api.users import auth_token, get_current_user
 from app.schemas.project_progress_schemas import ProjectProgressList
 from app.services.project_progress_service import list_project_progress
 from app.services.lab_status_snapshot_service import load_lab_status_snapshot
-from app.services.dashboard_snapshot_service import load_dashboard_snapshot, save_dashboard_snapshot
+from app.services.dashboard_snapshot_service import (
+    load_dashboard_snapshot,
+    load_latest_dashboard_snapshot,
+    save_dashboard_snapshot,
+)
 
 router = APIRouter(prefix="/api/v1/stats", tags=["stats"])
 _DASHBOARD_CACHE_TTL_SECONDS = 60.0
@@ -31,16 +35,19 @@ def dashboard(
     start_date: datetime | None = Query(None),
     end_date: datetime | None = Query(None),
     db: Session = Depends(get_db),
+    _force_refresh: bool = False,
 ):
     settings = get_settings()
     window_start, window_end = _stats_window(start_date, end_date, settings)
     snapshot_key = _dashboard_snapshot_key(window_start, window_end)
     snapshot_payload = load_dashboard_snapshot(db, snapshot_key)
+    if snapshot_payload is None and not _force_refresh:
+        snapshot_payload = load_latest_dashboard_snapshot(db, snapshot_key)
     if snapshot_payload:
         return DashboardData.model_validate(snapshot_payload)
     cache_enabled = db.bind.dialect.name != "sqlite"
     cache_key = (id(db.bind), window_start, window_end)
-    if cache_enabled:
+    if cache_enabled and not _force_refresh:
         with _dashboard_cache_lock:
             cached = _dashboard_cache.get(cache_key)
             if cached and monotonic() - cached[0] < _DASHBOARD_CACHE_TTL_SECONDS:

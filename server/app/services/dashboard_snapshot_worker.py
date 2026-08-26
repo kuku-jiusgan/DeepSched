@@ -44,7 +44,7 @@ def _refresh_loop() -> None:
             if acquire_worker_lease(db, LEASE_NAME, _worker_owner_id, LEASE_SECONDS):
                 from app.api.stats import dashboard
 
-                dashboard(start_date=None, end_date=None, db=db)
+                dashboard(start_date=None, end_date=None, db=db, _force_refresh=True)
         except Exception:
             db.rollback()
             _logger.exception("仪表盘统计快照后台刷新失败")
