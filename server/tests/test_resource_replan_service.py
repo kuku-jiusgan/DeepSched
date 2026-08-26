@@ -57,6 +57,36 @@ class ResourceReplanServiceTest(unittest.TestCase):
             self.db.query(TimeSlot).filter(TimeSlot.task_id == first_task.id).count(),
         )
 
+    def test_commit_true_commits_only_after_successful_closure(self):
+        project = Project(name="提交重排项目", code="RESOURCE-COMMIT")
+        task = Task(project=project, name="提交任务", task_type="test", status="scheduled")
+        self.db.add_all([project, task])
+        self.db.commit()
+        start = datetime(2026, 8, 26, 8, 30)
+
+        def generate(**_kwargs):
+            self.db.add(TimeSlot(
+                task_id=task.id, plan_start=start,
+                plan_end=start + timedelta(hours=1), status="scheduled",
+            ))
+            self.db.flush()
+            return {"status": "ok", "schedule_run_id": "commit-run"}
+
+        with patch(
+            "app.services.resource_replan_service.SchedulerService.generate",
+            side_effect=generate,
+        ), patch(
+            "app.services.resource_replan_service.external_conflict_task_ids",
+            return_value=set(),
+        ):
+            result = replan_resource_closure(
+                self.db, {task.id}, start, project.id, commit=True,
+            )
+
+        self.assertEqual("ok", result["status"])
+        self.db.expire_all()
+        self.assertEqual(1, self.db.query(TimeSlot).filter(TimeSlot.task_id == task.id).count())
+
 
 if __name__ == "__main__":
     unittest.main()

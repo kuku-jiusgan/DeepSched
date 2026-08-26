@@ -60,7 +60,9 @@ def replan_resource_closure(
                 current_project_id=current_project_id,
                 earliest_start_bounds=earliest_start_bounds,
                 advance_notification_reason=advance_notification_reason,
-                commit=commit,
+                # The outer service owns the transaction so the savepoint can
+                # roll back every partial iteration, even for commit=True.
+                commit=False,
                 remaining_duration_minutes=remaining_duration_minutes,
                 replaceable_task_ids=closure_ids,
                 planning_start_at=planning_start_at,
@@ -76,6 +78,8 @@ def replan_resource_closure(
             last_result["external_conflict_task_ids"] = sorted(external_ids)
             if not external_ids:
                 savepoint.commit()
+                if commit:
+                    db.commit()
                 return last_result
             closure_ids.update(external_ids)
             closure_projects.update(
