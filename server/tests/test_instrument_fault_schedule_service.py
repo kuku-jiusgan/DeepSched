@@ -9,6 +9,7 @@ from app.core.database import Base
 from app.models import AuditLog, Instrument, InstrumentFault, Project, Task, TaskDependency, TaskExecutionSegment, TimeSlot, User
 from app.services.instrument_fault_service import list_open_faults, resolve_fault
 from app.services.instrument_fault_schedule_service import shift_faulted_instrument_slots
+from app.services.fault_replan_context_service import build_fault_replan_context
 
 
 def working_options(_db, start: datetime) -> dict:
@@ -30,6 +31,20 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
 
     def tearDown(self):
         self.db.close()
+
+    def test_fault_replan_context_uses_active_future_slots(self):
+        task = Task(project_id=1, name="上下文任务", task_type="test", status="scheduled")
+        self.db.add(task)
+        self.db.flush()
+        reported_at = datetime(2026, 8, 10, 9, 0)
+        self.db.add_all([
+            TimeSlot(task_id=task.id, plan_start=reported_at, plan_end=datetime(2026, 8, 10, 10, 0), status="scheduled"),
+            TimeSlot(task_id=task.id, plan_start=reported_at, plan_end=datetime(2026, 8, 10, 11, 0), status="scheduled", lifecycle_status="superseded"),
+        ])
+        self.db.flush()
+        context = build_fault_replan_context(self.db, {task.id}, reported_at, datetime(2026, 8, 12, 9, 0))
+        self.assertEqual({task.id}, context["task_ids"])
+        self.assertEqual(60, context["remaining_duration_minutes"][task.id])
 
     def test_fault_shifts_pending_slots_on_faulted_instrument(self):
         project = Project(
