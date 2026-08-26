@@ -51,33 +51,42 @@ def replan_resource_closure(
         raise ValueError("资源重排任务没有关联项目")
     current_project_id = current_project_id or seed_tasks[0].project_id
     last_result = None
-    for _ in range(max(1, max_iterations)):
-        last_result = SchedulerService(db).generate(
-            project_ids=sorted(closure_projects),
-            task_ids=sorted(closure_ids),
-            current_project_id=current_project_id,
-            earliest_start_bounds=earliest_start_bounds,
-            advance_notification_reason=advance_notification_reason,
-            commit=commit,
-            remaining_duration_minutes=remaining_duration_minutes,
-            replaceable_task_ids=closure_ids,
-            planning_start_at=planning_start_at,
-            replaceable_after=replaceable_after,
-        )
-        if last_result.get("status") != "ok":
-            return last_result
-        external_ids = external_conflict_task_ids(
-            db, last_result["schedule_run_id"], closure_ids,
-        )
-        last_result["external_conflict_task_ids"] = sorted(external_ids)
-        if not external_ids:
-            return last_result
-        closure_ids.update(external_ids)
-        closure_projects.update(
-            project_id for (project_id,) in db.query(Task.project_id).filter(
-                Task.id.in_(external_ids),
-            ).all()
-        )
+    savepoint = db.begin_nested()
+    try:
+        for _ in range(max(1, max_iterations)):
+            last_result = SchedulerService(db).generate(
+                project_ids=sorted(closure_projects),
+                task_ids=sorted(closure_ids),
+                current_project_id=current_project_id,
+                earliest_start_bounds=earliest_start_bounds,
+                advance_notification_reason=advance_notification_reason,
+                commit=commit,
+                remaining_duration_minutes=remaining_duration_minutes,
+                replaceable_task_ids=closure_ids,
+                planning_start_at=planning_start_at,
+                replaceable_after=replaceable_after,
+                rollback_on_conflict=False,
+            )
+            if last_result.get("status") != "ok":
+                savepoint.rollback()
+                return last_result
+            external_ids = external_conflict_task_ids(
+                db, last_result["schedule_run_id"], closure_ids,
+            )
+            last_result["external_conflict_task_ids"] = sorted(external_ids)
+            if not external_ids:
+                savepoint.commit()
+                return last_result
+            closure_ids.update(external_ids)
+            closure_projects.update(
+                project_id for (project_id,) in db.query(Task.project_id).filter(
+                    Task.id.in_(external_ids),
+                ).all()
+            )
+    except Exception:
+        savepoint.rollback()
+        raise
+    savepoint.rollback()
     last_result["status"] = "error"
     last_result["message"] = "资源重排在限定次数内未消除外部冲突"
     return last_result
