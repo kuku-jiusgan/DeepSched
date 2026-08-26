@@ -17,6 +17,10 @@ from app.services.task_progress_service import planned_task_minutes
 from app.services.schedule_forward_slot_service import has_instrument_unavailable_window
 from app.services.schedule_replan_closure_service import collect_replan_task_ids
 from app.services.resource_replan_service import replan_resource_closure
+from app.services.manual_delay_replan_eligibility_service import (
+    can_use_cp_sat_manual_delay_replan,
+    manual_delay_replan_fallback_reasons,
+)
 from app.services.scheduler_helpers import is_allowed_calendar_day
 from app.domain.errors import DomainNotFoundError, DomainValidationError
 
@@ -74,7 +78,7 @@ def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operato
     remaining_minutes[task.id] = remaining_minutes.get(task.id, 0) + delay_minutes
 
     try:
-        if _can_use_cp_sat_replan(db, affected_task_ids):
+        if can_use_cp_sat_manual_delay_replan(db, affected_task_ids):
             result = replan_resource_closure(
                 db,
                 affected_task_ids,
@@ -90,6 +94,12 @@ def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operato
                 raise ScheduleDelayInvalidError(result.get("message", "延期后的排程失败"))
             shifted_count = result.get("timeslots_created", 0)
         else:
+            _logger.warning(
+                "manual_delay_legacy_replan delayed_task_id=%s affected_task_ids=%s reasons=%s",
+                task.id,
+                sorted(affected_task_ids),
+                ",".join(manual_delay_replan_fallback_reasons(db, affected_task_ids)),
+            )
             shifted_count = _apply_delay_with_working_hours(
                 db, slot, affected_slot_ids - {slot.id}, timedelta(minutes=delay_minutes), cutoff,
             )
@@ -118,11 +128,6 @@ def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operato
         "affected_tasks": len(affected_task_ids),
         "reason": clean_reason,
     }
-
-
-def _can_use_cp_sat_replan(db, task_ids: set[int]) -> bool:
-    rows = db.query(Task.requires_human, Task.assignee_id).filter(Task.id.in_(task_ids)).all()
-    return all(not requires_human or assignee_id is not None for requires_human, assignee_id in rows)
 
 
 def _replan_remaining_minutes(

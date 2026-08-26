@@ -12,6 +12,10 @@ from app.services.schedule_delay_service import (
     ScheduleDelayInvalidError,
     report_task_delay as report_task_delay_service,
 )
+from app.services.manual_delay_replan_eligibility_service import (
+    can_use_cp_sat_manual_delay_replan,
+    manual_delay_replan_fallback_reasons,
+)
 from app.api.transactions import execute_transaction
 from app.api.schedules import delay_task
 from app.schemas.schemas import TaskDelayRequest
@@ -113,6 +117,33 @@ class ScheduleDelayTest(unittest.TestCase):
         self.assertEqual("delayed", task.delay_status)
         self.assertTrue(delayed_slots)
         self.assertEqual({"paused"}, {item.status for item in delayed_slots})
+
+    def test_cp_sat_manual_delay_requires_rebuildable_affected_tasks(self):
+        project = Project(name="延期重排诊断项目", code="DELAY-DIAGNOSTIC")
+        task = Task(
+            project=project, name="暂停历史任务", task_type="test",
+            status="paused", requires_human=True, assignee_id=None,
+        )
+        self.db.add_all([project, task])
+        self.db.flush()
+        self.db.add(TimeSlot(
+            task_id=task.id, instrument_id=1,
+            plan_start=datetime(2026, 7, 13, 8, 30),
+            plan_end=datetime(2026, 7, 13, 9, 0),
+            status="paused", actual_start=datetime(2026, 7, 13, 8, 30),
+        ))
+        self.db.flush()
+
+        self.assertFalse(can_use_cp_sat_manual_delay_replan(self.db, {task.id}))
+        self.assertEqual(
+            [
+                "actual_execution_slot",
+                "missing_assignee",
+                "non_rebuildable_task_status",
+                "non_scheduled_slot",
+            ],
+            manual_delay_replan_fallback_reasons(self.db, {task.id}),
+        )
 
     def test_following_task_delay_respects_working_hours(self):
         delayed_task = Task(project_id=1, name="delayed", task_type="test", status="scheduled")
