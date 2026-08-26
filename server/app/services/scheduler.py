@@ -460,6 +460,7 @@ class SchedulerService:
             constraints["non_overlap"].is_enabled,
             CROSS_PROJECT_SETUP_UNITS,
             fixed_bridge_reservations,
+            maint_windows,
         )
         add_human_capacity_constraints(
             model,

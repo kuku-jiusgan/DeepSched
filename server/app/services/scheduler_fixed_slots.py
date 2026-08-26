@@ -154,9 +154,11 @@ def add_instrument_capacity_constraints(
     non_overlap_enabled: bool,
     setup_units: int,
     fixed_bridge_reservations: list[InstrumentBridgeReservation] | None = None,
+    maintenance_windows: list[tuple[int, tuple[int, int]]] | None = None,
 ) -> None:
     fixed_by_instrument: dict[int, list[tuple[TimeSlot | InstrumentBridgeReservation, int, int]]] = defaultdict(list)
     fixed_bridge_reservations = fixed_bridge_reservations or []
+    maintenance_windows = maintenance_windows or []
     for slot in [*fixed_slots, *fixed_bridge_reservations]:
         if slot.instrument_id is None:
             continue
@@ -176,6 +178,19 @@ def add_instrument_capacity_constraints(
     task_by_id = {task.id: task for task in tasks}
     for instrument in instruments:
         instrument_intervals = list(capacity_intervals.get(instrument.id, []))
+        for index, (start_unit, end_unit) in enumerate(
+            window
+            for instrument_id, window in maintenance_windows
+            if instrument_id == instrument.id
+        ):
+            if end_unit <= start_unit:
+                continue
+            instrument_intervals.append(model.NewIntervalVar(
+                start_unit,
+                end_unit - start_unit,
+                end_unit,
+                f"maintenance_window_i{instrument.id}_{index}",
+            ))
         for slot, start_unit, end_unit in fixed_by_instrument.get(instrument.id, []):
             instrument_intervals.append(model.NewIntervalVar(
                 start_unit,

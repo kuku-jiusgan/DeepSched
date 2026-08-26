@@ -204,11 +204,12 @@ def build_maintenance_windows(
                     (instrument.id, (max(0, start_unit), end_unit))
                 )
         for fault in getattr(instrument, "faults", []) or []:
-            if fault.status != "open" or not fault.estimated_resolved_at:
+            unavailable_until = _fault_unavailable_until(fault)
+            if unavailable_until is None:
                 continue
             start_time = max(horizon_start, fault.reported_at or horizon_start)
             start_unit = datetime_to_units(start_time, horizon_start)
-            end_unit = datetime_to_units(fault.estimated_resolved_at, horizon_start)
+            end_unit = datetime_to_units(unavailable_until, horizon_start)
             if end_unit > 0:
                 windows.append(
                     (instrument.id, (max(0, start_unit), end_unit))
@@ -216,6 +217,14 @@ def build_maintenance_windows(
         if instrument.status == "fault" and not _has_open_fault_repair_time(instrument):
             windows.append((instrument.id, (0, HORIZON_DAYS * 24 * 60 // TIME_UNIT_MINUTES)))
     return windows
+
+
+def _fault_unavailable_until(fault) -> datetime | None:
+    if fault.status == "open":
+        return fault.estimated_resolved_at
+    if fault.status == "resolved":
+        return fault.resolved_at
+    return None
 
 
 def _has_open_fault_repair_time(instrument) -> bool:

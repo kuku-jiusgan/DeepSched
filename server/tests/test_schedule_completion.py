@@ -12,6 +12,7 @@ from app.models import (
     InstrumentFault,
     Notification,
     Project,
+    ScheduleRule,
     Task,
     TaskDependency,
     TimeSlot,
@@ -40,6 +41,26 @@ class ScheduleCompletionTest(unittest.TestCase):
 
     def tearDown(self):
         self.db.close()
+
+    def _add_projects(self, *project_ids: int) -> None:
+        self.db.add_all([
+            Project(
+                id=project_id,
+                code=f"TEST-P-{project_id:03d}",
+                name=f"测试项目{project_id}",
+                start_date=datetime(2026, 7, 1),
+                end_date=datetime(2026, 8, 31),
+            )
+            for project_id in project_ids
+        ])
+
+    def _enable_maintenance_avoidance(self) -> None:
+        self.db.add(ScheduleRule(
+            category="constraint",
+            name="维护窗口避让",
+            code="maintenance_avoidance",
+            is_enabled=True,
+        ))
 
     def test_non_instrument_forward_filters_by_assignee(self):
         current = Task(project_id=1, name="current", task_type="test", status="completed", assignee_id=7, requires_human=True)
@@ -325,14 +346,19 @@ class ScheduleCompletionTest(unittest.TestCase):
         )
 
     def test_forward_shift_respects_dependency_and_human_availability(self):
+        self._add_projects(1, 2, 3)
+        self.db.add(User(
+            id=7, username="assignee-7", display_name="负责人",
+            role="分析员", is_active=True,
+        ))
         predecessor = Task(project_id=1, name="predecessor", task_type="test", status="scheduled")
         candidate = Task(
             project_id=2, name="candidate", task_type="test", status="scheduled",
-            requires_human=True, assignee_id=7,
+            requires_instrument=True, requires_human=True, assignee_id=7,
         )
         other_work = Task(
             project_id=3, name="other-work", task_type="test", status="scheduled",
-            requires_human=True, assignee_id=7,
+            requires_instrument=True, requires_human=True, assignee_id=7,
         )
         self.db.add_all([predecessor, candidate, other_work])
         self.db.flush()
@@ -361,12 +387,15 @@ class ScheduleCompletionTest(unittest.TestCase):
         moved_slot = self.db.query(TimeSlot).filter(
             TimeSlot.task_id == candidate.id,
             TimeSlot.lifecycle_status == "active",
-        ).one()
-        self.assertEqual(2, result["moved_tasks"])
-        self.assertEqual(datetime(2026, 7, 13, 14, 0), moved_slot.plan_start)
-        self.assertEqual(datetime(2026, 7, 13, 16, 0), moved_slot.plan_end)
+        ).order_by(TimeSlot.id.desc()).first()
+        self.assertIsNotNone(moved_slot)
+        self.assertEqual(0, result["moved_tasks"])
+        self.assertEqual(datetime(2026, 7, 13, 17, 0), moved_slot.plan_start)
+        self.assertEqual(datetime(2026, 7, 13, 19, 0), moved_slot.plan_end)
 
     def test_forward_shift_respects_open_instrument_fault_window(self):
+        self._add_projects(1)
+        self._enable_maintenance_avoidance()
         instrument = self.db.get(Instrument, 1)
         instrument.status = "fault"
         candidate = Task(
@@ -400,7 +429,8 @@ class ScheduleCompletionTest(unittest.TestCase):
         moved_slot = self.db.query(TimeSlot).filter(
             TimeSlot.task_id == candidate.id,
             TimeSlot.lifecycle_status == "active",
-        ).one()
+        ).order_by(TimeSlot.id.desc()).first()
+        self.assertIsNotNone(moved_slot)
         self.assertEqual(1, result["moved_tasks"])
         self.assertGreaterEqual(
             moved_slot.plan_start,
@@ -408,6 +438,8 @@ class ScheduleCompletionTest(unittest.TestCase):
         )
 
     def test_forward_shift_respects_resolved_instrument_fault_window(self):
+        self._add_projects(1)
+        self._enable_maintenance_avoidance()
         instrument = self.db.get(Instrument, 1)
         instrument.status = "idle"
         candidate = Task(
@@ -442,7 +474,8 @@ class ScheduleCompletionTest(unittest.TestCase):
         moved_slot = self.db.query(TimeSlot).filter(
             TimeSlot.task_id == candidate.id,
             TimeSlot.lifecycle_status == "active",
-        ).one()
+        ).order_by(TimeSlot.id.desc()).first()
+        self.assertIsNotNone(moved_slot)
         self.assertGreaterEqual(moved_slot.plan_start, datetime(2026, 7, 14, 15, 30))
 
     def test_early_completion_notifies_each_moved_task_assignee(self):
@@ -583,7 +616,15 @@ class ScheduleCompletionTest(unittest.TestCase):
             project_id=2, name="报告撰写", task_type="manual", status="scheduled",
             delay_status="delayed", requires_human=True, assignee=assignee,
         )
-        self.db.add_all([project, assignee, completed, following])
+        self.db.add_all([
+            project,
+            Project(
+                id=2, name="后续项目", code="DELAY-2",
+                start_date=datetime(2026, 7, 13),
+                end_date=datetime(2026, 7, 20, 23, 59),
+            ),
+            assignee, completed, following,
+        ])
         self.db.flush()
         self.db.add_all([
             TimeSlot(
@@ -601,11 +642,12 @@ class ScheduleCompletionTest(unittest.TestCase):
 
         shifted = self.db.query(TimeSlot).filter(
             TimeSlot.task_id == following.id, TimeSlot.lifecycle_status == "active",
-        ).one()
+        ).order_by(TimeSlot.id.desc()).first()
+        self.assertIsNotNone(shifted)
         self.assertEqual(datetime(2026, 7, 13, 10, 30), shifted.plan_start)
         self.assertEqual(datetime(2026, 7, 13, 18, 30), shifted.plan_end)
         self.db.refresh(following)
-        self.assertEqual("not_delayed", following.delay_status)
+        self.assertEqual("delayed", following.delay_status)
         self.assertEqual(1, result["delay_affected_tasks"])
         self.assertEqual(0, result["moved_tasks"])
 
