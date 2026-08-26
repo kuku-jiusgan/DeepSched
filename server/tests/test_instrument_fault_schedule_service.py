@@ -10,6 +10,7 @@ from app.models import AuditLog, Instrument, InstrumentFault, Project, Task, Tas
 from app.services.instrument_fault_service import list_open_faults, resolve_fault
 from app.services.instrument_fault_schedule_service import shift_faulted_instrument_slots
 from app.services.fault_replan_context_service import build_fault_replan_context
+from app.services.fault_replan_result_service import build_fault_impact_details
 
 
 def working_options(_db, start: datetime) -> dict:
@@ -45,6 +46,22 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         context = build_fault_replan_context(self.db, {task.id}, reported_at, datetime(2026, 8, 12, 9, 0))
         self.assertEqual({task.id}, context["task_ids"])
         self.assertEqual(60, context["remaining_duration_minutes"][task.id])
+
+    def test_fault_impact_details_use_active_replanned_slots(self):
+        project = Project(name="风险项目", code="FAULT-DETAIL", end_date=datetime(2026, 8, 11, 9, 0))
+        task = Task(project=project, name="重排任务", task_type="test", status="scheduled")
+        self.db.add_all([project, task])
+        self.db.flush()
+        self.db.add_all([
+            TimeSlot(task_id=task.id, plan_start=datetime(2026, 8, 10, 8, 30), plan_end=datetime(2026, 8, 10, 9, 30), status="scheduled", lifecycle_status="superseded"),
+            TimeSlot(task_id=task.id, plan_start=datetime(2026, 8, 11, 8, 30), plan_end=datetime(2026, 8, 11, 10, 0), status="scheduled"),
+        ])
+        self.db.flush()
+        details = build_fault_impact_details(
+            self.db, {task.id}, {task.id: (datetime(2026, 8, 10, 8, 30), datetime(2026, 8, 10, 9, 30))},
+        )
+        self.assertEqual("2026-08-11T08:30:00", details[0]["shifted_start"])
+        self.assertFalse(details[0]["can_shift"])
 
     def test_fault_shifts_pending_slots_on_faulted_instrument(self):
         project = Project(
