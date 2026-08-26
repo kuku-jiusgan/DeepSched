@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from app.models import Task, TaskDependency, TimeSlot
+from app.models import Project, Task, TaskDependency, TimeSlot
 from app.services.instrument_status_service import delete_time_slots_and_refresh
 from app.services.schedule_advance_notification_service import (
     capture_task_schedule_windows,
@@ -17,6 +17,8 @@ from app.services.schedule_delay_service import (
     _load_working_options,
 )
 from app.services.schedule_forward_slot_service import build_forward_slots
+from app.services.resource_replan_service import replan_resource_closure
+from app.services.schedule_queue_replan_support import cross_project_setup_minutes
 from app.services.task_delay_status_service import reset_task_delay
 
 
@@ -43,6 +45,20 @@ def propagate_actual_delay(
         db,
         {slot.task_id for slot in slots},
     )
+    if _can_use_cp_sat_delay_replan(db, slots):
+        result = _replan_actual_delay_with_cp_sat(
+            db, task, slots, actual_end, original_windows,
+        )
+        if result.get("status") != "ok":
+            raise ScheduleDelayInvalidError(result.get("message", "延期后的排程失败"))
+        notify_rescheduled_tasks_delayed(
+            db, original_windows, f"任务“{task.name}”实际完成延期",
+        )
+        return {
+            "shifted_slots": len(slots),
+            "affected_tasks": len({slot.task_id for slot in slots}),
+        }
+
     snapshots_by_task = _group_slot_snapshots(slots)
     delete_time_slots_and_refresh(
         db,
@@ -68,6 +84,119 @@ def propagate_actual_delay(
     return {
         "shifted_slots": len(slots),
         "affected_tasks": len(snapshots_by_task),
+    }
+
+
+def _can_use_cp_sat_delay_replan(db, slots: list[TimeSlot]) -> bool:
+    task_ids = {slot.task_id for slot in slots}
+    tasks = db.query(Task).filter(Task.id.in_(task_ids)).all()
+    if len(tasks) != len(task_ids) or any(
+        task.requires_human and task.assignee_id is None for task in tasks
+    ):
+        return False
+    project_ids = {task.project_id for task in tasks}
+    if None in project_ids:
+        return False
+    project_count = db.query(Project.id).filter(Project.id.in_(project_ids)).count()
+    return (
+        project_count == len(project_ids)
+        and all(
+            slot.status == "scheduled"
+            and slot.tier != "frozen"
+            and slot.actual_start is None
+            and slot.actual_end is None
+            for slot in slots
+        )
+    )
+
+
+def _replan_actual_delay_with_cp_sat(
+    db,
+    completed_task: Task,
+    slots: list[TimeSlot],
+    actual_end: datetime,
+    original_windows: dict[int, tuple[datetime, datetime]],
+) -> dict:
+    task_ids = {slot.task_id for slot in slots}
+    tasks = db.query(Task).filter(Task.id.in_(task_ids)).all()
+    durations = _remaining_minutes(slots)
+    fixed_instruments = _fixed_instruments(tasks, slots)
+    dependencies = _queue_dependencies(tasks, original_windows, slots)
+    dependency_gaps = _queue_dependency_gaps(db, tasks, dependencies)
+    return replan_resource_closure(
+        db,
+        task_ids,
+        actual_end,
+        completed_task.project_id,
+        earliest_start_bounds={task_id: actual_end for task_id in task_ids},
+        advance_notification_reason=f"任务“{completed_task.name}”实际完成延期",
+        remaining_duration_minutes=durations,
+        planning_start_at=actual_end,
+        replaceable_after=actual_end,
+        fixed_instrument_ids=fixed_instruments,
+        additional_dependencies=dependencies,
+        additional_dependency_gaps=dependency_gaps,
+        emit_advance_notifications=False,
+        commit=False,
+    )
+
+
+def _remaining_minutes(slots: list[TimeSlot]) -> dict[int, int]:
+    result: dict[int, int] = {}
+    for slot in slots:
+        minutes = int((slot.plan_end - slot.plan_start).total_seconds() / 60)
+        result[slot.task_id] = result.get(slot.task_id, 0) + minutes
+    return result
+
+
+def _fixed_instruments(tasks: list[Task], slots: list[TimeSlot]) -> dict[int, int]:
+    task_by_id = {task.id: task for task in tasks}
+    by_task: dict[int, set[int]] = {}
+    for slot in slots:
+        if slot.instrument_id is not None:
+            by_task.setdefault(slot.task_id, set()).add(slot.instrument_id)
+    return {
+        task_id: next(iter(instrument_ids))
+        for task_id, instrument_ids in by_task.items()
+        if task_by_id[task_id].requires_instrument and len(instrument_ids) == 1
+    }
+
+
+def _queue_dependencies(
+    tasks: list[Task],
+    windows: dict[int, tuple[datetime, datetime]],
+    slots: list[TimeSlot],
+) -> list[tuple[int, int]]:
+    instrument_by_task: dict[int, int] = {}
+    for slot in slots:
+        if slot.instrument_id is not None:
+            instrument_by_task.setdefault(slot.task_id, slot.instrument_id)
+    groups: dict[tuple[str, int], list[Task]] = {}
+    for task in tasks:
+        if task.id not in windows:
+            continue
+        if task.id in instrument_by_task:
+            groups.setdefault(("instrument", instrument_by_task[task.id]), []).append(task)
+        if task.requires_human and task.assignee_id is not None:
+            groups.setdefault(("assignee", task.assignee_id), []).append(task)
+    pairs: set[tuple[int, int]] = set()
+    for group in groups.values():
+        ordered = sorted(group, key=lambda item: windows[item.id][0])
+        pairs.update((current.id, previous.id) for previous, current in zip(ordered, ordered[1:]))
+    return sorted(pairs)
+
+
+def _queue_dependency_gaps(
+    db,
+    tasks: list[Task],
+    dependencies: list[tuple[int, int]],
+) -> dict[tuple[int, int], int]:
+    project_ids = {task.id: task.project_id for task in tasks}
+    setup_units = cross_project_setup_minutes(db) // 30
+    return {
+        pair: setup_units
+        for pair in dependencies
+        if setup_units and project_ids[pair[0]] != project_ids[pair[1]]
     }
 
 
