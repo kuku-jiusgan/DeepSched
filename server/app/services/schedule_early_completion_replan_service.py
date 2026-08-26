@@ -7,6 +7,7 @@ from app.services.resource_replan_service import replan_resource_closure
 from app.services.schedule_queue_replan_support import (
     cross_project_setup_minutes,
     is_movable_task,
+    load_forward_shift_candidates,
 )
 
 
@@ -18,8 +19,6 @@ def replan_released_resource_queue(
     previous_project_id: int | None = None,
 ) -> dict:
     """Replan only movable work after an early completion releases capacity."""
-    from app.services.schedule_queue_replan_support import load_forward_shift_candidates
-
     all_candidates = load_forward_shift_candidates(
         db, instrument_id, released_at, assignee_id,
     )
@@ -33,7 +32,9 @@ def replan_released_resource_queue(
     original_windows = _scheduled_windows(db, candidates)
     remaining_minutes = _scheduled_minutes(db, candidates)
     fixed_instruments = _fixed_instruments(db, candidates)
-    queue_dependencies = _queue_dependencies(candidates, original_windows, fixed_instruments)
+    queue_instruments = _queue_instruments(db, candidates)
+    queue_dependencies = _queue_dependencies(candidates, original_windows, queue_instruments)
+    queue_gaps = _queue_dependency_gaps(db, candidates, queue_dependencies)
     allowed_unassigned = {
         task.id for task in candidates if task.requires_human and not task.assignee_id
     }
@@ -53,6 +54,7 @@ def replan_released_resource_queue(
         fixed_instrument_ids=fixed_instruments,
         allow_unassigned_human_task_ids=allowed_unassigned,
         additional_dependencies=queue_dependencies,
+        additional_dependency_gaps=queue_gaps,
         emit_advance_notifications=False,
         commit=False,
     )
@@ -116,14 +118,14 @@ def _fixed_instruments(db, tasks: list[Task]) -> dict[int, int]:
 def _queue_dependencies(
     candidates: list[Task],
     original_windows: dict[int, tuple[datetime, datetime]],
-    fixed_instruments: dict[int, int],
+    queue_instruments: dict[int, int],
 ) -> list[tuple[int, int]]:
     """Preserve the original order on every affected instrument and person queue."""
     groups: dict[tuple[str, int], list[Task]] = {}
     for task in candidates:
         if task.id not in original_windows:
             continue
-        instrument_id = fixed_instruments.get(task.id)
+        instrument_id = queue_instruments.get(task.id)
         if instrument_id is not None:
             groups.setdefault(("instrument", instrument_id), []).append(task)
         if task.requires_human and task.assignee_id is not None:
@@ -135,6 +137,32 @@ def _queue_dependencies(
             (current.id, previous.id) for previous, current in zip(ordered, ordered[1:])
         )
     return sorted(dependencies)
+
+
+def _queue_instruments(db, tasks: list[Task]) -> dict[int, int]:
+    result = {}
+    for task in tasks:
+        instrument_ids = {
+            slot.instrument_id for slot in _movable_slots(db, task.id)
+            if slot.instrument_id is not None
+        }
+        if len(instrument_ids) == 1:
+            result[task.id] = instrument_ids.pop()
+    return result
+
+
+def _queue_dependency_gaps(
+    db,
+    candidates: list[Task],
+    dependencies: list[tuple[int, int]],
+) -> dict[tuple[int, int], int]:
+    projects = {task.id: task.project_id for task in candidates}
+    setup_units = cross_project_setup_minutes(db) // 30
+    return {
+        pair: setup_units
+        for pair in dependencies
+        if setup_units and projects[pair[0]] != projects[pair[1]]
+    }
 
 
 def _first_task_start_bound(

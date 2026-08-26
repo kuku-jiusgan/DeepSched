@@ -29,6 +29,7 @@ def replan_resource_closure(
     setup_exempt_task_pairs: set[frozenset[int]] | None = None,
     fixed_instrument_ids: dict[int, int] | None = None,
     allow_unassigned_human_task_ids: set[int] | None = None,
+    additional_dependency_gaps: dict[tuple[int, int], int] | None = None,
     emit_advance_notifications: bool = True,
     solver_time_limit: float = 30.0,
 ) -> dict:
@@ -84,6 +85,7 @@ def replan_resource_closure(
                 setup_exempt_task_pairs=setup_exempt_task_pairs,
                 fixed_instrument_ids=fixed_instrument_ids,
                 allow_unassigned_human_task_ids=allow_unassigned_human_task_ids,
+                additional_dependency_gaps=additional_dependency_gaps,
                 emit_advance_notifications=emit_advance_notifications,
                 solver_time_limit=solver_time_limit,
                 rollback_on_conflict=False,

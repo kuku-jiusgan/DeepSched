@@ -7,21 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.models import AuditLog, Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_status_service import refresh_instrument_status
-from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.services.schedule_advance_notification_service import notify_advanced_task_assignees
 from app.services.schedule_early_completion_replan_service import (
     replan_released_resource_queue,
 )
-from app.services.schedule_forward_slot_service import build_forward_slots
-from app.services.schedule_slot_change_log_service import record_slot_created, supersede_slot
 from app.services.schedule_queue_replan_support import (
-    cross_project_setup_minutes,
-    dependency_ready_time,
-    is_movable_task,
     load_forward_shift_candidates as _load_forward_shift_candidates,
     load_working_options as _load_working_options,
-    replan_duration_minutes,
-    tier_for_start,
 )
 from app.services.project_status_service import calculate_project_status
 from app.services.task_delay_status_service import mark_task_delayed

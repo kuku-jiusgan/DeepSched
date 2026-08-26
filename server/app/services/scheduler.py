@@ -102,6 +102,7 @@ class SchedulerService:
         setup_exempt_task_pairs: set[frozenset[int]] | None = None,
         fixed_instrument_ids: dict[int, int] | None = None,
         allow_unassigned_human_task_ids: set[int] | None = None,
+        additional_dependency_gaps: dict[tuple[int, int], int] | None = None,
     ) -> dict:
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -530,7 +531,8 @@ class SchedulerService:
         if constraints["precedence"].is_enabled:
             for tid, pred_id in task_deps:
                 if pred_id in task_starts and tid in task_starts:
-                    model.Add(task_starts[tid] >= task_ends[pred_id])
+                    gap_units = (additional_dependency_gaps or {}).get((tid, pred_id), 0)
+                    model.Add(task_starts[tid] >= task_ends[pred_id] + gap_units)
 
             # Frozen/missing predecessors: apply constant lower-bound
             for task_id, predecessor_id in task_deps:
