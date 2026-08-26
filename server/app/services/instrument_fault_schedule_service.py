@@ -14,6 +14,7 @@ from app.services.instrument_fault_notification_service import (
 from app.services.fault_replan_context_service import build_fault_replan_context
 from app.services.fault_replan_result_service import build_fault_impact_details
 from app.services.resource_replan_service import replan_resource_closure
+from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.services.schedule_advance_notification_service import (
     capture_task_schedule_windows,
     notify_rescheduled_tasks_delayed,
@@ -108,6 +109,8 @@ def shift_faulted_instrument_slots(
                 options,
             )
         )
+
+    rebuild_instrument_bridge_reservations(db)
 
     tasks = _tasks_by_id(db, {detail["task_id"] for detail in details})
     notified_users = notify_fault_rescheduled_assignees(

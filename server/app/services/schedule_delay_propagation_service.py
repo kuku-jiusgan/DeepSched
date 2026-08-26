@@ -18,6 +18,7 @@ from app.services.schedule_delay_service import (
 )
 from app.services.schedule_forward_slot_service import build_forward_slots
 from app.services.resource_replan_service import replan_resource_closure
+from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.services.schedule_queue_replan_support import cross_project_setup_minutes
 from app.services.task_delay_status_service import reset_task_delay
 
@@ -81,6 +82,8 @@ def propagate_actual_delay(
     )
     for snapshots in ordered_snapshots:
         _restore_shifted_task(db, snapshots, delay_minutes, options, actual_end)
+
+    rebuild_instrument_bridge_reservations(db)
 
     notify_rescheduled_tasks_delayed(
         db,
