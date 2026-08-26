@@ -224,6 +224,40 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
 
         self.assertEqual({root_task.id, successor.id}, replan.call_args.kwargs["seed_task_ids"])
 
+    def test_fault_keeps_blocked_task_out_of_cp_sat_replan(self):
+        project = Project(name="阻塞故障项目", code="FAULT-BLOCKED")
+        instrument = Instrument(code="ZBYY-002-0012", name="阻塞故障仪器")
+        task = Task(
+            project=project, name="阻塞任务", task_type="test", status="blocked",
+            requires_instrument=True, requires_human=False,
+        )
+        self.db.add_all([project, instrument, task])
+        self.db.flush()
+        self.db.add(TimeSlot(
+            task_id=task.id, instrument_id=instrument.id,
+            plan_start=datetime(2026, 8, 10, 8, 30),
+            plan_end=datetime(2026, 8, 10, 10, 30), status="scheduled",
+        ))
+        self.db.commit()
+
+        with patch(
+            "app.services.instrument_fault_schedule_service.replan_resource_closure",
+        ) as replan, patch(
+            "app.services.instrument_fault_schedule_service._load_working_options",
+            side_effect=working_options,
+        ), patch(
+            "app.services.instrument_fault_notification_service.push_by_rule", return_value=0,
+        ), patch(
+            "app.services.instrument_fault_schedule_service.notify_rescheduled_tasks_delayed",
+        ):
+            shift_faulted_instrument_slots(
+                self.db, instrument, datetime(2026, 8, 10, 8, 45), datetime(2026, 8, 11, 8, 45),
+            )
+
+        self.assertFalse(replan.called)
+        self.db.refresh(task)
+        self.assertEqual("blocked", task.status)
+
     def test_fault_preview_uses_same_resource_closure_as_replan(self):
         assignee = User(username="preview", display_name="预览技术员", role="技术员", is_active=True)
         project = Project(name="故障预览项目", code="FAULT-PREVIEW")

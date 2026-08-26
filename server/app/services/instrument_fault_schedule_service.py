@@ -139,7 +139,7 @@ def _can_use_cp_sat_fault_replan(
         return False
     tasks = _tasks_by_id(db, task_ids)
     return len(tasks) == len(task_ids) and all(
-        task.status in {"pending", "ready", "scheduled", "blocked"}
+        task.status in {"pending", "ready", "scheduled"}
         and not task.execution_segments
         and not any(
             slot.actual_start is not None or slot.actual_end is not None
