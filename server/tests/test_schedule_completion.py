@@ -231,6 +231,31 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.assertEqual("cancelled", remaining[1].status)
         self.assertEqual("superseded", remaining[1].lifecycle_status)
 
+    def test_completion_refreshes_bridge_reservations_before_queue_replan(self):
+        task = Task(project_id=1, name="bridge-source", task_type="test", status="running")
+        self.db.add(task)
+        self.db.flush()
+        self.db.add(TimeSlot(
+            task_id=task.id, instrument_id=1,
+            plan_start=datetime(2026, 7, 13, 8, 30),
+            plan_end=datetime(2026, 7, 13, 20, 0),
+            actual_start=datetime(2026, 7, 13, 8, 30), status="running",
+        ))
+        self.db.commit()
+
+        with patch(
+            "app.services.schedule_completion_service.rebuild_instrument_bridge_reservations",
+        ) as rebuild, patch(
+            "app.services.schedule_completion_service._forward_shift_instrument_queue",
+            return_value={"status": "ok", "message": "后续队列无需调整", "moved_tasks": 0},
+        ):
+            result = complete_task_and_shift(
+                self.db, task.id, actual_end_time=datetime(2026, 7, 13, 10, 0),
+            )
+
+        self.assertEqual("ok", result["status"])
+        rebuild.assert_called_once_with(self.db)
+
     def test_completed_future_segments_do_not_block_forward_shift(self):
         completed = Task(project_id=1, name="done", task_type="test", status="done")
         next_task = Task(project_id=1, name="next", task_type="test", status="scheduled")

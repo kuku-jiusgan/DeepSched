@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AuditLog, Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_status_service import refresh_instrument_status
+from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.services.schedule_advance_notification_service import notify_advanced_task_assignees
 from app.services.schedule_early_completion_replan_service import (
     replan_released_resource_queue,
@@ -54,6 +55,9 @@ def complete_task_and_shift(
     completed_slot = _select_completed_slot(task_slots, completed_slot_id, end_time)
     affected_instrument_ids = {slot.instrument_id for slot in task_slots if slot.instrument_id}
     _mark_task_slots_completed(db, task_slots, completed_slot, end_time)
+    # Completion can supersede future manual slots. Keep the derived bridge
+    # occupancy synchronized before any released-resource replan is evaluated.
+    rebuild_instrument_bridge_reservations(db)
     delay_result = _propagate_delay_safely(db, task, planned_end, end_time)
     if task.project:
         task.project.status = calculate_project_status(task.project)
