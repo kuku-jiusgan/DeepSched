@@ -8,6 +8,7 @@ from app.services.scheduler_helpers import natural_day_boundary
 from app.services.instrument_working_time_service import load_working_time_context
 from app.services.schedule_rule_service import get_solver_constraints
 from app.services.task_progress_service import remaining_task_minutes
+from app.services.schedule_replan_closure_service import collect_replan_task_ids
 
 
 def load_forward_shift_candidates(
@@ -20,10 +21,26 @@ def load_forward_shift_candidates(
     resource_filter = _resource_filter(instrument_id, assignee_ids)
     if resource_filter is None:
         return []
+    seed_rows = db.query(Task.id).join(TimeSlot, TimeSlot.task_id == Task.id).filter(
+        resource_filter,
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.status.in_(("scheduled", "running", "paused", "blocked", "interrupted")),
+        TimeSlot.plan_end > released_at,
+    ).distinct().all()
+    closure_ids = collect_replan_task_ids(
+        db,
+        {task_id for (task_id,) in seed_rows},
+        {instrument_id} if instrument_id is not None else set(),
+        assignee_ids,
+        released_at,
+    )
+    if not closure_ids:
+        return []
     rows = (
         db.query(Task, TimeSlot.plan_start)
         .join(TimeSlot, TimeSlot.task_id == Task.id)
         .filter(
+            Task.id.in_(closure_ids),
             Task.status.in_(["pending", "scheduled", "blocked", "waiting_external"]),
             TimeSlot.status == "scheduled",
             TimeSlot.plan_end > released_at,
