@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Date, Text, ForeignKey, JSON, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Date, Text, ForeignKey, JSON, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime, time
 from app.core.database import Base
@@ -205,6 +205,16 @@ class InstrumentFault(Base):
 
 class TimeSlot(Base):
     __tablename__ = "time_slot"
+    __table_args__ = (
+        Index(
+            "ix_time_slot_active_instrument_start",
+            "lifecycle_status", "instrument_id", "plan_start", "status",
+        ),
+        Index(
+            "ix_time_slot_active_task_start",
+            "lifecycle_status", "task_id", "plan_start", "status",
+        ),
+    )
     id = Column(Integer, primary_key=True, autoincrement=True)
     schedule_run_id = Column(String(64), nullable=False, default="legacy")
     task_id = Column(Integer, ForeignKey("task.id"), nullable=False)

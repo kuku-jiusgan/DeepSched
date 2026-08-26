@@ -282,6 +282,9 @@ def ensure_runtime_schema(engine) -> None:
             if "is_night_run" not in time_slot_columns:
                 connection.execute(text("ALTER TABLE time_slot ADD COLUMN is_night_run BOOLEAN DEFAULT 0"))
                 connection.execute(text("UPDATE time_slot SET is_night_run = 0 WHERE is_night_run IS NULL"))
+        from app.models import TimeSlot
+        for index in TimeSlot.__table__.indexes:
+            index.create(bind=engine, checkfirst=True)
 
     if "alert_rule" in table_names:
         alert_columns = {column["name"] for column in inspector.get_columns("alert_rule")}
