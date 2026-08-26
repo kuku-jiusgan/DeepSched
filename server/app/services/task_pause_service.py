@@ -14,14 +14,9 @@ from app.services.schedule_forward_slot_service import build_forward_slots
 from app.services.schedule_slot_change_log_service import supersede_slot
 from app.services.task_execution_service import ensure_running_state_consistent, predecessors_completed, start_task_execution
 from app.services.task_progress_service import planned_task_minutes
-from app.services.task_pause_followup_service import target_followup_groups
+from app.services.task_pause_switch_context_service import build_pause_switch_context
 from app.services.task_pause_window_service import (
     CANDIDATE_SLOT_STATUSES,
-    instrument_queue_end as _instrument_queue_end,
-    intermediate_task_slots as _intermediate_task_slots,
-    remaining_minutes as _remaining_task_minutes,
-    slot_minutes as _slot_minutes,
-    task_queue_slots as _task_queue_slots,
 )
 
 
@@ -122,34 +117,8 @@ def _insert_target_into_source_schedule(
     target_slot: TimeSlot,
     started_at: datetime,
 ) -> None:
-    switch_time = started_at.replace(second=0, microsecond=0)
-    target_slots = _task_queue_slots(db, target_slot)
-    source_slots = _task_queue_slots(db, source_slot)
-    target_minutes = _remaining_task_minutes(
-        target_slot.task,
-        target_slots,
-        switch_time,
-        target_slot,
-    )
-    source_minutes = _remaining_task_minutes(source_slot.task, source_slots, switch_time, source_slot)
-    target_original_end = max(slot.plan_end for slot in target_slots)
-    queue_reorder_end = _instrument_queue_end(db, source_slot.instrument_id, switch_time)
-    intermediate_groups = _intermediate_task_slots(
-        db, source_slot, target_slot, switch_time, queue_reorder_end or target_original_end,
-    )
-    followup_groups = target_followup_groups(
-        db, target_slot.task, switch_time, CANDIDATE_SLOT_STATUSES,
-    )
-    source_followup_groups = target_followup_groups(
-        db, source_slot.task, switch_time, CANDIDATE_SLOT_STATUSES,
-    )
-    continuous_followup_task_ids = {
-        group[0].task_id for group in [*followup_groups, *source_followup_groups]
-    }
-    intermediate_groups = [
-        group for group in intermediate_groups
-        if group[0].task_id not in continuous_followup_task_ids
-    ]
+    context = build_pause_switch_context(db, source_slot, target_slot, started_at)
+    switch_time = context.switch_time
 
     historical_source_start = source_slot.actual_start or switch_time
     source_slot.plan_start = min(historical_source_start, switch_time)
@@ -157,37 +126,20 @@ def _insert_target_into_source_schedule(
     target_slot.plan_start = switch_time
     target_slot.plan_end = switch_time
 
-    replaceable_slots = [slot for slot in source_slots if slot.id != source_slot.id]
-    replaceable_slots.extend(slot for slot in target_slots if slot.id != target_slot.id)
-    replaceable_slots.extend(slot for slots in intermediate_groups for slot in slots)
-    replaceable_slots.extend(slot for slots in followup_groups for slot in slots)
-    replaceable_slots.extend(slot for slots in source_followup_groups for slot in slots)
-    for slot in replaceable_slots:
+    for slot in context.replaceable_slots:
         supersede_slot(db, slot, "暂停切换重排")
     db.flush()
 
-    queue = [
-        (target_slot.task, target_slot, target_minutes, target_slot.status, target_slot),
-    ]
-    queue.append((source_slot.task, None, source_minutes, "paused", source_slot))
-    followups = [
-        (group[0].task, None, _remaining_task_minutes(group[0].task), group[0].status, group[0])
-        for group in followup_groups
-    ]
-    queue[1:1] = followups
-    source_followups = [
-        (group[0].task, None, _remaining_task_minutes(group[0].task), group[0].status, group[0])
-        for group in source_followup_groups
-    ]
-    queue[1 + len(followups) + 1:1 + len(followups) + 1] = source_followups
-    queue.extend(
-        (slots[0].task, None, _slot_minutes(slots), slots[0].status, slots[0])
-        for slots in intermediate_groups
-    )
+    queue = context.queue
     options = _load_working_options(db, switch_time)
     instrument_ends: dict[int, datetime] = {}
     assignee_ends: dict[int, datetime] = {}
-    for task, reusable_slot, duration_minutes, status, template_slot in queue:
+    for entry in queue:
+        task = entry.task
+        reusable_slot = entry.reusable_slot
+        duration_minutes = entry.duration_minutes
+        status = entry.status
+        template_slot = entry.template_slot
         if duration_minutes <= 0:
             continue
         resource_bounds = [switch_time]
@@ -250,7 +202,7 @@ def _insert_target_into_source_schedule(
             assignee_ends[task.assignee_id] = task_end
     _ensure_reordered_projects_within_deadline(
         db,
-        {task.project for task, *_ in queue if task.project and task.project.end_date},
+        {entry.task.project for entry in queue if entry.task.project and entry.task.project.end_date},
         options,
     )
     rebuild_instrument_bridge_reservations(db)
