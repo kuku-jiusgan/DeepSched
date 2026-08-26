@@ -54,4 +54,5 @@ def replan_resource_closure(
         advance_notification_reason=advance_notification_reason,
         commit=commit,
         remaining_duration_minutes=remaining_duration_minutes,
+        replaceable_task_ids=closure_ids,
     )

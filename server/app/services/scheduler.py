@@ -21,6 +21,7 @@ from app.services.scheduler_fixed_slots import (
     load_fixed_slots,
 )
 from app.services.scheduler_persistence import persist_slots
+from app.services.schedule_slot_change_log_service import supersede_slot
 from app.services.scheduler_objective import add_scheduler_objective
 from app.services.scheduler_split_tasks import add_split_task_variables
 from app.services.scheduler_instrument_bridging import add_instrument_bridge_intervals
@@ -96,6 +97,7 @@ class SchedulerService:
         include_failure_diagnostics: bool = True,
         solver_time_limit: float = 30.0,
         remaining_duration_minutes: dict[int, int] | None = None,
+        replaceable_task_ids: set[int] | None = None,
     ) -> dict:
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -104,6 +106,7 @@ class SchedulerService:
             project_ids,
             task_ids,
             excluded_task_ids,
+            replaceable_task_ids,
         )
         if not tasks:
             return {"status": "ok", "message": "没有待排仪器任务", "timeslots_created": 0}
@@ -691,6 +694,11 @@ class SchedulerService:
             return response
 
         # Persist results
+        _supersede_replaceable_slots(
+            self.db,
+            replaceable_task_ids or set(),
+            "CP-SAT局部重排",
+        )
         schedule_run_id = _new_schedule_run_id()
         save_schedule_calendar_snapshot(
             self.db,
@@ -818,6 +826,22 @@ def _remaining_duration_units(
             total_units,
         )
     return max(1, duration_units - fixed_units)
+
+
+def _supersede_replaceable_slots(db, task_ids: set[int], reason: str) -> None:
+    if not task_ids:
+        return
+    slots = db.query(TimeSlot).filter(
+        TimeSlot.task_id.in_(task_ids),
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.status == "scheduled",
+        TimeSlot.actual_start.is_(None),
+        TimeSlot.actual_end.is_(None),
+        TimeSlot.tier != "frozen",
+    ).all()
+    for slot in slots:
+        supersede_slot(db, slot, reason)
+    db.flush()
 
 
 def _executed_duration_units(

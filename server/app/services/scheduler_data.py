@@ -11,6 +11,7 @@ def load_scheduler_data(
     project_ids=None,
     task_ids=None,
     excluded_task_ids: set[int] | None = None,
+    replan_task_ids: set[int] | None = None,
 ):
     child_parent_ids = select(Task.parent_id).where(Task.parent_id.isnot(None))
     # 等待方案签批的下游任务也必须进入预测排程，否则签批完成后才会
@@ -24,8 +25,9 @@ def load_scheduler_data(
             Task.predecessors.any(),
         ),
     )
+    replan_task_ids = replan_task_ids or set()
     query = db.query(Task).filter(
-        schedulable_status,
+        or_(schedulable_status, Task.id.in_(replan_task_ids)),
         Task.is_external_gate.is_(False),
         not_(Task.id.in_(child_parent_ids)),
     ).options(
