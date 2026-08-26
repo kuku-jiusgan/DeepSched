@@ -7,7 +7,10 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.models import Project, Task, TimeSlot, User
-from app.services.schedule_delay_propagation_service import propagate_actual_delay
+from app.services.schedule_delay_propagation_service import (
+    _delay_replan_fallback_reasons,
+    propagate_actual_delay,
+)
 
 
 class ScheduleDelayPropagationCpSatTest(unittest.TestCase):
@@ -82,6 +85,33 @@ class ScheduleDelayPropagationCpSatTest(unittest.TestCase):
 
         replan.assert_not_called()
         restore.assert_called_once()
+
+    def test_fallback_reasons_identify_execution_history(self):
+        task = Task(
+            project=self.project, name="有执行历史的后续任务", task_type="test",
+            status="paused", requires_human=True, assignee_id=None,
+        )
+        self.db.add(task)
+        self.db.flush()
+        slot = TimeSlot(
+            task=task, plan_start=datetime(2026, 8, 26, 10, 0),
+            plan_end=datetime(2026, 8, 26, 11, 0), status="paused",
+            actual_start=datetime(2026, 8, 26, 10, 0),
+        )
+        self.db.add(slot)
+        self.db.flush()
+
+        reasons = _delay_replan_fallback_reasons(self.db, [slot])
+
+        self.assertEqual(
+            [
+                "actual_execution_slot",
+                "missing_assignee",
+                "non_rebuildable_task_status",
+                "non_scheduled_slot",
+            ],
+            reasons,
+        )
 
 
 if __name__ == "__main__":

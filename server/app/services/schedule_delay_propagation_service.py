@@ -59,6 +59,12 @@ def propagate_actual_delay(
             "affected_tasks": len({slot.task_id for slot in slots}),
         }
 
+    _logger.warning(
+        "schedule_delay_legacy_replan completed_task_id=%s affected_task_ids=%s reasons=%s",
+        task.id,
+        sorted({slot.task_id for slot in slots}),
+        ",".join(_delay_replan_fallback_reasons(db, slots)),
+    )
     snapshots_by_task = _group_slot_snapshots(slots)
     delete_time_slots_and_refresh(
         db,
@@ -90,9 +96,7 @@ def propagate_actual_delay(
 def _can_use_cp_sat_delay_replan(db, slots: list[TimeSlot]) -> bool:
     task_ids = {slot.task_id for slot in slots}
     tasks = db.query(Task).filter(Task.id.in_(task_ids)).all()
-    if len(tasks) != len(task_ids) or any(
-        task.requires_human and task.assignee_id is None for task in tasks
-    ):
+    if len(tasks) != len(task_ids):
         return False
     project_ids = {task.project_id for task in tasks}
     if None in project_ids:
@@ -101,6 +105,17 @@ def _can_use_cp_sat_delay_replan(db, slots: list[TimeSlot]) -> bool:
     return (
         project_count == len(project_ids)
         and all(
+            task.status in {"pending", "ready", "scheduled"}
+            and not task.execution_segments
+            and (not task.requires_human or task.assignee_id is not None)
+            and not any(
+                slot.actual_start is not None or slot.actual_end is not None
+                for slot in task.time_slots
+                if slot.lifecycle_status == "active"
+            )
+            for task in tasks
+        )
+        and all(
             slot.status == "scheduled"
             and slot.tier != "frozen"
             and slot.actual_start is None
@@ -108,6 +123,46 @@ def _can_use_cp_sat_delay_replan(db, slots: list[TimeSlot]) -> bool:
             for slot in slots
         )
     )
+
+
+def _delay_replan_fallback_reasons(db, slots: list[TimeSlot]) -> list[str]:
+    """Return explicit reasons why actual-delay propagation cannot use CP-SAT."""
+    reasons: set[str] = set()
+    task_ids = {slot.task_id for slot in slots}
+    if not slots:
+        reasons.add("no_movable_slots")
+    if any(slot.status != "scheduled" for slot in slots):
+        reasons.add("non_scheduled_slot")
+    if any(slot.tier == "frozen" for slot in slots):
+        reasons.add("frozen_slot")
+    if any(
+        slot.actual_start is not None or slot.actual_end is not None
+        for slot in slots
+    ):
+        reasons.add("actual_execution_slot")
+
+    tasks = db.query(Task).filter(Task.id.in_(task_ids)).all()
+    if len(tasks) != len(task_ids):
+        reasons.add("missing_task")
+    project_ids = {task.project_id for task in tasks}
+    if None in project_ids:
+        reasons.add("missing_project")
+    elif db.query(Project.id).filter(Project.id.in_(project_ids)).count() != len(project_ids):
+        reasons.add("missing_project")
+    for task in tasks:
+        if task.status not in {"pending", "ready", "scheduled"}:
+            reasons.add("non_rebuildable_task_status")
+        if task.execution_segments:
+            reasons.add("execution_history")
+        if any(
+            slot.actual_start is not None or slot.actual_end is not None
+            for slot in task.time_slots
+            if slot.lifecycle_status == "active"
+        ):
+            reasons.add("actual_execution_slot")
+        if task.requires_human and task.assignee_id is None:
+            reasons.add("missing_assignee")
+    return sorted(reasons) or ["unknown"]
 
 
 def _replan_actual_delay_with_cp_sat(
