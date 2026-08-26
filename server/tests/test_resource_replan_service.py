@@ -52,6 +52,16 @@ class ResourceReplanServiceTest(unittest.TestCase):
 
         self.assertEqual("error", result["status"])
         self.assertEqual(2, len(calls))
+        self.assertEqual([first_task.id], result["replan_diagnostic"]["seed_task_ids"])
+        self.assertEqual([first_task.id], result["replan_diagnostic"]["initial_closure_task_ids"])
+        self.assertEqual(
+            [first_task.id, external_task.id],
+            result["replan_diagnostic"]["final_closure_task_ids"],
+        )
+        self.assertEqual(
+            [external_task.id],
+            result["replan_diagnostic"]["iterations"][0]["external_conflict_task_ids"],
+        )
         self.assertEqual(
             0,
             self.db.query(TimeSlot).filter(TimeSlot.task_id == first_task.id).count(),
@@ -116,6 +126,11 @@ class ResourceReplanServiceTest(unittest.TestCase):
 
         self.assertEqual("error", result["status"])
         self.assertEqual([external.id], result["external_conflict_task_ids"])
+        self.assertFalse(result["replan_diagnostic"]["expand_closure"])
+        self.assertEqual(
+            [external.id],
+            result["replan_diagnostic"]["iterations"][0]["external_conflict_task_ids"],
+        )
         self.assertEqual(0, self.db.query(TimeSlot).filter(TimeSlot.task_id == task.id).count())
 
     def test_bounded_replan_commits_when_window_has_no_external_conflict(self):
