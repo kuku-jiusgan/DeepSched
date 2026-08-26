@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from app.models import Task, TaskDependency, TimeSlot
 from app.services.task_dependency_service import is_valid_continuous_successor
+
+
+_logger = logging.getLogger(__name__)
 
 
 def target_followup_groups(
@@ -18,10 +22,21 @@ def target_followup_groups(
         TaskDependency.task_id.in_([task.id for task in tasks]),
         TaskDependency.dependency_type == "continuous_successor",
     ).all()
-    dependencies = [
-        dependency for dependency in dependencies
-        if is_valid_continuous_successor(dependency.predecessor, dependency.task)
-    ]
+    valid_dependencies = []
+    for dependency in dependencies:
+        if is_valid_continuous_successor(dependency.predecessor, dependency.task):
+            valid_dependencies.append(dependency)
+            continue
+        _logger.warning(
+            "pause_switch_invalid_continuous_successor dependency_id=%s predecessor_id=%s successor_id=%s "
+            "predecessor_parent_id=%s successor_parent_id=%s",
+            dependency.id,
+            dependency.predecessor_id,
+            dependency.task_id,
+            dependency.predecessor.parent_id,
+            dependency.task.parent_id,
+        )
+    dependencies = valid_dependencies
     descendants = _descendant_ids(target_task.id, dependencies)
     if not descendants:
         return []

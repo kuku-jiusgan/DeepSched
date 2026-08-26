@@ -1,12 +1,15 @@
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
+from app.domain.errors import DomainConflictError
 from app.models import Instrument, Project, Task, TaskDependency, TimeSlot, User
 from app.services.task_pause_service import pause_and_switch_task
+from app.services.task_pause_solver_service import replan_pause_switch
 from app.services.task_pause_switch_context_service import build_pause_switch_context
 from app.services.task_execution_service import start_task_execution
 
@@ -90,6 +93,66 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
         self.assertEqual(source.id, context.paused_source_task_id)
         self.assertEqual(set(context.remaining_duration_minutes), context.task_ids)
         self.assertEqual(source_parent.id, source_followup.parent_id)
+
+    def test_switch_context_excludes_cross_parent_continuous_successor(self):
+        _, target, _ = self._task_group(self.project_b, "B")
+        other_parent = Task(project_id=self.project_b.id, name="另一个标准计划", task_type="ROOT")
+        self.db.add(other_parent)
+        self.db.flush()
+        invalid_followup = Task(
+            project_id=self.project_b.id, parent_id=other_parent.id,
+            name="错误跨组方案撰写", task_type="QCFA_001",
+            requires_human=True, assignee_id=self.operator.id, status="scheduled",
+        )
+        self.db.add(invalid_followup)
+        self.db.flush()
+        now = datetime.now().replace(second=0, microsecond=0)
+        source_slot = self._slot(target, now - timedelta(hours=1), now + timedelta(hours=2))
+        target_slot = self._slot(target, now + timedelta(hours=2), now + timedelta(hours=5))
+        self._slot(invalid_followup, now + timedelta(hours=5), now + timedelta(hours=6), False)
+        self.db.add(TaskDependency(
+            task_id=invalid_followup.id, predecessor_id=target.id,
+            dependency_type="continuous_successor",
+        ))
+        self.db.commit()
+
+        context = build_pause_switch_context(self.db, source_slot, target_slot, now)
+
+        self.assertNotIn(invalid_followup.id, context.task_ids)
+
+    def test_switch_window_conflict_rolls_back_anchors_and_slots(self):
+        _, source, _ = self._task_group(self.project_a, "A")
+        _, target, _ = self._task_group(self.project_b, "B")
+        now = datetime.now().replace(second=0, microsecond=0)
+        source_start = now - timedelta(hours=1)
+        source_end = now + timedelta(hours=2)
+        target_start = source_end
+        target_end = source_end + timedelta(hours=3)
+        source_slot = self._slot(source, source_start, source_end)
+        target_slot = self._slot(target, target_start, target_end)
+        self.db.commit()
+
+        with patch(
+            "app.services.task_pause_solver_service.replan_resource_closure",
+            return_value={
+                "status": "error",
+                "message": "受限重排窗口与窗口外任务发生资源冲突",
+            },
+        ):
+            with self.assertRaisesRegex(DomainConflictError, "窗口外任务发生资源冲突"):
+                replan_pause_switch(self.db, source_slot, target_slot, now)
+
+        self.db.refresh(source_slot)
+        self.db.refresh(target_slot)
+        self.db.refresh(source)
+        self.assertEqual(source_start, source_slot.plan_start)
+        self.assertEqual(source_end, source_slot.plan_end)
+        self.assertIsNone(source_slot.actual_end)
+        self.assertEqual("active", source_slot.lifecycle_status)
+        self.assertEqual("scheduled", source.status)
+        self.assertEqual(target_start, target_slot.plan_start)
+        self.assertEqual(target_end, target_slot.plan_end)
+        self.assertEqual("active", target_slot.lifecycle_status)
 
     def _task_group(self, project: Project, suffix: str) -> tuple[Task, Task, Task]:
         parent = Task(project_id=project.id, name=f"标准计划{suffix}", task_type="ROOT")
