@@ -134,8 +134,17 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
 
     def test_fault_uses_cp_sat_for_rebuildable_scheduled_slots(self):
         assignee = User(username="solver", display_name="求解员", role="技术员", is_active=True)
-        project = Project(name="求解器故障项目", code="FAULT-SOLVER")
-        instrument = Instrument(code="ZBYY-002-0009", name="故障仪器")
+        reported_at = datetime(2026, 8, 10, 8, 45)
+        estimated_resolved_at = datetime(2026, 8, 11, 8, 45)
+        project = Project(
+            name="求解器故障项目", code="FAULT-SOLVER", estimated_hours=2,
+            start_date=datetime(2026, 8, 10, 8, 30),
+            end_date=datetime(2026, 8, 20, 18, 0),
+        )
+        instrument = Instrument(
+            code="ZBYY-002-0009", name="故障仪器",
+            availability_status="available", status="fault",
+        )
         task = Task(
             project=project, name="待重排任务", task_type="test", status="scheduled",
             requires_instrument=True, requires_human=True, assignee=assignee,
@@ -147,25 +156,32 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
             plan_start=datetime(2026, 8, 10, 8, 30),
             plan_end=datetime(2026, 8, 10, 10, 30), status="scheduled",
         ))
+        self.db.add(InstrumentFault(
+            instrument_id=instrument.id, reported_at=reported_at,
+            estimated_resolved_at=estimated_resolved_at, status="open",
+        ))
         self.db.commit()
 
         with patch(
-            "app.services.instrument_fault_schedule_service.replan_resource_closure",
-            return_value={"status": "ok", "schedule_run_id": "fault-test"},
-        ) as replan, patch(
-            "app.services.instrument_fault_schedule_service.build_fault_impact_details",
-            return_value=[],
+            "app.services.scheduler.time_horizon",
+            return_value=(reported_at, reported_at + timedelta(days=30), 30 * 24 * 2),
         ), patch(
             "app.services.instrument_fault_notification_service.push_by_rule", return_value=0,
         ), patch(
             "app.services.instrument_fault_schedule_service.notify_rescheduled_tasks_delayed",
         ):
             impact = shift_faulted_instrument_slots(
-                self.db, instrument, datetime(2026, 8, 10, 8, 45), datetime(2026, 8, 11, 8, 45),
+                self.db, instrument, reported_at, estimated_resolved_at,
             )
 
-        self.assertTrue(replan.called)
         self.assertEqual(1, impact["shifted_slots"])
+        old_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == task.id,
+            TimeSlot.lifecycle_status == "superseded",
+        ).one()
+        active_slot = self._only_slot(task.id)
+        self.assertLess(old_slot.plan_start, reported_at)
+        self.assertGreaterEqual(active_slot.plan_start, estimated_resolved_at)
 
     def test_fault_cascades_to_dependencies_but_not_manual_same_owner_task(self):
         assignee = User(
