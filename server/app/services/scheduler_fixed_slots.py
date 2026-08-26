@@ -53,6 +53,7 @@ def load_fixed_slots(
 ) -> list[TimeSlot]:
     query = db.query(TimeSlot).filter(
         TimeSlot.status.in_(FIXED_SLOT_STATUSES),
+        TimeSlot.lifecycle_status == "active",
     )
     slots = query.order_by(TimeSlot.instrument_id, TimeSlot.plan_start, TimeSlot.id).all()
     fixed_slots = [
