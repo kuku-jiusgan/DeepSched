@@ -98,6 +98,7 @@ class SchedulerService:
         solver_time_limit: float = 30.0,
         remaining_duration_minutes: dict[int, int] | None = None,
         replaceable_task_ids: set[int] | None = None,
+        replaceable_after: datetime | None = None,
         planning_start_at: datetime | None = None,
     ) -> dict:
         if current_project_id is None:
@@ -699,6 +700,7 @@ class SchedulerService:
             self.db,
             replaceable_task_ids or set(),
             "CP-SAT局部重排",
+            replaceable_after,
         )
         schedule_run_id = _new_schedule_run_id()
         save_schedule_calendar_snapshot(
@@ -829,7 +831,12 @@ def _remaining_duration_units(
     return max(1, duration_units - fixed_units)
 
 
-def _supersede_replaceable_slots(db, task_ids: set[int], reason: str) -> None:
+def _supersede_replaceable_slots(
+    db,
+    task_ids: set[int],
+    reason: str,
+    replaceable_after: datetime | None,
+) -> None:
     if not task_ids:
         return
     slots = db.query(TimeSlot).filter(
@@ -840,6 +847,8 @@ def _supersede_replaceable_slots(db, task_ids: set[int], reason: str) -> None:
         TimeSlot.actual_end.is_(None),
         TimeSlot.tier != "frozen",
     ).all()
+    if replaceable_after is not None:
+        slots = [slot for slot in slots if slot.plan_start >= replaceable_after]
     for slot in slots:
         supersede_slot(db, slot, reason)
     db.flush()
