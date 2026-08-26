@@ -161,10 +161,9 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         same_owner_slot = self._only_slot(same_owner_task.id)
         dependency_slot = self._only_slot(dependency_task.id)
         self.assertGreaterEqual(root_slot.plan_start, datetime(2026, 8, 12, 8, 45))
-        self.assertEqual(datetime(2026, 8, 12, 9, 0), same_owner_slot.plan_start)
-        self.assertLess(same_owner_slot.plan_start, root_slot.plan_end)
+        self.assertGreaterEqual(same_owner_slot.plan_start, root_slot.plan_end)
         self.assertGreaterEqual(dependency_slot.plan_start, root_slot.plan_end)
-        self.assertEqual(2, impact["affected_tasks"])
+        self.assertEqual(3, impact["affected_tasks"])
 
     def test_fault_allows_shift_past_project_end_and_marks_risk(self):
         project = Project(
