@@ -15,6 +15,7 @@ from app.services.schedule_advance_notification_service import (
 from app.services.task_delay_status_service import mark_task_delayed
 from app.services.task_progress_service import planned_task_minutes
 from app.services.schedule_forward_slot_service import has_instrument_unavailable_window
+from app.services.schedule_replan_closure_service import collect_replan_task_ids
 from app.services.scheduler_helpers import is_allowed_calendar_day
 from app.domain.errors import DomainNotFoundError, DomainValidationError
 
@@ -66,6 +67,7 @@ def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operato
     cutoff = slot.plan_end
     affected_slot_ids = _affected_slot_ids(db, task, slot, cutoff)
     affected_task_ids = _task_ids_for_slots(db, affected_slot_ids)
+    affected_task_ids = _expand_resource_closure(db, affected_task_ids, cutoff)
     passive_task_ids = affected_task_ids - {task.id}
     original_windows = capture_task_schedule_windows(db, passive_task_ids)
 
@@ -446,6 +448,22 @@ def _task_ids_for_slots(db, slot_ids: Set[int]) -> set[int]:
         return set()
     rows = db.query(TimeSlot.task_id).filter(TimeSlot.id.in_(slot_ids)).distinct().all()
     return {row[0] for row in rows}
+
+
+def _expand_resource_closure(db, task_ids: set[int], released_at: datetime) -> set[int]:
+    if not task_ids:
+        return set()
+    instrument_ids = {
+        value for (value,) in db.query(TimeSlot.instrument_id).filter(
+            TimeSlot.task_id.in_(task_ids), TimeSlot.instrument_id.isnot(None),
+        ).distinct().all()
+    }
+    assignee_ids = {
+        value for (value,) in db.query(Task.assignee_id).filter(
+            Task.id.in_(task_ids), Task.assignee_id.isnot(None),
+        ).all()
+    }
+    return collect_replan_task_ids(db, task_ids, instrument_ids, assignee_ids, released_at)
 
 
 def _write_audit_log(

@@ -16,6 +16,7 @@ from app.services.schedule_advance_notification_service import (
 )
 from app.services.schedule_delay_service import _load_working_options
 from app.services.schedule_forward_slot_service import build_forward_slots
+from app.services.schedule_replan_closure_service import collect_replan_task_ids
 
 
 ACTIVE_SLOT_STATUSES = [
@@ -45,7 +46,9 @@ def shift_faulted_instrument_slots(
     if not affected_slots:
         return _impact([], 0, 0, 0, 0)
 
-    affected_task_ids = _affected_task_ids(db, affected_slots)
+    affected_task_ids = _expand_resource_closure(
+        db, _affected_task_ids(db, affected_slots), instrument.id, reported_at,
+    )
     movable_slots = _movable_slots(db, affected_task_ids, reported_at)
     if not movable_slots:
         return _impact([], 0, 0, 0, 0)
@@ -164,6 +167,15 @@ def _affected_slots(db, instrument_id: int, reported_at: datetime) -> list[TimeS
 def _affected_task_ids(db, affected_slots: list[TimeSlot]) -> set[int]:
     task_ids = {slot.task_id for slot in affected_slots}
     return _include_dependency_descendants(db, task_ids)
+
+
+def _expand_resource_closure(db, task_ids: set[int], instrument_id: int, released_at: datetime) -> set[int]:
+    assignee_ids = {
+        value for (value,) in db.query(Task.assignee_id).filter(
+            Task.id.in_(task_ids), Task.assignee_id.isnot(None),
+        ).all()
+    }
+    return collect_replan_task_ids(db, task_ids, {instrument_id}, assignee_ids, released_at)
 
 
 def _include_dependency_descendants(db, task_ids: set[int]) -> set[int]:
