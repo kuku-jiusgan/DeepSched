@@ -6,6 +6,7 @@ def ensure_runtime_schema(engine) -> None:
         ScheduleCalendarSnapshot,
         DashboardStatsSnapshot,
         LabStatusSnapshot,
+        InstrumentUtilizationSnapshot,
         ScheduleDeadlineRecommendationJob,
         InstrumentBridgeReservation,
         ScheduleSlotChangeLog,
@@ -16,6 +17,7 @@ def ensure_runtime_schema(engine) -> None:
     ScheduleCalendarSnapshot.__table__.create(bind=engine, checkfirst=True)
     DashboardStatsSnapshot.__table__.create(bind=engine, checkfirst=True)
     LabStatusSnapshot.__table__.create(bind=engine, checkfirst=True)
+    InstrumentUtilizationSnapshot.__table__.create(bind=engine, checkfirst=True)
     ScheduleSlotChangeLog.__table__.create(bind=engine, checkfirst=True)
     ScheduleDeadlineRecommendationJob.__table__.create(bind=engine, checkfirst=True)
     InstrumentBridgeReservation.__table__.create(bind=engine, checkfirst=True)

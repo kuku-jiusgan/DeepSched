@@ -499,3 +499,10 @@ class LabStatusSnapshot(Base):
     cache_key = Column(String(50), primary_key=True)
     payload = Column(JSON, nullable=False)
     generated_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
+
+class InstrumentUtilizationSnapshot(Base):
+    __tablename__ = "instrument_utilization_snapshot"
+    cache_key = Column(String(200), primary_key=True)
+    payload = Column(JSON, nullable=False)
+    generated_at = Column(DateTime, default=datetime.now, nullable=False, index=True)

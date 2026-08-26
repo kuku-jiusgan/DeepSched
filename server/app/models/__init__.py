@@ -6,5 +6,5 @@
     TimeSlot, InstrumentBridgeReservation, ScheduleSlotChangeLog, TaskExecutionSegment, TaskNightRun, AuditLog, Notification, TaskTypeConfig, AlertRule, PushChannelConfig,
     AuthSession, WeComOAuthState, LoginFailure, WorkerLease, RolePermission,
     ScheduleDeadlineRecommendationJob,
-    SysCalendar, ScheduleCalendarSnapshot, DashboardStatsSnapshot, LabStatusSnapshot
+    SysCalendar, ScheduleCalendarSnapshot, DashboardStatsSnapshot, LabStatusSnapshot, InstrumentUtilizationSnapshot
 )

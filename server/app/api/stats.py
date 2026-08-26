@@ -18,6 +18,7 @@ from app.api.users import auth_token, get_current_user
 from app.schemas.project_progress_schemas import ProjectProgressList
 from app.services.project_progress_service import list_project_progress
 from app.services.lab_status_snapshot_service import load_lab_status_snapshot
+from app.services.instrument_utilization_snapshot_service import load_utilization_snapshot, save_utilization_snapshot
 from app.services.dashboard_snapshot_service import (
     load_dashboard_snapshot,
     load_latest_dashboard_snapshot,
@@ -116,7 +117,22 @@ def utilization(
 ):
     settings = get_settings()
     window_start, window_end = _stats_window(start_date, end_date, settings)
-    return calculate_instrument_utilization(db, window_start, window_end, settings.PERCENT_SCALE)
+    cache_key = _utilization_snapshot_key(window_start, window_end)
+    snapshot = load_utilization_snapshot(db, cache_key)
+    if snapshot is None:
+        snapshot = load_utilization_snapshot(db, cache_key, allow_stale=True)
+    if snapshot is not None:
+        return snapshot
+    rows = calculate_instrument_utilization(db, window_start, window_end, settings.PERCENT_SCALE)
+    payload = [row.model_dump(mode="json") for row in rows]
+    save_utilization_snapshot(db, cache_key, payload)
+    return payload
+
+
+def _utilization_snapshot_key(window_start: datetime, window_end: datetime) -> str:
+    start = window_start.replace(second=0, microsecond=0)
+    end = window_end.replace(second=0, microsecond=0)
+    return f"{start.isoformat()}|{end.isoformat()}"
 
 
 def _stats_window(start_date: datetime | None, end_date: datetime | None, settings) -> tuple[datetime, datetime]:
