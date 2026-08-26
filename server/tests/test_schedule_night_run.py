@@ -75,6 +75,33 @@ class ScheduleNightRunTest(unittest.TestCase):
         self.assertEqual(datetime(2026, 7, 13, 20, 0), records[0].started_at)
         self.assertEqual(datetime(2026, 7, 14, 20, 0), records[1].started_at)
 
+    def test_does_not_reuse_superseded_night_slot(self):
+        task = Task(project_id=1, name="历史夜间运行", task_type="test", status="running")
+        self.db.add(task)
+        self.db.flush()
+        slot = TimeSlot(
+            task_id=task.id, instrument_id=1,
+            plan_start=datetime(2026, 7, 13, 8, 30),
+            plan_end=datetime(2026, 7, 13, 20, 0),
+            status="running",
+        )
+        superseded_night_slot = TimeSlot(
+            task_id=task.id, instrument_id=1,
+            plan_start=datetime(2026, 7, 13, 20, 0),
+            plan_end=datetime(2026, 7, 14, 4, 0),
+            is_night_run=True, status="scheduled", lifecycle_status="superseded",
+        )
+        self.db.add_all([slot, superseded_night_slot])
+        self.db.commit()
+
+        night_slot = record_night_run(self.db, slot.id, 4, "20:00", "次日 08:30")
+
+        self.assertNotEqual(superseded_night_slot.id, night_slot.id)
+        self.assertEqual("active", night_slot.lifecycle_status)
+        self.assertEqual(2, self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == task.id, TimeSlot.is_night_run.is_(True),
+        ).count())
+
 
 if __name__ == "__main__":
     unittest.main()

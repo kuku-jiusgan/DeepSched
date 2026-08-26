@@ -7,6 +7,7 @@ from app.models import TaskNightRun, TimeSlot
 from app.services.instrument_status_service import (
     mark_instrument_running,
 )
+from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.domain.errors import DomainNotFoundError, DomainValidationError
 from app.services.instrument_working_time_service import load_working_time_context
 
@@ -53,6 +54,9 @@ def record_night_run(
 
     night_slot = _merge_or_create_night_slot(db, slot, start_time, end_time)
     _upsert_night_run(db, night_slot, start_time, end_time, operator_id)
+    # Bridge reservations are derived from active task slots. Refresh them in
+    # this transaction whenever a night-run slot changes the task timeline.
+    rebuild_instrument_bridge_reservations(db, slot.schedule_run_id)
     if night_slot.status == "running":
         mark_instrument_running(db, night_slot.instrument_id)
     db.flush()
@@ -98,6 +102,7 @@ def _merge_or_create_night_slot(
         TimeSlot.task_id == slot.task_id,
         TimeSlot.instrument_id == slot.instrument_id,
         TimeSlot.plan_start == start_time,
+        TimeSlot.lifecycle_status == "active",
         TimeSlot.status.in_(["scheduled", "running"]),
     ).first()
 
