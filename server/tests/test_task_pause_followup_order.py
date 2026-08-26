@@ -12,6 +12,7 @@ from app.services.task_pause_service import pause_and_switch_task
 from app.services.task_pause_solver_service import replan_pause_switch
 from app.services.task_pause_switch_context_service import build_pause_switch_context
 from app.services.task_execution_service import start_task_execution
+from app.services.schedule_conflict_service import find_instrument_conflicts
 
 
 class TaskPauseFollowupOrderTest(unittest.TestCase):
@@ -153,6 +154,16 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
         self.assertEqual(target_start, target_slot.plan_start)
         self.assertEqual(target_end, target_slot.plan_end)
         self.assertEqual("active", target_slot.lifecycle_status)
+
+    def test_zero_length_pause_anchor_is_not_an_instrument_conflict(self):
+        _, source, _ = self._task_group(self.project_a, "A")
+        _, target, _ = self._task_group(self.project_b, "B")
+        now = datetime.now().replace(second=0, microsecond=0)
+        self._slot(source, now, now)
+        self._slot(target, now, now + timedelta(hours=1))
+        self.db.commit()
+
+        self.assertEqual([], find_instrument_conflicts(self.db))
 
     def _task_group(self, project: Project, suffix: str) -> tuple[Task, Task, Task]:
         parent = Task(project_id=project.id, name=f"标准计划{suffix}", task_type="ROOT")

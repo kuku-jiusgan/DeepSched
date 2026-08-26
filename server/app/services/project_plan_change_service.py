@@ -25,6 +25,7 @@ from app.services.project_date_service import (
     normalize_project_start,
     validate_project_window,
 )
+from app.services.task_dependency_service import is_valid_continuous_successor
 from app.services.project_reference_validation_service import (
     ProjectReferenceInvalidError,
     validate_task_references,
@@ -419,6 +420,7 @@ def _downstream_tasks(db, task: Task) -> list[Task]:
 
 
 def _replace_dependencies(db, task_id: int, predecessor_ids: list[int]) -> None:
+    task = db.query(Task).filter(Task.id == task_id).first()
     existing_types = {
         dependency.predecessor_id: dependency.dependency_type
         for dependency in db.query(TaskDependency).filter(
@@ -427,10 +429,16 @@ def _replace_dependencies(db, task_id: int, predecessor_ids: list[int]) -> None:
     }
     db.query(TaskDependency).filter(TaskDependency.task_id == task_id).delete()
     for predecessor_id in sorted(set(predecessor_ids)):
+        dependency_type = existing_types.get(predecessor_id, "predecessor")
+        predecessor = db.query(Task).filter(Task.id == predecessor_id).first()
+        if dependency_type == "continuous_successor" and (
+            not task or not predecessor or not is_valid_continuous_successor(predecessor, task)
+        ):
+            dependency_type = "predecessor"
         db.add(TaskDependency(
             task_id=task_id,
             predecessor_id=predecessor_id,
-            dependency_type=existing_types.get(predecessor_id, "predecessor"),
+            dependency_type=dependency_type,
         ))
 
 

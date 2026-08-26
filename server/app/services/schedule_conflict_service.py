@@ -112,6 +112,8 @@ def _effective_slot_range(slot: TimeSlot):
     if slot.status == "completed":
         if slot.actual_start is None or slot.actual_end is None:
             return None
+        if slot.actual_end <= slot.actual_start:
+            return None
         return slot.actual_start, slot.actual_end
     if slot.actual_start:
         if slot.plan_start > datetime.now():
@@ -121,11 +123,12 @@ def _effective_slot_range(slot: TimeSlot):
     return _planned_slot_range(slot)
 
 
-def _planned_slot_range(slot: TimeSlot) -> tuple[datetime, datetime]:
-    return (
+def _planned_slot_range(slot: TimeSlot) -> tuple[datetime, datetime] | None:
+    start, end = (
         slot.plan_start.replace(second=0, microsecond=0),
         slot.plan_end.replace(second=0, microsecond=0),
     )
+    return (start, end) if end > start else None
 
 
 def _schedule_context(slot: TimeSlot, start, end) -> dict:
