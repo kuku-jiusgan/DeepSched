@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from typing import Literal, Optional, List
-from datetime import datetime
+from datetime import datetime, time
 
 # ---- Project ----
 class MilestoneCreate(BaseModel):
@@ -13,6 +13,10 @@ class MilestoneOut(BaseModel):
     name: str
     due_date: datetime
     status: str
+    lifecycle_status: str = "active"
+    superseded_at: Optional[datetime] = None
+    superseded_by_slot_id: Optional[int] = None
+    superseded_reason: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 class TaskCapabilityReqCreate(BaseModel):
@@ -69,6 +73,7 @@ class TaskOut(BaseModel):
     requires_instrument: bool
     requires_human: bool
     est_duration_hours: Optional[float]
+    actual_hours: float = 0
     switchover_hours: float
     allow_split: bool = False
     status: str
@@ -128,6 +133,23 @@ class ProjectOut(BaseModel):
     end_date: Optional[datetime] = None
     project_kind: str = "project"
     tasks: List[TaskOut] = []
+    model_config = ConfigDict(from_attributes=True)
+
+class ProjectListOut(BaseModel):
+    id: int
+    name: str
+    code: str
+    client_name: Optional[str]
+    estimated_hours: Optional[float] = None
+    actual_hours: float = 0
+    priority: int
+    status: str
+    delivery_status: Optional[str] = None
+    manager_id: Optional[int] = None
+    manager_name: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    project_kind: str = "project"
     model_config = ConfigDict(from_attributes=True)
 
 class DetectionTaskCreate(BaseModel):
@@ -218,7 +240,19 @@ class InstrumentCreate(BaseModel):
     availability_status: str = "available"
     buffer_rate: float = 1.1
     switchover_base_hours: float = 0.5
+    effective_work_start: str = "08:30"
+    effective_work_end: str = "20:00"
     capabilities: List[CapabilityCreate] = []
+
+    @model_validator(mode="after")
+    def validate_working_hours(self):
+        from app.services.instrument_working_time_service import validate_instrument_working_time
+
+        try:
+            validate_instrument_working_time(self.effective_work_start, self.effective_work_end)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
 
 class InstrumentOut(BaseModel):
     id: int
@@ -232,6 +266,8 @@ class InstrumentOut(BaseModel):
     status: str
     buffer_rate: float
     switchover_base_hours: float
+    effective_work_start: str
+    effective_work_end: str
     capabilities: List[CapabilityOut] = []
     model_config = ConfigDict(from_attributes=True)
 
@@ -245,6 +281,7 @@ class TimeSlotOut(BaseModel):
     plan_end: datetime
     actual_start: Optional[datetime]
     actual_end: Optional[datetime]
+    is_night_run: bool = False
     tier: str
     status: str
     execution_status: str
@@ -273,6 +310,26 @@ class TimeSlotOut(BaseModel):
     approved_by_name: Optional[str] = None
     approval_note: Optional[str] = None
     approval_schedule_status: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InstrumentBridgeReservationOut(BaseModel):
+    id: int
+    kind: str = "human_bridge_reservation"
+    schedule_run_id: str
+    task_id: int
+    instrument_id: int
+    previous_task_id: int
+    following_task_id: int
+    plan_start: datetime
+    plan_end: datetime
+    task_name: str
+    task_type: Optional[str] = None
+    project_id: Optional[int] = None
+    project_code: Optional[str] = None
+    project_name: Optional[str] = None
+    assignee_id: Optional[int] = None
+    assignee_name: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 class TimeSlotUpdate(BaseModel):
@@ -347,6 +404,16 @@ class ProjectPlanApplyResponse(BaseModel):
     preview_token: Optional[str] = None
     impacts: List["InsertOrderImpact"] = []
     project_impacts: List[ProjectScheduleImpact] = []
+    created: int = 0
+    id_map: List[dict] = []
+    schedule_failure: Optional[dict] = None
+
+
+class ScheduleDeadlineRecommendationJobResponse(BaseModel):
+    id: str
+    status: Literal["pending", "running", "completed", "failed", "stale"]
+    recommendation: Optional[dict] = None
+    message: Optional[str] = None
 
 class InsertOrderImpact(BaseModel):
     task_id: int
@@ -509,3 +576,8 @@ class NotificationOut(BaseModel):
     is_confirmed: Optional[bool]
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class NotificationReadAllOut(BaseModel):
+    status: str
+    updated_count: int

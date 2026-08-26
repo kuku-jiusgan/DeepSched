@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from app.models import ScheduleSlotChangeLog, Task, TimeSlot
+from app.services.instrument_bridge_sync_service import invalidate_task_bridge_reservations
+from datetime import datetime
 
 
 def _project_id(db, slot: TimeSlot) -> int | None:
@@ -37,4 +39,22 @@ def record_slot_deleted(db, slot: TimeSlot, reason_type: str = "replan") -> None
         before_start=slot.plan_start,
         before_end=slot.plan_end,
         before_status=slot.status,
+    ))
+
+def supersede_slot(db, slot: TimeSlot, reason: str, replacement: TimeSlot | None = None, operator_id: int | None = None) -> None:
+    if slot.actual_start is not None or slot.actual_end is not None:
+        raise ValueError("已发生时间槽不可被替代")
+    slot.lifecycle_status = "superseded"
+    slot.superseded_at = datetime.now()
+    slot.superseded_reason = reason
+    slot.superseded_by = operator_id
+    if replacement is not None:
+        slot.superseded_by_slot_id = replacement.id
+    invalidate_task_bridge_reservations(db, slot.task_id)
+    db.add(ScheduleSlotChangeLog(
+        schedule_run_id=slot.schedule_run_id, task_id=slot.task_id,
+        project_id=_project_id(db, slot), instrument_id=slot.instrument_id,
+        slot_id=slot.id, change_type="superseded", reason_type=reason,
+        before_start=slot.plan_start, before_end=slot.plan_end,
+        before_status=slot.status, operator_id=operator_id,
     ))

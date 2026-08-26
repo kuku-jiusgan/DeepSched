@@ -17,6 +17,7 @@ def find_instrument_conflicts(db, schedule_run_id: str | None = None) -> list[di
     slots = db.query(TimeSlot).filter(
         TimeSlot.instrument_id.isnot(None),
         TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+        TimeSlot.lifecycle_status == "active",
     ).order_by(TimeSlot.instrument_id, TimeSlot.plan_start, TimeSlot.id).all()
     by_instrument: dict[int, list[tuple[TimeSlot, object, object]]] = defaultdict(list)
     for slot in slots:
@@ -57,6 +58,7 @@ def find_human_conflicts(db, schedule_run_id: str | None = None) -> list[dict]:
         Task.requires_human.is_(True),
         Task.assignee_id.isnot(None),
         TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+        TimeSlot.lifecycle_status == "active",
     ).order_by(Task.assignee_id, TimeSlot.plan_start, TimeSlot.id).all()
     by_assignee: dict[int, list[tuple[TimeSlot, object, object]]] = defaultdict(list)
     for slot in slots:
@@ -107,10 +109,17 @@ def _in_run(first: TimeSlot, second: TimeSlot, schedule_run_id: str | None) -> b
 def _effective_slot_range(slot: TimeSlot):
     if slot.actual_start:
         if slot.plan_start > datetime.now():
-            return slot.plan_start, slot.plan_end
+            return _planned_slot_range(slot)
         effective_end = slot.actual_end or max(slot.plan_end, datetime.now())
         return slot.actual_start, effective_end
-    return slot.plan_start, slot.plan_end
+    return _planned_slot_range(slot)
+
+
+def _planned_slot_range(slot: TimeSlot) -> tuple[datetime, datetime]:
+    return (
+        slot.plan_start.replace(second=0, microsecond=0),
+        slot.plan_end.replace(second=0, microsecond=0),
+    )
 
 
 def _schedule_context(slot: TimeSlot, start, end) -> dict:
@@ -177,6 +186,61 @@ def ensure_no_human_conflicts(db, schedule_run_id: str | None = None) -> None:
         f"冲突时段为【{_format_time_from_iso(conflict['overlap_start'])} 至 "
         f"{_format_time_from_iso(conflict['overlap_end'])}】"
     )
+
+
+def ensure_no_dependency_conflicts(
+    db,
+    dependency_pairs: list[tuple[int, int]],
+    schedule_run_id: str | None = None,
+    task_slots_from_run_only: bool = False,
+) -> None:
+    for task_id, predecessor_id in dependency_pairs:
+        predecessor_slots = _task_effective_slots(db, predecessor_id)
+        task_slots = _task_effective_slots(
+            db,
+            task_id,
+            schedule_run_id if task_slots_from_run_only else None,
+        )
+        if not predecessor_slots or not task_slots:
+            continue
+        if schedule_run_id and not any(
+            slot.schedule_run_id == schedule_run_id
+            for slot, _, _ in [*predecessor_slots, *task_slots]
+        ):
+            continue
+        predecessor_end = max(end for _, _, end in predecessor_slots)
+        task_start = min(start for _, start, _ in task_slots)
+        if predecessor_end <= task_start:
+            continue
+        predecessor = db.get(Task, predecessor_id)
+        task = db.get(Task, task_id)
+        raise ScheduleConflictError(
+            f"任务前置关系冲突：任务【{task.name if task else task_id}】必须在"
+            f"前置任务【{predecessor.name if predecessor else predecessor_id}】完成后开始，"
+            f"但当前开始时间为【{_format_time(task_start)}】，前置任务完成时间为"
+            f"【{_format_time(predecessor_end)}】"
+        )
+
+
+def _task_effective_slots(
+    db,
+    task_id: int,
+    schedule_run_id: str | None = None,
+) -> list[tuple[TimeSlot, datetime, datetime]]:
+    result = []
+    query = db.query(TimeSlot).filter(
+        TimeSlot.task_id == task_id,
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.status.in_([*ACTIVE_SLOT_STATUSES, "completed"]),
+    )
+    if schedule_run_id:
+        query = query.filter(TimeSlot.schedule_run_id == schedule_run_id)
+    slots = query.all()
+    for slot in slots:
+        effective_range = _effective_slot_range(slot)
+        if effective_range:
+            result.append((slot, *effective_range))
+    return result
 
 
 def _format_time_from_iso(value: str) -> str:

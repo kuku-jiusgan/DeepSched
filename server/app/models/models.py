@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Date, Text, ForeignKey, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, time
 from app.core.database import Base
 
 class Project(Base):
@@ -46,6 +46,8 @@ class Task(Base):
     requires_instrument = Column(Boolean, default=False)
     requires_human = Column(Boolean, default=True)
     est_duration_hours = Column(Float)
+    executed_minutes = Column(Integer, nullable=False, default=0, comment="任务累计有效执行分钟数")
+    additional_planned_minutes = Column(Integer, nullable=False, default=0, comment="延期追加计划分钟数")
     switchover_hours = Column(Float, default=0)
     allow_split = Column(Boolean, default=False)
     allow_transfer = Column(Boolean, default=False)
@@ -126,8 +128,9 @@ class Task(Base):
 class TaskDependency(Base):
     __tablename__ = "task_dependency"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    task_id = Column(Integer, ForeignKey("task.id"), nullable=False)
+    task_id = Column(Integer, ForeignKey("task.id", ondelete="CASCADE"), nullable=False)
     predecessor_id = Column(Integer, ForeignKey("task.id"), nullable=False)
+    dependency_type = Column(String(30), nullable=False, default="predecessor")
     __table_args__ = (UniqueConstraint("task_id", "predecessor_id"),)
 
     task = relationship("Task", foreign_keys=[task_id], back_populates="predecessors")
@@ -156,6 +159,8 @@ class Instrument(Base):
     status = Column(String(20), default="idle")
     buffer_rate = Column(Float, default=1.1)
     switchover_base_hours = Column(Float, default=0.5)
+    effective_work_start = Column(String(5), nullable=False, default="08:30")
+    effective_work_end = Column(String(5), nullable=False, default="20:00")
     label_x = Column(Integer, default=0)
     label_y = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.now)
@@ -211,11 +216,32 @@ class TimeSlot(Base):
     is_night_run = Column(Boolean, default=False, nullable=False)
     tier = Column(String(10), nullable=False, default="forecast")
     status = Column(String(20), default="scheduled")
+    lifecycle_status = Column(String(20), nullable=False, default="active")
+    superseded_at = Column(DateTime)
+    superseded_by_slot_id = Column(Integer)
+    superseded_reason = Column(String(200))
+    superseded_by = Column(Integer, ForeignKey("user.id"))
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     task = relationship("Task", back_populates="time_slots")
     instrument = relationship("Instrument", back_populates="time_slots")
+
+
+class InstrumentBridgeReservation(Base):
+    __tablename__ = "instrument_bridge_reservation"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    schedule_run_id = Column(String(64), nullable=False)
+    task_id = Column(Integer, ForeignKey("task.id"), nullable=False)
+    instrument_id = Column(Integer, ForeignKey("instrument.id"), nullable=False)
+    previous_task_id = Column(Integer, ForeignKey("task.id", ondelete="CASCADE"), nullable=False)
+    following_task_id = Column(Integer, ForeignKey("task.id", ondelete="CASCADE"), nullable=False)
+    plan_start = Column(DateTime, nullable=False)
+    plan_end = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+    task = relationship("Task", foreign_keys=[task_id])
+    instrument = relationship("Instrument")
 
 
 class ScheduleSlotChangeLog(Base):
@@ -411,6 +437,21 @@ class WorkerLease(Base):
     expires_at = Column(DateTime, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
+
+class ScheduleDeadlineRecommendationJob(Base):
+    __tablename__ = "schedule_deadline_recommendation_job"
+    id = Column(String(36), primary_key=True)
+    project_id = Column(Integer, ForeignKey("project.id"), nullable=False, index=True)
+    plan_fingerprint = Column(String(64), nullable=False)
+    payload = Column(JSON, nullable=False)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    result = Column(JSON)
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
 class PushChannelConfig(Base):
     __tablename__ = "push_channel_config"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -439,7 +480,22 @@ class ScheduleCalendarSnapshot(Base):
     horizon_start = Column(DateTime, nullable=False)
     horizon_end = Column(DateTime, nullable=False)
     working_hours = Column(JSON, nullable=False)
+    instrument_working_hours = Column(JSON, nullable=False, default=dict)
     calendar_days = Column(JSON, nullable=False)
     maintenance_windows = Column(JSON, nullable=False)
     rule_versions = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
+class DashboardStatsSnapshot(Base):
+    __tablename__ = "dashboard_stats_snapshot"
+    cache_key = Column(String(200), primary_key=True)
+    payload = Column(JSON, nullable=False)
+    generated_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
+
+class LabStatusSnapshot(Base):
+    __tablename__ = "lab_status_snapshot"
+    cache_key = Column(String(50), primary_key=True)
+    payload = Column(JSON, nullable=False)
+    generated_at = Column(DateTime, default=datetime.now, nullable=False, index=True)

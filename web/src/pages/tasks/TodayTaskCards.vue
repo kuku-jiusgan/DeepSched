@@ -158,7 +158,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { PauseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons-vue'
-import { getScheduleRules, recordNightRun, reportTaskDelay } from '@/services/api'
+import { recordNightRun, reportTaskDelay } from '@/services/api'
 import type { WorkspaceTask } from '@/domains/tasks/workspaceTask'
 import { actionableSlotId } from '@/domains/tasks/workspaceTask'
 import dayjs from 'dayjs'
@@ -236,7 +236,6 @@ const DEFAULT_NIGHT_START = '17:30'
 const DEFAULT_SEQUENCE_DURATION_HOURS = 8
 const DEFAULT_DELAY_HOURS = 1
 const NIGHT_RUN_STORAGE_PREFIX = 'deepsched:today-night-run'
-const WORKING_HOURS_RULE_CODE = 'working_hours'
 
 const autoSequenceOpen = ref(false)
 const delayReportOpen = ref(false)
@@ -255,15 +254,15 @@ const delayForm = reactive<DelayForm>({
   reason: '',
 })
 const nightRunRevision = ref(0)
-const workdayEndTime = ref<string | null>(null)
-const isWorkingHoursLoading = ref(true)
 
 const todayCardGroups = computed<TodayCardGroup[]>(() => {
   const completionCards = props.tasks
     .filter(task => isCompletionConfirmTask(task))
+    .sort(compareActiveTasks)
     .map(task => buildTodayCard(task, 'completion'))
   const exceptionCards = props.tasks
     .filter(task => isWorkspaceExceptionConfirmTask(task))
+    .sort(compareActiveTasks)
     .map(task => buildTodayCard(task, 'exception'))
 
   return [
@@ -271,6 +270,22 @@ const todayCardGroups = computed<TodayCardGroup[]>(() => {
     { key: 'exception', title: '异常/延期确认', cards: exceptionCards },
   ]
 })
+
+function compareActiveTasks(left: WorkspaceTask, right: WorkspaceTask) {
+  return activeTaskPriority(left) - activeTaskPriority(right)
+}
+
+function activeTaskPriority(task: WorkspaceTask) {
+  const priorities: Record<string, number> = {
+    running: 0,
+    paused: 1,
+    blocked: 2,
+    interrupted: 2,
+    pending: 3,
+    scheduled: 3,
+  }
+  return priorities[task.actionable_slot?.status || task.execution_status] ?? 4
+}
 
 const nightRunMaxHours = computed(() => {
   return maxNightRunHours(autoSequenceForm.startTime, NIGHT_RESERVE_END)
@@ -309,35 +324,21 @@ watch(
   },
 )
 
-fetchWorkingHours()
-
-async function fetchWorkingHours() {
-  isWorkingHoursLoading.value = true
-  try {
-    const rules = await getScheduleRules()
-    const workingRule = rules.find(rule => rule.code === WORKING_HOURS_RULE_CODE)
-    const dayEnd = workingRule?.params?.day_end
-    workdayEndTime.value = normalizeWorkdayEndTime(dayEnd)
-  } catch {
-    workdayEndTime.value = null
-  } finally {
-    isWorkingHoursLoading.value = false
-  }
-}
-
 function canNightRunTask(task: WorkspaceTask, storedNightRun?: StoredAutoSequenceForm | null) {
+  if (task.execution_status !== 'running' || task.actionable_slot?.status !== 'running') return false
   if (storedNightRun) return true
-  if (isWorkingHoursLoading.value) return false
-  if (!workdayEndTime.value) return false
-  return getNightRunEligibility(task, workdayEndTime.value).isEligible
+  const workdayEndTime = normalizeWorkdayEndTime(task.actionable_slot?.effective_work_end)
+  if (!workdayEndTime) return false
+  return getNightRunEligibility(task, workdayEndTime).isEligible
 }
 
 function nightRunDisabledReason(task: WorkspaceTask, storedNightRun?: StoredAutoSequenceForm | null) {
   if (canNightRunTask(task, storedNightRun)) return ''
+  if (task.execution_status !== 'running' || task.actionable_slot?.status !== 'running') return '只有进行中的任务才能设置夜间运行'
   if (!task.actionable_slot?.plan_end) return '当前可执行时间段没有计划结束时间，不能继续夜间运行'
-  if (isWorkingHoursLoading.value) return '正在读取排程规则中的有效工作时段'
-  if (!workdayEndTime.value) return '未读取到排程规则中的有效工作时段，暂不能继续夜间运行'
-  return getNightRunEligibility(task, workdayEndTime.value).reason
+  const workdayEndTime = normalizeWorkdayEndTime(task.actionable_slot?.effective_work_end)
+  if (!workdayEndTime) return '当前仪器未配置有效工作时段，暂不能继续夜间运行'
+  return getNightRunEligibility(task, workdayEndTime).reason
 }
 
 function buildTodayCard(task: WorkspaceTask, category: TodayCardCategory): TodayTaskCard {
@@ -372,7 +373,7 @@ function buildTodayCard(task: WorkspaceTask, category: TodayCardCategory): Today
     nightRunSummary: storedNightRun ? formatNightRunSummary(storedNightRun) : '',
     delayText: getDelayText(task),
     canNightRun: canNightRunTask(task, storedNightRun),
-    isNightRunLoading: isWorkingHoursLoading.value,
+    isNightRunLoading: false,
     nightRunDisabledReason: nightRunDisabledReason(task, storedNightRun),
   }
 }

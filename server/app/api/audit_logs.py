@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.users import require_authenticated_user
 from app.core.database import get_db
-from app.models import Instrument, Project, Task, TaskDependency, TaskTypeConfig, TimeSlot, User
+from app.models import AuditLog, Instrument, Project, Task, TaskDependency, TaskTypeConfig, TimeSlot, User
 from app.services.audit_log_service import list_audit_logs, project_audit_detail
 from app.services.audit_log_export_service import export_audit_logs
 from app.services.audit_log_presentation_service import audit_log_categories, present_audit_record
@@ -52,11 +52,16 @@ def get_audit_logs(
     user_name: str | None = None,
     start_at: datetime | None = Query(default=None),
     end_at: datetime | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
     user: User = Depends(require_authenticated_user),
 ):
     _ensure_audit_log_access(db, user)
-    return _audit_log_records(db, keyword, action, category, user_name, start_at, end_at)
+    start = (page - 1) * page_size
+    records = _audit_log_records(db, keyword, action, category, user_name, start_at, end_at, start, page_size)
+    total = _audit_log_count(db, action, user_name, start_at, end_at)
+    return {"items": records, "total": total, "page": page, "page_size": page_size}
 
 
 def _ensure_audit_log_access(db: Session, user: User) -> None:
@@ -65,18 +70,27 @@ def _ensure_audit_log_access(db: Session, user: User) -> None:
         raise HTTPException(status_code=403, detail="当前角色没有查看操作日志的权限")
 
 
-def _audit_log_records(db: Session, keyword=None, action=None, category=None, user_name=None, start_at=None, end_at=None) -> list[dict]:
+def _audit_log_records(db: Session, keyword=None, action=None, category=None, user_name=None, start_at=None, end_at=None, offset=0, limit=50) -> list[dict]:
+    raw_logs = list_audit_logs(db, None, action, user_name, start_at, end_at, offset, limit)
+    operators = {item.user_name for item in raw_logs if item.user_name not in {"system", "anonymous"}}
+    users = db.query(User).filter(
+        (User.username.in_(operators)) | (User.display_name.in_(operators))
+    ).all() if operators else []
+    operator_names = {
+        name: f"{user.display_name} ({user.username})" if user.display_name else user.username
+        for user in users for name in (user.username, user.display_name)
+    }
     records = [
         present_audit_record({
             "id": item.id,
-            "user_name": _operator_display_name(db, item.user_name),
+            "user_name": operator_names.get(item.user_name, item.user_name),
             "action": item.action,
             "target_type": item.target_type,
             "target_id": item.target_id,
             "detail": _enriched_detail(db, item),
             "created_at": item.created_at,
         })
-        for item in list_audit_logs(db, None, action, user_name, start_at, end_at)
+        for item in raw_logs
     ]
     normalized_keyword = (keyword or "").strip().lower()
     return [
@@ -89,6 +103,15 @@ def _audit_log_records(db: Session, keyword=None, action=None, category=None, us
             or normalized_keyword in str(record["target_display"]).lower()
         )
     ]
+
+
+def _audit_log_count(db: Session, action=None, user_name=None, start_at=None, end_at=None) -> int:
+    query = db.query(AuditLog.id)
+    if action: query = query.filter(AuditLog.action == action)
+    if user_name: query = query.filter(AuditLog.user_name == user_name)
+    if start_at: query = query.filter(AuditLog.created_at >= start_at)
+    if end_at: query = query.filter(AuditLog.created_at <= end_at)
+    return query.count()
 
 
 def _operator_display_name(db: Session, operator: str) -> str:
@@ -108,7 +131,6 @@ def _enriched_detail(db: Session, item) -> dict:
         slot = db.query(TimeSlot).filter(TimeSlot.id == int(slot_match.group(1))).first()
         if slot:
             detail["task_id"] = slot.task_id
-            detail["target_display"] = f"{slot.plan_start:%Y-%m-%d} · {slot.instrument.name if slot.instrument else '未指定仪器'} · {slot.plan_start:%H:%M}–{slot.plan_end:%H:%M}"
     task_match = re.search(r"/projects/tasks/(\d+)", path)
     if task_match and not detail.get("task_id"):
         task = db.query(Task).filter(Task.id == int(task_match.group(1))).first()
@@ -135,12 +157,6 @@ def _enriched_detail(db: Session, item) -> dict:
         task_id = slot.task_id if slot else None
     if item.target_type == "time_slot" and item.target_id:
         slot = slot or db.query(TimeSlot).filter(TimeSlot.id == item.target_id).first()
-        if slot:
-            instrument_name = slot.instrument.name if slot.instrument else "未指定仪器"
-            detail["target_display"] = (
-                f"{slot.plan_start:%Y-%m-%d} · {instrument_name} · "
-                f"{slot.plan_start:%H:%M}–{slot.plan_end:%H:%M}"
-            )
     if task_id and not detail.get("task_display"):
         task = db.query(Task).filter(Task.id == task_id).first()
         if task:
@@ -159,6 +175,8 @@ def _enriched_detail(db: Session, item) -> dict:
                     top_task.name,
                     "方案",
                 ] if part)
+    if item.target_type == "time_slot" and detail.get("task_display"):
+        detail["target_display"] = detail["task_display"]
     _enrich_related_schedule_entities(db, detail)
     return detail
 

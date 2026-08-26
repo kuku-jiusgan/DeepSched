@@ -65,6 +65,14 @@ export function sumTaskHours(task: Task): number {
     : task.est_duration_hours || 0
 }
 
+export function taskActualHoursText(task: Task): string {
+  const sumActualHours = (current: Task): number => current.children?.length
+    ? current.children.reduce((total, child) => total + sumActualHours(child), 0)
+    : Number(current.actual_hours || 0)
+  const hours = sumActualHours(task)
+  return hours > 0 ? hours.toFixed(1) : '-'
+}
+
 export function taskInstrumentIds(task: Task): number[] {
   if (!task.children?.length) return task.instrument_ids || []
   return [...new Set(task.children.flatMap(taskInstrumentIds))]
@@ -72,6 +80,26 @@ export function taskInstrumentIds(task: Task): number[] {
 
 export function parentTaskIds(tasks: Task[]): number[] {
   return [...new Set(tasks.flatMap(task => task.parent_id == null ? [] : [task.parent_id]))]
+}
+
+export function localDraftDependsOnTask(tasks: Task[], taskId: number): boolean {
+  return tasks.some(task => task.is_local_draft
+    && (task.parent_id === taskId || task.predecessor_ids.includes(taskId)))
+}
+
+export function taskTreeIds(tasks: Task[], rootId: number): Set<number> {
+  const taskIds = new Set<number>([rootId])
+  let hasNewDescendant = true
+  while (hasNewDescendant) {
+    hasNewDescendant = false
+    for (const task of tasks) {
+      if (task.parent_id != null && taskIds.has(task.parent_id) && !taskIds.has(task.id)) {
+        taskIds.add(task.id)
+        hasNewDescendant = true
+      }
+    }
+  }
+  return taskIds
 }
 
 export function allocateTemplateHours(total: number): [number, number, number, number] {

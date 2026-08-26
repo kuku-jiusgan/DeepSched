@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.models import Project, Task, TaskDependency, TimeSlot
+from app.services.schedule_slot_protection_service import task_has_immovable_slot
 from app.schemas.schemas import (
     InsertOrderImpact,
     InsertOrderPreview,
@@ -15,6 +16,7 @@ from app.services.schedule_insert_resources import (
     resource_queue_task_ids,
 )
 from app.services.task_delay_status_service import reset_task_delay
+from app.services.schedule_working_time_service import working_hours_between
 
 
 class ScheduleInsertNotFoundError(Exception):
@@ -130,6 +132,7 @@ def _execute_insert(
         additional_dependencies=context["dependency_pairs"],
         advance_notification_reason=_insert_notification_reason(operator_name),
         emit_advance_notifications=commit,
+        current_project_id=project.id,
     )
     if result.get("status") != "ok":
         db.rollback()
@@ -138,6 +141,7 @@ def _execute_insert(
     schedule_run_id = result.get("schedule_run_id", "")
     new_windows = _task_windows(db, replan_task_ids, schedule_run_id)
     impacts = _build_impacts(
+        db,
         replan_tasks,
         selected_task_ids,
         old_windows,
@@ -395,10 +399,12 @@ def _load_lower_priority_movable_tasks(
     insert_priority: int,
     excluded_task_ids: set[int],
     selected_instrument_ids: set[int],
+    selected_assignee_ids: set[int] | None = None,
     include_same_priority: bool = False,
     unstarted_projects_only: bool = False,
     minimum_start: datetime | None = None,
 ) -> list[Task]:
+    selected_assignee_ids = selected_assignee_ids or set()
     priority_filter = (
         Project.priority >= insert_priority
         if include_same_priority
@@ -406,31 +412,30 @@ def _load_lower_priority_movable_tasks(
     )
     candidate_tasks = db.query(Task).join(Project).filter(
         priority_filter,
-        Task.status == "scheduled",
+        Task.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
         ~Task.id.in_(excluded_task_ids),
     ).order_by(Project.priority, Task.created_at, Task.id).all()
     movable = []
     for task in candidate_tasks:
         if unstarted_projects_only and _project_has_started(db, task.project_id):
             continue
-        has_protected_slot = db.query(TimeSlot.id).filter(
+        has_protected_slot = task_has_immovable_slot(db, task.id)
+        resource_filters = []
+        if selected_instrument_ids:
+            resource_filters.append(TimeSlot.instrument_id.in_(selected_instrument_ids))
+        if selected_assignee_ids:
+            resource_filters.append(
+                Task.requires_human.is_(True) & Task.assignee_id.in_(selected_assignee_ids)
+            )
+        if not resource_filters:
+            continue
+        has_future_slot = db.query(TimeSlot.id).join(Task).filter(
             TimeSlot.task_id == task.id,
-            (
-                (TimeSlot.tier == "frozen")
-                | TimeSlot.status.in_(["running", "completed"])
-                | TimeSlot.actual_start.isnot(None)
-            ),
-        ).first()
-        has_future_slot = db.query(TimeSlot.id).filter(
-            TimeSlot.task_id == task.id,
+            TimeSlot.lifecycle_status == "active",
             TimeSlot.tier.in_(["confirmed", "forecast"]),
-            TimeSlot.status.in_(["scheduled", "blocked"]),
+            TimeSlot.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
             TimeSlot.plan_end > (minimum_start or datetime.now()),
-            *(
-                [TimeSlot.instrument_id.in_(selected_instrument_ids)]
-                if selected_instrument_ids
-                else []
-            ),
+            (resource_filters[0] if len(resource_filters) == 1 else resource_filters[0] | resource_filters[1]),
         ).first()
         if not has_protected_slot and has_future_slot:
             movable.append(task)
@@ -478,6 +483,7 @@ def _task_windows(db, task_ids: set[int], schedule_run_id: str | None = None) ->
 
 
 def _build_impacts(
+    db,
     tasks: list[Task],
     selected_task_ids: set[int],
     old_windows: dict[int, tuple[datetime, datetime]],
@@ -494,7 +500,12 @@ def _build_impacts(
             continue
         delay_hours = 0.0
         if old_window:
-            delay_hours = (new_window[1] - old_window[1]).total_seconds() / 3600
+            delay_hours = working_hours_between(
+                db,
+                old_window[1],
+                new_window[1],
+                _task_impact_instrument_id(db, task.id),
+            )
         impacts.append(InsertOrderImpact(
             task_id=task.id,
             task_name=task.name,
@@ -509,3 +520,16 @@ def _build_impacts(
             delay_hours=round(delay_hours, 1),
         ))
     return impacts
+
+
+def _task_impact_instrument_id(db, task_id: int) -> int | None:
+    slot = (
+        db.query(TimeSlot.instrument_id)
+        .filter(
+            TimeSlot.task_id == task_id,
+            TimeSlot.instrument_id.isnot(None),
+        )
+        .order_by(TimeSlot.plan_start.desc(), TimeSlot.id.desc())
+        .first()
+    )
+    return slot[0] if slot else None

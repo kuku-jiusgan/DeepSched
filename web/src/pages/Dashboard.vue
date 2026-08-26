@@ -83,7 +83,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 const data = ref<DashboardData | null>(null)
 const utilization = ref<UtilizationStats[]>([])
 const loading = ref(false)
-const dateRange = ref<[Dayjs, Dayjs]>([dayjs().subtract(6, 'day'), dayjs()])
+const dateRange = ref<[Dayjs, Dayjs]>([dayjs().subtract(7, 'day'), dayjs()])
 const router = useRouter()
 
 onMounted(loadDashboard)
@@ -105,8 +105,8 @@ async function loadDashboard() {
 function rangeParams() {
   const [start, end] = dateRange.value
   return {
-    start_date: start.startOf('day').format('YYYY-MM-DDTHH:mm:ss'),
-    end_date: end.endOf('day').format('YYYY-MM-DDTHH:mm:ss'),
+    start_date: start.format('YYYY-MM-DDTHH:mm:ss'),
+    end_date: end.format('YYYY-MM-DDTHH:mm:ss'),
   }
 }
 
@@ -115,7 +115,7 @@ function disabledFutureDate(current: Dayjs) {
 }
 
 function resetRange() {
-  dateRange.value = [dayjs().subtract(6, 'day'), dayjs()]
+  dateRange.value = [dayjs().subtract(7, 'day'), dayjs()]
   loadDashboard()
 }
 
@@ -272,4 +272,3 @@ const stats = computed(() => [
   }
 }
 </style>
-

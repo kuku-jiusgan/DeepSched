@@ -194,6 +194,27 @@
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 .gantt-bar:hover { box-shadow: 0 4px 10px rgba(15, 23, 42, 0.14); transform: translateY(-1px); z-index: 3; }
+.gantt-bar.is-bridge-reservation {
+  border: 1px dashed #94a3b8;
+  border-left-width: 4px;
+  background-image: repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.28) 0 5px, transparent 5px 10px);
+}
+.gantt-bar.is-bridge-reservation.status-scheduled,
+.gantt-bar.is-bridge-reservation.status-paused {
+  color: #475569;
+  border-left-color: #94a3b8;
+  background-color: #f8fafc;
+}
+.gantt-bar.is-bridge-reservation.status-running {
+  color: #047857;
+  border-left-color: #10b981;
+  background-color: #ecfdf5;
+}
+.gantt-bar.is-bridge-reservation.status-completed {
+  color: #1d4ed8;
+  border-left-color: #2563eb;
+  background-color: #eff6ff;
+}
 .bar-delay-segment {
   position: absolute;
   top: 3px;

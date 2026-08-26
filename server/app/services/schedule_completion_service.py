@@ -3,25 +3,30 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.models import AuditLog, Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_status_service import refresh_instrument_status
+from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.services.schedule_advance_notification_service import notify_advanced_task_assignees
 from app.services.schedule_forward_slot_service import build_forward_slots
-from app.services.schedule_rule_service import get_solver_constraints
-from app.services.scheduler_helpers import (
-    load_calendar_days,
-    natural_day_boundary,
-    time_horizon,
-    working_time_bounds,
+from app.services.schedule_slot_change_log_service import record_slot_created, supersede_slot
+from app.services.schedule_queue_replan_support import (
+    cross_project_setup_minutes,
+    dependency_ready_time,
+    is_movable_task,
+    load_forward_shift_candidates as _load_forward_shift_candidates,
+    load_working_options as _load_working_options,
+    replan_duration_minutes,
+    tier_for_start,
 )
 from app.services.project_status_service import calculate_project_status
 from app.services.task_delay_status_service import mark_task_delayed
 from app.services.schedule_delay_propagation_service import propagate_actual_delay
 from app.services.schedule_delay_service import ScheduleDelayInvalidError
-from app.services.task_execution_service import start_task_execution
+from app.services.task_execution_service import TaskExecutionInvalidError, start_task_execution
+from app.services.task_progress_service import planned_task_minutes
+from app.schemas.schemas import RescheduleRequest
 
 def complete_task_and_shift(
     db: Session,
@@ -34,10 +39,12 @@ def complete_task_and_shift(
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         return {"status": "error", "message": "未找到指定任务"}
+    if task.status in {"completed", "done"}:
+        return {"status": "error", "message": "任务已经完成，不能重复执行完成操作"}
 
     task_slots = (
         db.query(TimeSlot)
-        .filter(TimeSlot.task_id == task_id)
+        .filter(TimeSlot.task_id == task_id, TimeSlot.lifecycle_status == "active")
         .order_by(TimeSlot.plan_start, TimeSlot.id)
         .all()
     )
@@ -69,45 +76,107 @@ def complete_task_and_shift(
             "delayed_slots": delay_result["shifted_slots"],
             "delay_affected_tasks": delay_result["affected_tasks"],
         }
-    if end_time > planned_end:
-        db.flush()
-        delay_warning = delay_result.get("warning")
-        return {
-            "status": "ok",
-            "message": delay_warning or (
-                f"任务已延期完成，已顺延 {delay_result['affected_tasks']} 个受影响任务"
-            ),
-            "moved_tasks": 0,
-            "released_instrument": True,
-            "delayed_slots": delay_result["shifted_slots"],
-            "delay_affected_tasks": delay_result["affected_tasks"],
-        }
-    resumed_task = _resume_paused_source_task(db, task.id)
+    resumed_task, resume_warning = _resume_paused_source_task(db, task.id)
     if resumed_task:
         db.flush()
+        resumed_end = _active_task_plan_end(db, resumed_task.id)
+        result = _forward_shift_instrument_queue(
+            db, completed_slot.instrument_id, resumed_end, resumed_task.assignee_id,
+            resumed_task.project_id,
+        )
+        moved_task_details = result.pop("moved_task_details", [])
+        notify_advanced_task_assignees(db, task, end_time, planned_end, moved_task_details)
+        delay_warning = delay_result.get("warning")
+        delayed_message = delay_warning or (
+            f"任务已延期完成，已顺延 {delay_result['affected_tasks']} 个受影响任务"
+            if end_time > planned_end else ""
+        )
         return {
             "status": "ok",
-            "message": f"任务已完成，已恢复原暂停任务【{resumed_task.name}】",
-            "moved_tasks": 0,
+            "message": "；".join(filter(None, [
+                delayed_message,
+                f"任务已完成，已恢复原暂停任务【{resumed_task.name}】",
+                result["message"],
+            ])),
+            "moved_tasks": result["moved_tasks"],
             "released_instrument": True,
             "resumed_task_id": resumed_task.id,
             "resumed_task_name": resumed_task.name,
             "delayed_slots": delay_result["shifted_slots"],
             "delay_affected_tasks": delay_result["affected_tasks"],
         }
-    result = _forward_shift_instrument_queue(
-        db, completed_slot.instrument_id, end_time, task.assignee_id
+    result = _replan_dependency_projects_after_completion(
+        db, completed_slot.instrument_id, end_time, task.assignee_id,
     )
+    if result is None:
+        result = _forward_shift_instrument_queue(
+            db, completed_slot.instrument_id, end_time, task.assignee_id, task.project_id,
+        )
     moved_task_details = result.pop("moved_task_details", [])
     notify_advanced_task_assignees(db, task, end_time, planned_end, moved_task_details)
     db.flush()
+    delay_warning = delay_result.get("warning")
+    result["message"] = "；".join(filter(None, [
+        delay_warning,
+        resume_warning,
+        result["message"],
+    ]))
     result["released_instrument"] = True
     result["delayed_slots"] = delay_result["shifted_slots"]
     result["delay_affected_tasks"] = delay_result["affected_tasks"]
     return result
 
 
-def _resume_paused_source_task(db: Session, completed_task_id: int) -> Task | None:
+def _replan_dependency_projects_after_completion(
+    db: Session,
+    instrument_id: int | None,
+    released_at: datetime,
+    assignee_id: int | None,
+) -> dict | None:
+    """Use the project solver when released-resource candidates have dependencies."""
+    candidates = _load_forward_shift_candidates(db, instrument_id, released_at, assignee_id)
+    dependency_projects = {
+        task.project_id
+        for task in candidates
+        if task.predecessors
+    }
+    if not dependency_projects:
+        return None
+
+    from app.services.schedule_reschedule_service import _project_reschedule
+
+    moved = 0
+    details: list[dict] = []
+    for project_id in sorted(dependency_projects):
+        task = next(item for item in candidates if item.project_id == project_id)
+        result = _project_reschedule(
+            db,
+            RescheduleRequest(
+                trigger_type="early_completion",
+                strategy="project",
+                affected_task_id=task.id,
+            ),
+        )
+        if result.get("status") != "ok":
+            return {
+                "status": "error",
+                "message": result.get("message") or "项目重排失败",
+                "moved_tasks": moved,
+                "moved_task_details": details,
+            }
+        moved += int(result.get("moved_tasks", 0) or 0)
+    return {
+        "status": "ok",
+        "message": f"任务已完成，已按项目依赖重排 {moved} 个任务",
+        "moved_tasks": moved,
+        "moved_task_details": details,
+    }
+
+
+def _resume_paused_source_task(
+    db: Session,
+    completed_task_id: int,
+) -> tuple[Task | None, str | None]:
     for log in _recent_pause_switch_logs(db):
         detail = log.detail if isinstance(log.detail, dict) else {}
         if detail.get("target_task_id") != completed_task_id:
@@ -116,9 +185,29 @@ def _resume_paused_source_task(db: Session, completed_task_id: int) -> Task | No
         source_slot_id = detail.get("source_slot_id")
         if not source_task or source_task.status != "paused" or not source_slot_id:
             continue
-        start_task_execution(db, int(source_slot_id))
-        return source_task
-    return None
+        resumable_slot = next(
+            (
+                slot for slot in sorted(source_task.time_slots, key=lambda item: (item.plan_start, item.id))
+                if slot.status == "paused" and slot.actual_start is None
+            ),
+            None,
+        )
+        source_slot_id = resumable_slot.id if resumable_slot else source_slot_id
+        # 暂停切换链中的源任务由当前任务完成后恢复，不应再次被链上
+        # 尚未完成的暂停任务拦截；普通手动启动仍保留前序校验。
+        try:
+            start_task_execution(
+                db,
+                int(source_slot_id),
+                allow_queue_insert=True,
+                advance_schedule=True,
+            )
+        except TaskExecutionInvalidError as exc:
+            return None, (
+                f"原暂停任务【{source_task.name}】未恢复：{exc}，请重新排程后再启动"
+            )
+        return source_task, None
+    return None, None
 
 
 def _recent_pause_switch_logs(db: Session) -> list[AuditLog]:
@@ -168,6 +257,15 @@ def _select_completed_slot(
     completed_slot_id: int | None,
     end_time: datetime,
 ) -> TimeSlot:
+    running_slot = next(
+        (
+            slot for slot in slots
+            if slot.actual_start is not None and slot.actual_end is None
+        ),
+        None,
+    )
+    if running_slot:
+        return running_slot
     active_slot = next(
         (slot for slot in slots if slot.plan_start <= end_time <= slot.plan_end),
         None,
@@ -193,8 +291,11 @@ def _mark_task_slots_completed(
     end_time: datetime,
 ) -> None:
     for slot in slots:
-        if slot.plan_start > end_time:
-            db.delete(slot)
+        if slot.id != completed_slot.id and slot.plan_start > end_time:
+            slot.lifecycle_status = "superseded"
+            slot.status = "cancelled"
+            slot.superseded_at = end_time
+            slot.superseded_reason = "任务提前完成"
             continue
         slot.status = "completed"
         if slot.actual_start is None:
@@ -207,19 +308,13 @@ def _forward_shift_instrument_queue(
     instrument_id: int | None,
     released_at: datetime,
     assignee_id: int | None = None,
+    previous_project_id: int | None = None,
 ) -> dict:
-    if not instrument_id:
-        return {
-            "status": "ok",
-            "message": "任务已完成，无绑定仪器，无需前移排程",
-            "moved_tasks": 0,
-        }
-
     candidate_tasks = _load_forward_shift_candidates(db, instrument_id, released_at, assignee_id)
     if not candidate_tasks:
         return {
             "status": "ok",
-            "message": "任务已完成，该仪器无后续任务可前移",
+            "message": "任务已完成，无后续任务可前移" if instrument_id is None else "任务已完成，该仪器无后续任务可前移",
             "moved_tasks": 0,
         }
 
@@ -227,7 +322,12 @@ def _forward_shift_instrument_queue(
     original_slots = {
         task.id: (
             db.query(TimeSlot)
-            .filter(TimeSlot.task_id == task.id, TimeSlot.status == "scheduled")
+            .filter(
+                TimeSlot.task_id == task.id,
+                TimeSlot.status == "scheduled",
+                TimeSlot.actual_start.is_(None),
+                TimeSlot.lifecycle_status == "active",
+            )
             .order_by(TimeSlot.plan_start)
             .all()
         )
@@ -237,17 +337,29 @@ def _forward_shift_instrument_queue(
         task_id: [_snapshot_slot(slot) for slot in slots]
         for task_id, slots in original_slots.items()
     }
+    movable_tasks = {
+        task.id: is_movable_task(db, task, instrument_id, released_at, assignee_id)
+        for task in candidate_tasks
+    }
+    movable_prefix = []
+    for task in candidate_tasks:
+        if not movable_tasks[task.id]:
+            break
+        movable_prefix.append(task)
+    candidate_tasks = movable_prefix
+    original_slots = {task.id: original_slots[task.id] for task in candidate_tasks}
+    slot_snapshots = {task_id: slot_snapshots[task_id] for task_id in original_slots}
 
-    for task_id in slot_snapshots:
-        db.query(TimeSlot).filter(
-            TimeSlot.task_id == task_id,
-            TimeSlot.status == "scheduled",
-        ).delete(synchronize_session="fetch")
+    for slots in original_slots.values():
+        for slot in slots:
+            slot.lifecycle_status = "superseded"
     db.flush()
 
     moved = 0
     moved_task_details = []
     cursors: dict[int | None, datetime] = {}
+    project_cursors = {instrument_id: previous_project_id}
+    setup_minutes = cross_project_setup_minutes(db)
     for task in candidate_tasks:
         snapshots = slot_snapshots[task.id]
         if not snapshots:
@@ -255,15 +367,19 @@ def _forward_shift_instrument_queue(
 
         original_start = snapshots[0]["plan_start"]
         original_end = snapshots[-1]["plan_end"]
-        duration_minutes = sum(
-            int((slot["plan_end"] - slot["plan_start"]).total_seconds() / 60)
-            for slot in snapshots
-        )
+        duration_minutes = replan_duration_minutes(task, original_slots[task.id])
         slot_instrument_id = snapshots[0]["instrument_id"]
         slot_cursor = cursors.get(slot_instrument_id, released_at)
+        prior_project_id = project_cursors.get(slot_instrument_id)
+        if (
+            slot_instrument_id is not None
+            and prior_project_id is not None
+            and prior_project_id != task.project_id
+        ):
+            slot_cursor += timedelta(minutes=setup_minutes)
         earliest_start = max(
             slot_cursor,
-            _dependency_ready_time(db, task, released_at),
+            dependency_ready_time(db, task, released_at),
             task.earliest_start or released_at,
             task.project.start_date if task.project and task.project.start_date else released_at,
         )
@@ -276,25 +392,47 @@ def _forward_shift_instrument_queue(
             working_options,
         )
 
+        dependency_ready = dependency_ready_time(db, task, released_at)
+        if new_slots and new_slots[0][0] < dependency_ready:
+            new_slots = []
+
         if not new_slots or new_slots[0][0] >= original_start:
-            _restore_slot_snapshots(db, snapshots)
+            _restore_active_slots(original_slots[task.id])
             cursors[slot_instrument_id] = max(slot_cursor, original_end)
+            project_cursors[slot_instrument_id] = task.project_id
             continue
 
-        for start, end in new_slots:
-            db.add(
-                TimeSlot(
-                    task_id=task.id,
-                    schedule_run_id=snapshots[0].get("schedule_run_id", "legacy"),
-                    instrument_id=slot_instrument_id,
-                    plan_start=start,
-                    plan_end=end,
-                    tier=_tier_for_start(db, start),
-                    status="scheduled",
-                )
+        generated_minutes = sum(
+            int((end - start).total_seconds() / 60)
+            for start, end in new_slots
+        )
+        if generated_minutes != duration_minutes:
+            raise ScheduleDelayInvalidError(
+                f"任务【{task.name}】重排工时不守恒：应为 {duration_minutes} 分钟，"
+                f"实际生成 {generated_minutes} 分钟"
             )
+
+        created_slots = []
+        for start, end in new_slots:
+            new_slot = TimeSlot(
+                task_id=task.id,
+                schedule_run_id=snapshots[0].get("schedule_run_id", "legacy"),
+                instrument_id=slot_instrument_id,
+                plan_start=start,
+                plan_end=end,
+                tier=tier_for_start(db, start),
+                status="scheduled",
+            )
+            db.add(new_slot)
+            created_slots.append(new_slot)
         db.flush()
+        for old_slot in original_slots[task.id]:
+            old_slot.lifecycle_status = "active"
+            supersede_slot(db, old_slot, "任务提前完成后局部重排")
+        for new_slot in created_slots:
+            record_slot_created(db, new_slot, "early_completion_replan")
         cursors[slot_instrument_id] = new_slots[-1][1]
+        project_cursors[slot_instrument_id] = task.project_id
         moved += 1
         moved_task_details.append({
             "task_id": task.id,
@@ -305,137 +443,17 @@ def _forward_shift_instrument_queue(
         })
 
     db.flush()
+    rebuild_instrument_bridge_reservations(db)
     return {
         "status": "ok",
-        "message": f"任务已完成，该仪器跨项目前移 {moved} 个任务",
+        "message": (
+            f"任务已完成，按责任人前移 {moved} 个任务"
+            if instrument_id is None
+            else f"任务已完成，该仪器跨项目前移 {moved} 个任务"
+        ),
         "moved_tasks": moved,
         "moved_task_details": moved_task_details,
     }
-
-
-def _load_forward_shift_candidates(
-    db: Session,
-    instrument_id: int,
-    released_at: datetime,
-    assignee_id: int | None = None,
-) -> list[Task]:
-    first_start = func.min(TimeSlot.plan_start).label("first_start")
-    resource_filter = TimeSlot.instrument_id == instrument_id
-    if assignee_id is not None:
-        resource_filter = resource_filter | (
-            Task.requires_human.is_(True) & (Task.assignee_id == assignee_id)
-        )
-    candidate_rows = (
-        db.query(Task.id, first_start)
-        .join(TimeSlot, TimeSlot.task_id == Task.id)
-        .filter(
-            Task.status == "scheduled",
-            TimeSlot.status == "scheduled",
-            TimeSlot.plan_start >= released_at,
-            TimeSlot.actual_start.is_(None),
-        )
-        .filter(resource_filter)
-        .group_by(Task.id)
-        .order_by(first_start, Task.id)
-        .all()
-    )
-    candidate_ids = [row[0] for row in candidate_rows]
-    tasks_by_id = {
-        task.id: task
-        for task in db.query(Task)
-        .options(selectinload(Task.predecessors))
-        .filter(Task.id.in_(candidate_ids))
-        .all()
-    }
-    return [
-        tasks_by_id[task_id]
-        for task_id in candidate_ids
-        if task_id in tasks_by_id
-        and _is_movable_instrument_task(db, tasks_by_id[task_id], instrument_id, released_at, assignee_id)
-    ]
-
-
-def _is_movable_instrument_task(
-    db: Session,
-    task: Task,
-    instrument_id: int,
-    released_at: datetime,
-    assignee_id: int | None = None,
-) -> bool:
-    if db.query(TimeSlot.id).filter(
-        TimeSlot.task_id == task.id,
-        (TimeSlot.status == "running") | TimeSlot.actual_start.isnot(None),
-    ).first():
-        return False
-    slots = db.query(TimeSlot).filter(
-        TimeSlot.task_id == task.id,
-        TimeSlot.status == "scheduled",
-        TimeSlot.plan_start >= released_at,
-        TimeSlot.actual_start.is_(None),
-    ).all()
-    return bool(slots) and all(
-        slot.status == "scheduled"
-        and (slot.instrument_id == instrument_id or (
-            assignee_id is not None
-            and task.requires_human
-            and task.assignee_id == assignee_id
-        ))
-        and slot.plan_start >= released_at
-        and slot.actual_start is None
-        for slot in slots
-    )
-
-
-def _load_working_options(db: Session, released_at: datetime) -> dict:
-    constraints = get_solver_constraints(db)
-    working_rule = constraints["working_hours"]
-    working_params = working_rule.params or {}
-    day_start_minutes, day_end_minutes = working_time_bounds(working_params)
-    include_weekends = bool(working_params.get("include_weekends", False))
-    include_holidays = bool(working_params.get("include_holidays", False))
-    if not working_rule.is_enabled:
-        day_start_minutes, day_end_minutes = 0, 24 * 60
-        include_weekends, include_holidays = True, True
-
-    _, horizon_end, _ = time_horizon()
-    return {
-        "day_start_minutes": day_start_minutes,
-        "day_end_minutes": day_end_minutes,
-        "include_weekends": include_weekends,
-        "include_holidays": include_holidays,
-        "horizon_end": horizon_end,
-        "calendar_days": load_calendar_days(db, released_at, horizon_end),
-    }
-
-
-def _dependency_ready_time(
-    db: Session,
-    task: Task,
-    fallback: datetime,
-) -> datetime:
-    ready_time = fallback
-    for dependency in task.predecessors:
-        pred_end = _predecessor_ready_time(db, dependency.predecessor_id)
-        if pred_end and pred_end > ready_time:
-            ready_time = pred_end
-    return ready_time
-
-
-def _predecessor_ready_time(db: Session, task_id: int) -> datetime | None:
-    predecessor = db.query(Task).filter(Task.id == task_id).first()
-    if predecessor and predecessor.status in {"done", "completed"}:
-        actual_end = (
-            db.query(func.max(TimeSlot.actual_end))
-            .filter(TimeSlot.task_id == task_id)
-            .scalar()
-        )
-        if actual_end:
-            return actual_end
-    return (
-        db.query(func.max(TimeSlot.plan_end))
-        .filter(TimeSlot.task_id == task_id)
-        .scalar()
-    )
 
 
 def _snapshot_slot(slot: TimeSlot) -> dict:
@@ -450,19 +468,17 @@ def _snapshot_slot(slot: TimeSlot) -> dict:
     }
 
 
-def _restore_slot_snapshots(db: Session, snapshots: list[dict]) -> None:
-    for slot in snapshots:
-        db.add(TimeSlot(**slot))
+def _restore_active_slots(slots: list[TimeSlot]) -> None:
+    for slot in slots:
+        slot.lifecycle_status = "active"
 
 
-def _tier_for_start(db: Session, start: datetime) -> str:
-    settings = get_settings()
-    constraints = get_solver_constraints(db)
-    freezing_rule = constraints["freezing"]
-    freeze_days = int((freezing_rule.params or {}).get("freeze_days", settings.FROZEN_DAYS))
-    now = datetime.now()
-    if start <= natural_day_boundary(now, freeze_days):
-        return "frozen"
-    if start <= now + timedelta(days=settings.CONFIRMED_DAYS):
-        return "confirmed"
-    return "forecast"
+def _active_task_plan_end(db: Session, task_id: int) -> datetime:
+    plan_end = db.query(func.max(TimeSlot.plan_end)).filter(
+        TimeSlot.task_id == task_id,
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.status.in_(["scheduled", "running", "paused", "blocked", "interrupted"]),
+    ).scalar()
+    if plan_end is None:
+        raise ScheduleDelayInvalidError("恢复任务没有活动计划时段，无法重排后续队列")
+    return plan_end

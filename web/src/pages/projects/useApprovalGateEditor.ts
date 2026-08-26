@@ -1,14 +1,12 @@
-import { ref, type ComputedRef, type Ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import { message } from 'ant-design-vue'
 import type { Project, Task } from '@/services/api'
 import { updateTask } from '@/services/api'
 
 interface ApprovalGateEditorOptions {
   allTasks: Ref<Task[]>
-  hasLocalDrafts: ComputedRef<boolean>
   project: Ref<Project | null>
   getAssigneeName: (id: number | null) => string | null
-  fetchProject: () => Promise<void>
   errorDetail: (error: unknown, fallback: string) => string
 }
 
@@ -18,10 +16,6 @@ export function useApprovalGateEditor(options: ApprovalGateEditorOptions) {
   const editingApprovalGate = ref<Task | null>(null)
 
   function openEditApprovalGate(task: Task) {
-    if (options.hasLocalDrafts.value && !task.is_local_draft) {
-      message.warning('请先保存当前新增草稿，再编辑数据库中的方案签批')
-      return
-    }
     editingApprovalGate.value = {
       ...task,
       assignee_id: task.assignee_id || options.project.value?.manager_id || null,
@@ -43,9 +37,10 @@ export function useApprovalGateEditor(options: ApprovalGateEditorOptions) {
         updateLocalGate(gate.id, payload)
         message.success('方案签批草稿已更新')
       } else {
-        await updateTask(gate.id, payload)
+        const updatedGate = await updateTask(gate.id, payload)
+        const index = options.allTasks.value.findIndex(task => task.id === updatedGate.id)
+        if (index >= 0) options.allTasks.value[index] = updatedGate
         message.success('方案签批已更新')
-        await options.fetchProject()
       }
       closeEditApprovalGate()
     } catch (error: unknown) {

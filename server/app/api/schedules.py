@@ -4,15 +4,16 @@ from typing import List, Optional
 import json
 from datetime import date, datetime
 from app.core.database import get_db
-from app.models import TimeSlot, Task, Instrument, Project, AuditLog, User
+from app.models import InstrumentBridgeReservation, TimeSlot, Task, Instrument, Project, AuditLog, User
 from app.schemas.schemas import (
-    TimeSlotOut, TimeSlotUpdate, TaskStatusUpdate,
+    InstrumentBridgeReservationOut, TimeSlotOut, TimeSlotUpdate, TaskStatusUpdate,
     ScheduleGenerateRequest, InsertOrderRequest, InsertOrderPreview, InsertOrderResult,
     RescheduleRequest, TaskDelayRequest, TaskDelayResponse,
     NightRunRequest, TaskActionResponse, TaskCompleteRequest, TaskCompleteResponse,
     TaskPauseRequest, TaskSwitchCandidateOut,
 )
 from app.services.scheduler import SchedulerService
+from app.services.instrument_bridge_sync_service import valid_bridge_reservations
 from app.services.schedule_delay_service import (
     report_task_delay,
 )
@@ -52,6 +53,7 @@ from app.domain.task_schedule import (
     select_actionable_segment as _select_workspace_slot,
 )
 from app.domain.task_status import resolve_task_execution_status
+from app.domain.errors import DomainError
 from app.repositories.workspace_repository import (
     filter_workspace_tasks_by_user as _filter_workspace_tasks_by_user,
     latest_open_task_slot as _latest_open_task_slot,
@@ -75,7 +77,7 @@ def list_timeslots(
         joinedload(TimeSlot.task).joinedload(Task.project),
         joinedload(TimeSlot.task).joinedload(Task.assignee),
         joinedload(TimeSlot.task).selectinload(Task.execution_segments),
-    )
+    ).filter(TimeSlot.lifecycle_status == "active")
     if start_date:
         q = q.filter(TimeSlot.plan_end > start_date)
     if end_date:
@@ -89,6 +91,39 @@ def list_timeslots(
     slots = q.order_by(TimeSlot.plan_start).all()
     delay_logs = _load_delay_logs(db, slots)
     return [_enrich_slot(s, db, delay_logs) for s in slots]
+
+
+@router.get("/instrument-bridge-reservations", response_model=List[InstrumentBridgeReservationOut])
+def list_instrument_bridge_reservations(
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    db: Session = Depends(get_db),
+):
+    q = db.query(InstrumentBridgeReservation).options(
+        joinedload(InstrumentBridgeReservation.task).joinedload(Task.project),
+        joinedload(InstrumentBridgeReservation.task).joinedload(Task.assignee),
+    )
+    if start_date:
+        q = q.filter(InstrumentBridgeReservation.plan_end > start_date)
+    if end_date:
+        q = q.filter(InstrumentBridgeReservation.plan_start < end_date)
+    reservations = valid_bridge_reservations(
+        db, q.order_by(InstrumentBridgeReservation.plan_start),
+    )
+    return [_enrich_bridge_reservation(item) for item in reservations]
+
+
+def _enrich_bridge_reservation(item: InstrumentBridgeReservation) -> InstrumentBridgeReservationOut:
+    task = item.task
+    project = task.project
+    return InstrumentBridgeReservationOut(
+        id=item.id, schedule_run_id=item.schedule_run_id, task_id=item.task_id,
+        instrument_id=item.instrument_id, previous_task_id=item.previous_task_id,
+        following_task_id=item.following_task_id, plan_start=item.plan_start, plan_end=item.plan_end,
+        task_name=task.name, task_type=task.task_type, project_id=task.project_id,
+        project_code=project.code, project_name=project.name, assignee_id=task.assignee_id,
+        assignee_name=task.assignee.display_name if task.assignee else None,
+    )
 
 @router.put("/timeslots/{slot_id}", response_model=TimeSlotOut)
 def update_timeslot(
@@ -132,10 +167,25 @@ def pause_task(
     db: Session = Depends(get_db),
     user=Depends(require_slot_operator),
 ):
-    return execute_transaction(
-        db,
-        lambda: pause_and_switch_task(db, slot_id, data.reason, user, data.target_slot_id),
-    )
+    try:
+        return execute_transaction(
+            db,
+            lambda: pause_and_switch_task(db, slot_id, data.reason, user, data.target_slot_id),
+        )
+    except DomainError as exc:
+        slot = db.query(TimeSlot).options(joinedload(TimeSlot.task).joinedload(Task.project)).filter(TimeSlot.id == slot_id).first()
+        if slot and slot.task:
+            task = slot.task
+            target = " · ".join(part for part in [task.project.code if task.project else None, task.project.name if task.project else None, task.name] if part)
+            record_audit_log(db, user.display_name or user.username, "task_paused", "task", task.id, {
+                "category": "task", "summary": "暂停任务", "target_display": target,
+                "result": "failed", "reason": str(exc), "source_slot_id": slot_id,
+            })
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+        raise
 
 @router.post("/timeslots/{slot_id}/complete", response_model=TaskCompleteResponse)
 def complete_task(
@@ -194,7 +244,13 @@ def generate_schedule(
     user=Depends(require_management_user),
 ):
     scheduler = SchedulerService(db)
-    result = scheduler.generate(data.project_ids, mode=data.mode)
+    if not data.project_ids or len(data.project_ids) != 1:
+        raise HTTPException(status_code=400, detail="排程必须明确指定一个当前项目ID")
+    result = scheduler.generate(
+        data.project_ids,
+        mode=data.mode,
+        current_project_id=data.project_ids[0],
+    )
     record_audit_log(
         db, user.display_name or user.username, "schedule_generated", "schedule",
         None, {"project_ids": data.project_ids or [], "mode": data.mode, "result": result.get("status")},
@@ -314,6 +370,7 @@ def _enrich_slot(
         task_id=slot.task_id, instrument_id=slot.instrument_id,
         plan_start=slot.plan_start, plan_end=slot.plan_end,
         actual_start=actual_start, actual_end=actual_end,
+        is_night_run=bool(slot.is_night_run),
         tier=slot.tier, status=slot.status, execution_status=resolve_task_execution_status(task),
         task_name=task.name if task else None,
         task_type=task.task_type if task else None,

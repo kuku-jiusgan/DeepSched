@@ -159,6 +159,7 @@ def _active_resource_anchor(db, task_ids: set[int]) -> datetime:
         for instrument_id, in db.query(TimeSlot.instrument_id).filter(
             TimeSlot.task_id.in_(task_ids),
             TimeSlot.instrument_id.isnot(None),
+            TimeSlot.lifecycle_status == "active",
         ).distinct().all()
     }
     instrument_ids.update(
@@ -172,9 +173,11 @@ def _active_resource_anchor(db, task_ids: set[int]) -> datetime:
         slot.plan_end
         for slot in db.query(TimeSlot).filter(
             TimeSlot.instrument_id.in_(instrument_ids),
+            ~TimeSlot.task_id.in_(task_ids),
             TimeSlot.status == "running",
             TimeSlot.actual_start.isnot(None),
             TimeSlot.actual_end.is_(None),
+            TimeSlot.lifecycle_status == "active",
         ).all()
         if slot.plan_end
     ]

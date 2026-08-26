@@ -1,4 +1,5 @@
 from app.models import Project, Task, TimeSlot
+from sqlalchemy.orm import selectinload
 from app.services.instrument_status_service import delete_time_slots_and_refresh
 from app.services.project_date_service import normalize_project_end, normalize_project_start
 from app.services.project_reference_validation_service import (
@@ -12,6 +13,7 @@ from app.services.project_plan_apply_service import (
     confirm_project_plan_insert,
 )
 from app.services.user_role_service import has_role
+from app.services.audit_log_service import record_audit_log
 
 
 class DetectionTaskInvalidError(Exception):
@@ -28,13 +30,17 @@ FULL_DETECTION_TASK_VIEW_ROLES = FULL_DETECTION_TASK_ACCESS_ROLES | {"项目管�
 
 
 def list_detection_tasks(db, user) -> list[Project]:
-    query = db.query(Project).filter(Project.project_kind == "detection")
+    query = db.query(Project).options(
+        selectinload(Project.tasks).selectinload(Task.assignee),
+        selectinload(Project.tasks).selectinload(Task.time_slots),
+        selectinload(Project.manager),
+    ).filter(Project.project_kind == "detection")
     if not any(has_role(user, role) for role in FULL_DETECTION_TASK_VIEW_ROLES):
         query = query.filter(Project.tasks.any(Task.assignee_id == user.id))
     return query.order_by(Project.created_at.desc()).all()
 
 
-def create_detection_task(db, data) -> tuple[Project, dict]:
+def create_detection_task(db, data, user=None) -> tuple[Project, dict]:
     if not data.assignee_id:
         raise DetectionTaskInvalidError("检测任务必须指定执行人")
     code = data.code.strip()
@@ -78,6 +84,8 @@ def create_detection_task(db, data) -> tuple[Project, dict]:
     db.refresh(project)
     result = _apply_detection_plan(db, project.id)
     db.refresh(project)
+    _record_detection_audit(db, user, "task_created", project, task)
+    db.commit()
     return project, result
 
 
@@ -125,6 +133,8 @@ def update_detection_task(db, detection_id: int, data, user) -> tuple[Project, d
     db.commit()
     result = _apply_detection_plan(db, project.id)
     db.refresh(project)
+    _record_detection_audit(db, user, "task_updated", project, task)
+    db.commit()
     return project, result
 
 
@@ -139,6 +149,8 @@ def _update_locked_detection_task(db, project: Project, task: Task, data, code: 
     task.name = name
     db.commit()
     db.refresh(project)
+    _record_detection_audit(db, user, "task_updated", project, task)
+    db.commit()
     return project, {"status": "ok", "message": "检测任务已更新"}
 
 
@@ -208,8 +220,21 @@ def delete_detection_task(db, detection_id: int, user) -> None:
             db,
             db.query(TimeSlot).filter(TimeSlot.task_id.in_(task_ids)),
         )
+    _record_detection_audit(db, user, "task_deleted", project, project.tasks[0] if project.tasks else None)
     db.delete(project)
     db.commit()
+
+
+def _record_detection_audit(db, user, action: str, project: Project, task: Task | None) -> None:
+    if not user:
+        return
+    target = " · ".join(part for part in [project.code, project.name, task.name if task else None] if part)
+    record_audit_log(db, user.display_name or user.username, action, "task", task.id if task else project.id, {
+        "category": "task",
+        "summary": {"task_created": "新增检测任务", "task_updated": "修改检测任务", "task_deleted": "删除检测任务"}[action],
+        "target_display": target,
+        "result": "success",
+    })
 
 
 def _get_detection_task(db, detection_id: int, user=None) -> Project:

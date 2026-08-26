@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from app.models import Task, TaskDependency, TimeSlot
@@ -21,6 +22,7 @@ from app.services.task_delay_status_service import reset_task_delay
 
 MOVABLE_SLOT_STATUSES = ["scheduled", "blocked"]
 MOVABLE_TASK_STATUSES = ["pending", "scheduled", "blocked"]
+_logger = logging.getLogger(__name__)
 
 
 def propagate_actual_delay(
@@ -127,6 +129,7 @@ def _movable_slots(db, task_ids: set[int], cutoff: datetime) -> list[TimeSlot]:
     slots = db.query(TimeSlot).filter(
         TimeSlot.task_id.in_(task_ids),
         TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
+        TimeSlot.lifecycle_status == "active",
         TimeSlot.actual_start.is_(None),
     ).order_by(TimeSlot.plan_start, TimeSlot.id).all()
     slots_by_task: dict[int, list[TimeSlot]] = {}
@@ -170,6 +173,14 @@ def _restore_shifted_task(
     )
     if not ranges:
         raise ScheduleDelayInvalidError("延期后的排程超出可规划范围")
+    _logger.info(
+        "schedule_delay_task_projection task_id=%s project_id=%s "
+        "original_start=%s original_end=%s projected_start=%s projected_end=%s "
+        "delay_minutes=%s",
+        shifted_task.id, shifted_task.project_id,
+        first_slot["plan_start"], first_slot["plan_end"],
+        ranges[0][0], ranges[-1][1], delay_minutes,
+    )
     _ensure_within_project_end(shifted_task, ranges[-1][1])
     if (
         shifted_task

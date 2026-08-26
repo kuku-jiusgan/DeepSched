@@ -1,0 +1,27 @@
+.task-action-button { min-width: 72px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+.task-action-button-start { background: var(--color-accent) !important; border-color: var(--color-accent) !important; }
+.task-action-button-complete { color: #ffffff !important; background: var(--color-success) !important; border-color: var(--color-success) !important; }
+.task-action-button-complete:hover, .task-action-button-complete:focus { color: #ffffff !important; background: #15803d !important; border-color: #15803d !important; }
+.release-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.workspace-project-search { display: flex; align-items: center; gap: 8px; padding-bottom: 12px; }
+.workspace-project-search .ant-input-affix-wrapper { width: 240px; }
+.approved-project-code { color: var(--color-accent); font-family: var(--font-mono); font-size: 12px; }
+.approved-project-name { margin-left: 6px; color: var(--color-text-secondary); font-size: 12px; }
+.approved-cell-ellipsis { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 720px) {
+  .release-confirm-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+  .release-confirm-actions .ant-btn { width: 100%; min-width: 0; min-height: 44px; padding-inline: 8px; white-space: normal; line-height: 1.35; }
+  .release-confirm-actions .ant-btn:last-child { grid-column: 1 / -1; }
+  .workspace-project-search { width: 100%; }
+  .workspace-project-search .ant-input-affix-wrapper { flex: 1; width: auto; }
+  .action-bar { align-items: flex-start; flex-wrap: wrap; }
+  .action-bar .ant-tabs-nav { margin-bottom: 4px; }
+  .action-bar .ant-tabs-tab { padding-inline: 8px; }
+  .mobile-approved-list { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+  .mobile-approved-card { padding: 14px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; }
+  .mobile-approved-project { margin-top: 12px; color: var(--color-accent); font-size: 12px; }
+  .mobile-approved-name { margin-top: 4px; color: var(--color-text-primary); font-size: 16px; font-weight: 600; line-height: 1.5; }
+  .mobile-approved-details { margin-top: 8px; }
+  .mobile-approved-details .ant-collapse-header { padding: 8px 0 !important; color: var(--color-text-secondary) !important; font-size: 13px; }
+  .mobile-approved-details .ant-collapse-content-box { display: grid; gap: 8px; padding: 4px 0 8px !important; color: var(--color-text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+}

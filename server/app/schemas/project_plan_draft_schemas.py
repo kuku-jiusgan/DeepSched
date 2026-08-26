@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from app.schemas.schemas import ProjectPlanApplyResponse
 
 
 class ProjectPlanDraftTaskIn(BaseModel):
@@ -31,3 +32,10 @@ class ProjectPlanDraftCommitOut(BaseModel):
     message: str
     created: int
     id_map: list[ProjectPlanDraftIdMap]
+
+class ProjectPlanSaveAndScheduleRequest(BaseModel):
+    tasks: list[ProjectPlanDraftTaskIn] = Field(default_factory=list)
+
+class ProjectPlanSaveAndScheduleResponse(ProjectPlanApplyResponse):
+    created: int = 0
+    id_map: list[ProjectPlanDraftIdMap] = []

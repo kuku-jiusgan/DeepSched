@@ -169,6 +169,20 @@
   line-height: 30px;
 }
 
+.current-user-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #175cad;
+  background: #dbeafe;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .notification-button {
   display: inline-flex;
   align-items: center;
@@ -178,6 +192,73 @@
 .notification-panel {
   width: 360px;
   max-width: calc(100vw - 48px);
+}
+
+.mobile-app-menu {
+  margin-top: 0;
+  min-height: 100%;
+}
+
+.mobile-menu-button {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+:deep(.mobile-navigation-drawer .ant-drawer-content),
+:deep(.mobile-navigation-drawer .ant-drawer-header),
+:deep(.mobile-navigation-drawer .ant-drawer-footer) {
+  background: #17223a;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+:deep(.mobile-navigation-drawer .ant-drawer-title),
+:deep(.mobile-navigation-drawer .ant-drawer-close) {
+  color: #ffffff;
+}
+
+@media (max-width: 768px) {
+  .app-content {
+    padding: 64px 14px max(18px, env(safe-area-inset-bottom));
+  }
+
+  .app-content-cockpit {
+    padding: 64px 0 0;
+  }
+
+  .page-top-actions {
+    top: 10px;
+    right: 14px;
+    left: 14px;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  .page-top-actions .mobile-menu-button {
+    margin-right: auto;
+  }
+
+  .page-top-actions .notification-button,
+  .page-top-actions .current-user {
+    min-width: 44px;
+    height: 44px;
+  }
+
+  .current-user span {
+    display: none;
+  }
+
+  .current-user .current-user-initial {
+    display: inline-flex;
+    width: 30px;
+    height: 30px;
+    font-size: 14px;
+  }
+
+  .notification-panel {
+    width: min(360px, calc(100vw - 28px));
+    max-width: none;
+  }
 }
 
 .notification-panel-head {

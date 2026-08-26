@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Task, TaskNightRun, TimeSlot
+from app.models import Instrument, Task, TaskNightRun, TimeSlot
 from app.services.schedule_night_run_service import record_night_run
 
 
@@ -14,39 +14,43 @@ class ScheduleNightRunTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
+        self.db.add(Instrument(id=1, code="I-001", name="测试仪器"))
+        self.db.commit()
 
     def tearDown(self):
         self.db.close()
 
     def test_update_existing_night_run_can_shorten_end_time(self):
-        task = Task(project_id=1, name="night-run", task_type="test", status="scheduled")
+        task = Task(project_id=1, name="night-run", task_type="test", status="running")
         self.db.add(task)
         self.db.flush()
         slot = TimeSlot(
             task_id=task.id, instrument_id=1,
             plan_start=datetime(2026, 7, 13, 8, 30),
             plan_end=datetime(2026, 7, 13, 20, 0),
-            status="scheduled",
+            status="running",
         )
         self.db.add(slot)
         self.db.commit()
 
-        record_night_run(self.db, slot.id, 8, "20:00", "次日 08:30")
+        night_slot = record_night_run(self.db, slot.id, 8, "20:00", "次日 08:30")
         self.db.refresh(slot)
-        self.assertEqual(datetime(2026, 7, 14, 4, 0), slot.plan_end)
-        self.assertTrue(slot.is_night_run)
+        self.assertEqual(datetime(2026, 7, 13, 20, 0), slot.plan_end)
+        self.assertEqual(datetime(2026, 7, 14, 4, 0), night_slot.plan_end)
+        self.assertTrue(night_slot.is_night_run)
         self.assertEqual(1, self.db.query(TaskNightRun).count())
 
-        record_night_run(self.db, slot.id, 4, "20:00", "次日 08:30")
+        night_slot = record_night_run(self.db, slot.id, 4, "20:00", "次日 08:30")
         self.db.refresh(slot)
 
-        self.assertEqual(datetime(2026, 7, 14, 0, 0), slot.plan_end)
+        self.assertEqual(datetime(2026, 7, 13, 20, 0), slot.plan_end)
+        self.assertEqual(datetime(2026, 7, 14, 0, 0), night_slot.plan_end)
         record = self.db.query(TaskNightRun).one()
         self.assertEqual(datetime(2026, 7, 13, 20, 0), record.started_at)
         self.assertEqual(datetime(2026, 7, 14, 0, 0), record.ended_at)
 
     def test_task_can_store_multiple_night_runs(self):
-        task = Task(project_id=1, name="multi-night", task_type="test", status="scheduled")
+        task = Task(project_id=1, name="multi-night", task_type="test", status="running")
         self.db.add(task)
         self.db.flush()
         slots = [
@@ -55,7 +59,7 @@ class ScheduleNightRunTest(unittest.TestCase):
                 instrument_id=1,
                 plan_start=datetime(2026, 7, day, 8, 30),
                 plan_end=datetime(2026, 7, day, 20, 0),
-                status="scheduled",
+                status="running",
             )
             for day in (13, 14)
         ]

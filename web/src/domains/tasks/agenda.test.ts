@@ -51,6 +51,18 @@ describe('agenda day builder', () => {
     expect(days[0].items.every(entry => entry.hasConflict)).toBe(true)
   })
 
+  it('does not mark legacy second-level boundary drift as a conflict', () => {
+    const days = buildAgendaDays(
+      [
+        item({ plan_start: '2026-08-10T08:30:45', plan_end: '2026-08-10T17:30:45' }),
+        item({ slot_id: 2, task_id: 2, plan_start: '2026-08-10T17:30:00', plan_end: '2026-08-10T20:00:00' }),
+      ],
+      dayjs('2026-08-10'),
+      dayjs('2026-08-10'),
+    )
+    expect(days[0].items.every(entry => !entry.hasConflict)).toBe(true)
+  })
+
   it('puts unfinished overdue work on today', () => {
     const days = buildAgendaDays(
       [item({

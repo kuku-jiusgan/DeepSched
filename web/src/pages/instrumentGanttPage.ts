@@ -2,13 +2,14 @@
 import { ref, computed, nextTick } from 'vue'
 import type { CSSProperties, Component } from 'vue'
 import { LeftOutlined, RightOutlined, FullscreenOutlined, FullscreenExitOutlined, ExperimentOutlined, EditOutlined, CheckSquareOutlined, DotChartOutlined, FileTextOutlined } from '@ant-design/icons-vue'
-import type { Instrument, TimeSlot } from '@/types'
+import type { Instrument, InstrumentBridgeReservation, TimeSlot } from '@/types'
 import { taskStatusLabel } from '@/utils/statusMeta'
 import dayjs from 'dayjs'
 import { centerGanttTimelineOnCurrentTime } from './kanban/ganttTimelineScroll'
 import { useGanttAutoScroll } from './kanban/useGanttAutoScroll'
 import { useInstrumentGanttData, type InstrumentGanttViewMode } from './useInstrumentGanttData'
 import { buildTrailingDelayRanges } from './instrumentGanttDelayRanges'
+import { displayStartForNonCompletedSlot } from './instrumentGanttSlotTiming'
 
 const LEFT_WIDTH = 250
 const HEADER_HEIGHT = 50
@@ -61,8 +62,10 @@ interface GanttSlot extends TimeSlot {
   renderStart?: string
   renderEnd?: string
   originalPlanEnd?: string
+  originalPlanStart?: string
   isOverdueDisplay?: boolean
   faultDescription?: string
+  isBridgeReservation?: boolean
 }
 
 interface TaskTiming {
@@ -102,7 +105,7 @@ const tooltipX = ref(0)
 const tooltipY = ref(0)
 const tooltipStyle = computed(() => ({ left: tooltipX.value + 'px', top: tooltipY.value + 'px' }))
 const containerRef = ref<HTMLElement | null>(null)
-const { faults, instruments, loadData: fetchData, loading, slots, taskTypeMap } = useInstrumentGanttData({
+const { bridgeReservations, faults, instruments, loadData: fetchData, loading, slots, taskTypeMap } = useInstrumentGanttData({
   viewMode,
   cursorDate,
   afterLoad: async () => {
@@ -243,7 +246,7 @@ const taskDelayRangesMap = computed(() => {
 })
 
 const displaySlots = computed<GanttSlot[]>(() =>
-  mergeContinuousSlots(splitSlotsAroundExecutedOccupancy(toDisplaySlots([...slots.value, ...faultDisplaySlots.value]))),
+  mergeContinuousSlots(splitSlotsAroundExecutedOccupancy(toDisplaySlots([...slots.value, ...faultDisplaySlots.value, ...bridgeDisplaySlots.value]))),
 )
 
 const slotsByInstrument = computed(() => {
@@ -278,6 +281,25 @@ const faultDisplaySlots = computed<TimeSlot[]>(() =>
   faults.value
     .map(faultToDisplaySlot)
     .filter((slot): slot is TimeSlot => Boolean(slot)),
+)
+
+const bridgeDisplaySlots = computed<GanttSlot[]>(() =>
+  bridgeReservations.value.map(bridge => {
+    const sourceSlot = slots.value
+      .filter(slot => slot.task_id === bridge.task_id && slot.status !== 'cancelled')
+      .sort((a, b) => dayjs(b.plan_start).valueOf() - dayjs(a.plan_start).valueOf())[0]
+    return {
+    id: -bridge.id, task_id: bridge.task_id, instrument_id: bridge.instrument_id,
+    plan_start: bridge.plan_start, plan_end: bridge.plan_end,
+    actual_start: sourceSlot?.actual_start, actual_end: sourceSlot?.actual_end,
+    tier: sourceSlot?.tier || 'confirmed', status: sourceSlot?.status || 'scheduled',
+    execution_status: sourceSlot?.execution_status || sourceSlot?.status || 'scheduled', is_night_run: false,
+    task_name: bridge.task_name, task_type: bridge.task_type, task_status: 'scheduled',
+    project_id: bridge.project_id, project_code: bridge.project_code, project_name: bridge.project_name || undefined,
+    assignee_id: bridge.assignee_id || null, assignee_name: bridge.assignee_name || undefined,
+    isBridgeReservation: true, renderKey: `bridge-${bridge.id}`,
+    }
+  }),
 )
 
 function computeLanes() {
@@ -341,6 +363,7 @@ function getBarClasses(slot: GanttSlot, quarter?: number) {
     {
       'is-compact': isCompactBar(slot, quarter),
       'has-delay': hasDelay(slot),
+      'is-bridge-reservation': Boolean(slot.isBridgeReservation),
     },
   ]
 }
@@ -454,8 +477,10 @@ function getBarStyle(slot: GanttSlot, quarter?: number) {
     }
   }
 
-  const lane = (laneMap.value[slot.instrument_id] || {})[slot.id] || 0
-  const laneCount = laneCounts.value[slot.instrument_id] || 1
+  const instrumentId = slot.instrument_id
+  if (instrumentId === null) return { display: 'none' }
+  const lane = (laneMap.value[instrumentId] || {})[slot.id] || 0
+  const laneCount = laneCounts.value[instrumentId] || 1
   const laneH = Math.max(30, Math.floor((rowHeight.value - 8) / laneCount))
   const top = lane * laneH + 4
 
@@ -495,12 +520,14 @@ function isCompactBar(slot: TimeSlot, quarter?: number) {
 }
 
 function hasDelay(slot: TimeSlot) {
+  if ((slot as GanttSlot).isBridgeReservation) return false
   const slotStart = dayjs(slot.plan_start)
   const slotEnd = dayjs(slot.plan_end)
   return getDelayRanges(slot).some(([start, end]) => slotEnd.isAfter(start) && slotStart.isBefore(end))
 }
 
 function hasPausedExecution(slot: TimeSlot) {
+  if ((slot as GanttSlot).isBridgeReservation) return false
   const timing = taskTimingMap.value.get(slot.task_id)
   return slot.status === 'paused' && Boolean(timing?.actualStart && timing.actualEnd)
 }
@@ -647,9 +674,10 @@ function dismissTooltip() {
 
 function toDisplaySlots(sourceSlots: TimeSlot[]): GanttSlot[] {
   return sourceSlots.flatMap(slot => {
-    if (slot.status === 'fault') return [{ ...slot, originalPlanEnd: slot.plan_end }]
+    if (slot.status === 'fault') return [{ ...slot, originalPlanStart: slot.plan_start, originalPlanEnd: slot.plan_end }]
     if (slot.status !== 'completed') {
       const originalPlanEnd = dayjs(slot.plan_end)
+      const originalPlanStart = slot.plan_start
       const timing = taskTimingMap.value.get(slot.task_id)
       const isTerminal = Boolean(timing && isTerminalTaskSlot(slot, timing))
       const taskActualEnd = isTerminal ? timing?.actualEnd : null
@@ -658,12 +686,29 @@ function toDisplaySlots(sourceSlots: TimeSlot[]): GanttSlot[] {
         : (['paused', 'interrupted'].includes(slot.status) && slot.actual_end
           ? dayjs(slot.actual_end)
           : originalPlanEnd)
-      const displaySlot = { ...slot, originalPlanEnd: slot.plan_end }
+      const displayStart = dayjs(displayStartForNonCompletedSlot(slot))
+      const displaySlot = {
+        ...slot,
+        originalPlanStart,
+        originalPlanEnd: slot.plan_end,
+        plan_start: displayStart.toISOString(),
+      }
       return [{ ...displaySlot, plan_end: displayEnd.toISOString() }]
+    }
+    // Night-run slots represent a separately recorded instrument occupancy.
+    // They do not own task-level actual timestamps, so retain their planned
+    // interval instead of hiding them with incomplete completed slots.
+    if (slot.is_night_run) {
+      return [{
+        ...slot,
+        originalPlanStart: slot.plan_start,
+        originalPlanEnd: slot.plan_end,
+      }]
     }
     if (!slot.actual_start || !slot.actual_end) return []
     return [{
       ...slot,
+      originalPlanStart: slot.plan_start,
       originalPlanEnd: slot.plan_end,
       plan_start: slot.actual_start,
       plan_end: slot.actual_end,
@@ -723,7 +768,7 @@ function splitSlotsAroundExecutedOccupancy(sourceSlots: GanttSlot[]): GanttSlot[
 }
 
 function mergeContinuousSlots(sourceSlots: TimeSlot[]): GanttSlot[] {
-  const sortedSlots = [...sourceSlots].sort((a, b) => {
+  const sortedSlots = sourceSlots.filter((slot): slot is TimeSlot & { instrument_id: number } => slot.instrument_id !== null).sort((a, b) => {
     if (a.instrument_id !== b.instrument_id) return a.instrument_id - b.instrument_id
     const startDiff = dayjs(a.plan_start).valueOf() - dayjs(b.plan_start).valueOf()
     if (startDiff !== 0) return startDiff
@@ -746,6 +791,7 @@ function mergeContinuousSlots(sourceSlots: TimeSlot[]): GanttSlot[] {
 
 function canMergeSlots(current: GanttSlot, next: TimeSlot) {
   const nextSlot = next as GanttSlot
+  if (current.isBridgeReservation || nextSlot.isBridgeReservation) return false
   return current.instrument_id === next.instrument_id
     && current.task_id === next.task_id
     && current.status === next.status

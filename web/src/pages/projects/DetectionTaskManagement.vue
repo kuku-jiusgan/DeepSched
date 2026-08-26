@@ -233,9 +233,7 @@ function canDelete(status: string) {
 }
 function errorDetail(error: unknown, fallback: string) { return isAxiosError<{ detail?: string }>(error) ? error.response?.data?.detail || fallback : fallback }
 
-onMounted(async () => {
-  await Promise.all([loadInstruments(), loadUsers(), loadTaskTypes(), loadTasks()])
-})
+onMounted(() => { loadTasks() })
 </script>
 
 <style scoped>

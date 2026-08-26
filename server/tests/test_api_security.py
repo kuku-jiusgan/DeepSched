@@ -87,6 +87,7 @@ class ApiSecurityTest(unittest.TestCase):
             ("PUT", "/api/v1/projects/tasks/{task_id}"): require_task_editor,
             ("POST", "/api/v1/schedules/timeslots/{slot_id}/start"): require_slot_operator,
             ("POST", "/api/v1/schedules/generate"): require_management_user,
+            ("PUT", "/api/v1/notifications/read-all"): require_authenticated_user,
             ("PUT", "/api/v1/notifications/{nid}/read"): require_notification_owner,
         }
         routes = list(_api_routes(protected_router))

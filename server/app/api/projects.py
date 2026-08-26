@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Literal
+from datetime import datetime
 from app.core.database import get_db
 from app.api.users import auth_token, get_current_user
 from app.models import Project, Milestone, Task, TaskDependency, TaskCapabilityRequirement, TimeSlot
 from app.schemas.schemas import (
-    ProjectCreate, ProjectOut, TaskCreate, TaskUpdate, TaskReorder, TaskOut,
+    ProjectCreate, ProjectOut, ProjectListOut, TaskCreate, TaskUpdate, TaskReorder, TaskOut,
     MilestoneCreate, MilestoneOut, TaskCapabilityReqOut
 )
 from app.services.project_access_service import (
@@ -19,7 +20,11 @@ from app.services.project_hours_validation_service import (
     validate_project_estimated_hours,
 )
 from app.services.project_task_rollup_service import recalculate_project_parent_hours
-from app.services.project_service import ProjectCodeExistsError, create_project as create_project_service
+from app.services.project_service import (
+    ProjectCodeExistsError,
+    ProjectInvalidError,
+    create_project as create_project_service,
+)
 from app.services.project_plan_change_service import (
     PlanChangeInvalidError,
     PlanChangeNotFoundError,
@@ -45,7 +50,8 @@ from app.services.audit_log_service import (
 )
 from app.services.user_role_service import has_role
 from app.services.task_reorder_service import reorder_project_tasks, TaskReorderInvalidError
-from app.services.project_actual_hours_service import project_actual_hours_map
+from app.services.project_actual_hours_service import project_actual_hours_map, task_actual_hours_map
+from app.services.project_list_service import project_status_map
 from app.services.project_health_service import get_project_health
 from app.schemas.project_health_schemas import ProjectHealthOut
 
@@ -66,15 +72,34 @@ def create_project(data: ProjectCreate, token: str = Depends(auth_token), db: Se
         return project_response(project, db)
     except ProjectCodeExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except ProjectInvalidError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
-@router.get("", response_model=List[ProjectOut])
+@router.get("", response_model=List[ProjectListOut])
 def list_projects(
+    status: Literal["active", "pending", "completed"] | None = None,
     token: str = Depends(auth_token),
     db: Session = Depends(get_db),
 ):
     projects = list_visible_projects(db, get_current_user(token, db))
+    statuses = project_status_map(db, {project.id for project in projects})
+    if status:
+        projects = [project for project in projects if statuses.get(project.id, "pending") == status]
     actual_hours = project_actual_hours_map(db, projects)
-    return [project_response(project, db, actual_hours.get(project.id, 0)) for project in projects]
+    return [project_list_response(project, actual_hours.get(project.id, 0), statuses.get(project.id, "pending")) for project in projects]
+
+def project_list_response(project: Project, actual_hours: float = 0, status: str = "pending") -> dict:
+    if status == "completed":
+        delivery_status = "on_time"
+    elif project.end_date and project.end_date < datetime.now():
+        delivery_status = "overdue"
+    elif project.end_date and (project.end_date.date() - datetime.now().date()).days <= 3:
+        delivery_status = "at_risk"
+    else:
+        delivery_status = "on_time"
+    data = ProjectListOut.model_validate(project).model_dump()
+    data.update(status=status, delivery_status=delivery_status, actual_hours=actual_hours)
+    return data
 
 @router.get("/{proj_id}", response_model=ProjectOut)
 def get_project(
@@ -123,6 +148,9 @@ def ensure_project_info_write_permission(token: str, db: Session):
 
 def project_response(project: Project, db: Session, actual_hours: float | None = None) -> dict:
     data = ProjectOut.model_validate(project).model_dump()
+    actual_task_hours = task_actual_hours_map(db, [task.id for task in project.tasks])
+    for task_data in data.get("tasks", []):
+        task_data["actual_hours"] = actual_task_hours.get(task_data["id"], 0.0)
     data["status"] = calculate_project_status(project)
     data["delivery_status"] = get_project_health(db, project).summary.delivery_status
     data["actual_hours"] = actual_hours if actual_hours is not None else project_actual_hours_map(db, [project]).get(project.id, 0)

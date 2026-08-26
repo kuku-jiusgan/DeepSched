@@ -158,7 +158,11 @@ class ScheduleRescheduleServiceTest(unittest.TestCase):
         self.assertIsNotNone(self.db.get(TimeSlot, slot_ids[1]))
         self.assertIsNotNone(self.db.get(TimeSlot, slot_ids[2]))
         self.assertIsNotNone(self.db.get(TimeSlot, slot_ids[3]))
-        self.assertIsNone(self.db.get(TimeSlot, slot_ids[4]))
+        superseded_slot = self.db.get(TimeSlot, slot_ids[4])
+        self.assertIsNotNone(superseded_slot)
+        self.assertEqual("cancelled", superseded_slot.status)
+        self.assertEqual("superseded", superseded_slot.lifecycle_status)
+        self.assertEqual("排程重排", superseded_slot.superseded_reason)
         self.assertEqual("pending", self.db.get(Task, movable_task_id).status)
 
 

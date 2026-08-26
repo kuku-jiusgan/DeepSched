@@ -1,24 +1,21 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Iterable, Set
 
-from app.models import AuditLog, Task, TaskDependency, TimeSlot
+from app.models import AuditLog, Project, Task, TaskDependency, TimeSlot
 from app.services.instrument_status_service import delete_time_slots_and_refresh
+from app.services.project_completion_projection_service import projected_project_completion
 from app.services.schedule_advance_notification_service import (
     capture_task_schedule_windows,
     notify_rescheduled_tasks_delayed,
 )
 from app.services.task_delay_status_service import mark_task_delayed
-from app.services.schedule_rule_service import get_solver_constraints
+from app.services.task_progress_service import planned_task_minutes
 from app.services.schedule_forward_slot_service import has_instrument_unavailable_window
-from app.services.scheduler_helpers import (
-    is_allowed_calendar_day,
-    load_calendar_days,
-    time_horizon,
-    working_time_bounds,
-)
+from app.services.scheduler_helpers import is_allowed_calendar_day
 from app.domain.errors import DomainNotFoundError, DomainValidationError
 
 
@@ -28,6 +25,9 @@ class ScheduleDelayNotFoundError(DomainNotFoundError):
 
 class ScheduleDelayInvalidError(DomainValidationError):
     pass
+
+
+_logger = logging.getLogger(__name__)
 
 
 ACTIVE_SLOT_STATUSES = ["scheduled", "running", "paused", "blocked", "interrupted"]
@@ -48,27 +48,42 @@ def report_task_delay(db, slot_id: int, delay_hours: float, reason: str, operato
     task = db.query(Task).filter(Task.id == slot.task_id).first()
     if not task:
         raise ScheduleDelayNotFoundError("任务不存在")
+    _logger.info(
+        "schedule_delay_requested task_id=%s slot_id=%s project_id=%s "
+        "delay_hours=%s cutoff=%s operator=%s",
+        task.id, slot.id, task.project_id, delay_hours, slot.plan_end, operator_name,
+    )
     mark_task_delayed(task)
+    delay_minutes = round(delay_hours * 60)
+    task.additional_planned_minutes = int(task.additional_planned_minutes or 0) + delay_minutes
 
     final_slot = _final_task_slot(db, task.id)
     if not final_slot:
         raise ScheduleDelayNotFoundError("任务没有可延期的排程时段")
 
     slot = final_slot
-    delay = timedelta(hours=delay_hours)
+    delay = timedelta(minutes=delay_minutes)
     cutoff = slot.plan_end
     affected_slot_ids = _affected_slot_ids(db, task, slot, cutoff)
     affected_task_ids = _task_ids_for_slots(db, affected_slot_ids)
     passive_task_ids = affected_task_ids - {task.id}
     original_windows = capture_task_schedule_windows(db, passive_task_ids)
 
-    shifted_count = _apply_delay_with_working_hours(
-        db,
-        slot,
-        affected_slot_ids - {slot.id},
-        delay,
-        cutoff,
-    )
+    try:
+        shifted_count = _apply_delay_with_working_hours(
+            db,
+            slot,
+            affected_slot_ids - {slot.id},
+            delay,
+            cutoff,
+        )
+    except ScheduleDelayInvalidError:
+        _logger.exception(
+            "schedule_delay_rejected task_id=%s slot_id=%s project_id=%s "
+            "delay_hours=%s cutoff=%s affected_task_ids=%s",
+            task.id, slot.id, task.project_id, delay_hours, cutoff, sorted(affected_task_ids),
+        )
+        raise
     notify_rescheduled_tasks_delayed(
         db,
         original_windows,
@@ -95,6 +110,7 @@ def _final_task_slot(db, task_id: int) -> TimeSlot | None:
         .filter(
             TimeSlot.task_id == task_id,
             TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+            TimeSlot.lifecycle_status == "active",
         )
         .order_by(TimeSlot.plan_end.desc(), TimeSlot.id.desc())
         .first()
@@ -115,6 +131,7 @@ def _same_instrument_slots(db, slot: TimeSlot, cutoff: datetime) -> Iterable[Tim
     return db.query(TimeSlot).filter(
         TimeSlot.instrument_id == slot.instrument_id,
         TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+        TimeSlot.lifecycle_status == "active",
         TimeSlot.plan_start >= cutoff,
     ).all()
 
@@ -129,6 +146,7 @@ def _same_assignee_slots(db, task: Task, cutoff: datetime) -> Iterable[TimeSlot]
     return db.query(TimeSlot).filter(
         TimeSlot.task_id.in_(task_ids),
         TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+        TimeSlot.lifecycle_status == "active",
         TimeSlot.actual_start.is_(None),
         TimeSlot.plan_start >= cutoff,
     ).all()
@@ -154,6 +172,7 @@ def _dependency_slot_ids(db, slot_ids: set[int], cutoff: datetime) -> set[int]:
     rows = db.query(TimeSlot.id).filter(
         TimeSlot.task_id.in_(descendants),
         TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+        TimeSlot.lifecycle_status == "active",
         TimeSlot.actual_start.is_(None),
         TimeSlot.plan_start >= cutoff,
     ).all()
@@ -169,7 +188,7 @@ def _apply_delay_with_working_hours(
 ) -> int:
     slots = (
         db.query(TimeSlot)
-        .filter(TimeSlot.id.in_(slot_ids))
+        .filter(TimeSlot.id.in_(slot_ids), TimeSlot.lifecycle_status == "active")
         .order_by(TimeSlot.plan_start, TimeSlot.id)
         .all()
         if slot_ids else []
@@ -178,17 +197,15 @@ def _apply_delay_with_working_hours(
     if slot_ids:
         delete_time_slots_and_refresh(
             db,
-            db.query(TimeSlot).filter(TimeSlot.id.in_(slot_ids)),
+            db.query(TimeSlot).filter(
+                TimeSlot.id.in_(slot_ids), TimeSlot.lifecycle_status == "active",
+            ),
             synchronize_session="fetch",
         )
 
     options = _load_working_options(db, cutoff)
     delay_minutes = int(delay.total_seconds() / 60)
-    delayed_end = _extend_delayed_task(db, delayed_slot, delay_minutes, options)
-    _ensure_within_project_end(
-        db.query(Task).filter(Task.id == delayed_slot.task_id).first(),
-        delayed_end,
-    )
+    _extend_delayed_task(db, delayed_slot, delay_minutes, options)
 
     shifted_count = 0
     for snapshots in snapshots_by_task.values():
@@ -201,6 +218,7 @@ def _apply_delay_with_working_hours(
             first_slot["plan_start"],
             delay_minutes,
             options,
+            first_slot["instrument_id"],
         )
         ranges = _allocate_working_ranges(
             db,
@@ -212,7 +230,15 @@ def _apply_delay_with_working_hours(
         if not ranges:
             raise ScheduleDelayInvalidError("延期后的排程超出可规划范围")
         shifted_task = db.query(Task).filter(Task.id == first_slot["task_id"]).first()
-        _ensure_within_project_end(shifted_task, ranges[-1][1])
+        _logger.info(
+            "schedule_delay_task_projection task_id=%s project_id=%s "
+            "original_start=%s original_end=%s projected_start=%s projected_end=%s "
+            "delay_minutes=%s duration_minutes=%s",
+            shifted_task.id if shifted_task else first_slot["task_id"],
+            shifted_task.project_id if shifted_task else None,
+            first_slot["plan_start"], first_slot["plan_end"],
+            ranges[0][0], ranges[-1][1], delay_minutes, duration_minutes,
+        )
         for start, end in ranges:
             db.add(TimeSlot(
                 task_id=first_slot["task_id"],
@@ -225,6 +251,13 @@ def _apply_delay_with_working_hours(
             ))
         db.flush()
         shifted_count += len(snapshots)
+    project_ids = {
+        db.query(Task.project_id).filter(Task.id == delayed_slot.task_id).scalar(),
+        *(db.query(Task.project_id).filter(Task.id == task_id).scalar() for task_id in snapshots_by_task),
+    }
+    for project_id in filter(None, project_ids):
+        project = db.query(Project).filter(Project.id == project_id).first()
+        _ensure_project_within_end(db, project, options)
     return shifted_count
 
 
@@ -263,18 +296,37 @@ def _extend_delayed_task(
     return ranges[-1][1]
 
 
-def _ensure_within_project_end(task: Task | None, planned_end: datetime) -> None:
-    if not task or not task.project or not task.project.end_date:
+def _ensure_project_within_end(db, project, options: dict) -> None:
+    if not project or not project.end_date:
         return
-    if planned_end <= task.project.end_date:
+    project_end = projected_project_completion(db, project, options)
+    _logger.info(
+        "schedule_delay_project_projection project_id=%s project_code=%s "
+        "project_end=%s projected_end=%s",
+        project.id, project.code, project.end_date, project_end,
+    )
+    if project_end <= project.end_date:
         return
+    _logger.warning(
+        "schedule_delay_project_deadline_conflict project_id=%s project_code=%s "
+        "project_end=%s projected_end=%s",
+        project.id, project.code, project.end_date, project_end,
+    )
     project_label = " ".join(
-        part for part in [task.project.code, task.project.name] if part
-    ) or task.project.name
-    assignee_name = task.assignee_name or "未指定负责人"
+        part for part in [project.code, project.name] if part
+    ) or project.name
     raise ScheduleDelayInvalidError(
-        f"此次延期会导致项目【{project_label}】任务【{task.name}】"
-        f"无法在规定时间内完成，禁止延期！请联系该任务负责人【{assignee_name}】协调处理。"
+        f"此次延期预计导致项目【{project_label}】最晚于 {project_end:%Y-%m-%d %H:%M} 完成，"
+        f"超过项目截止时间 {project.end_date:%Y-%m-%d %H:%M}，禁止延期！"
+    )
+
+
+def _ensure_within_project_end(task: Task | None, planned_end: datetime) -> None:
+    """Compatibility guard for delay propagation's per-task projection."""
+    if not task or not task.project or not task.project.end_date or planned_end <= task.project.end_date:
+        return
+    raise ScheduleDelayInvalidError(
+        f"延期后的任务计划超出项目【{task.project.code}】截止时间"
     )
 
 
@@ -294,32 +346,22 @@ def _group_slot_snapshots(slots: list[TimeSlot]) -> dict[int, list[dict]]:
 
 
 def _load_working_options(db, start: datetime) -> dict:
-    constraints = get_solver_constraints(db)
-    working_rule = constraints["working_hours"]
-    params = working_rule.params or {}
-    day_start_minutes, day_end_minutes = working_time_bounds(params)
-    include_weekends = bool(params.get("include_weekends", False))
-    include_holidays = bool(params.get("include_holidays", False))
-    if not working_rule.is_enabled:
-        day_start_minutes, day_end_minutes = 0, 24 * 60
-        include_weekends, include_holidays = True, True
-    _, horizon_end, _ = time_horizon()
-    return {
-        "day_start_minutes": day_start_minutes,
-        "day_end_minutes": day_end_minutes,
-        "include_weekends": include_weekends,
-        "include_holidays": include_holidays,
-        "horizon_end": horizon_end,
-        "calendar_days": load_calendar_days(db, start, horizon_end),
-    }
+    from app.services.schedule_queue_replan_support import load_working_options
+
+    return load_working_options(db, start)
 
 
-def _advance_working_minutes(start: datetime, minutes: int, options: dict) -> datetime:
+def _advance_working_minutes(
+    start: datetime,
+    minutes: int,
+    options: dict,
+    instrument_id: int | None = None,
+) -> datetime:
     cursor = _ceil_to_half_hour(start)
     remaining = minutes
     while remaining > 0 and cursor < options["horizon_end"]:
         next_cursor = cursor + timedelta(minutes=30)
-        if _is_working_unit(cursor, options):
+        if _is_working_unit(cursor, options, instrument_id):
             remaining -= 30
         cursor = next_cursor
     return cursor
@@ -338,7 +380,7 @@ def _allocate_working_ranges(
     range_start: datetime | None = None
     while remaining > 0 and cursor < options["horizon_end"]:
         next_cursor = cursor + timedelta(minutes=30)
-        if _is_working_unit(cursor, options) and not _has_instrument_conflict(
+        if _is_working_unit(cursor, options, instrument_id) and not _has_instrument_conflict(
             db, instrument_id, cursor, next_cursor
         ):
             if range_start is None:
@@ -353,15 +395,21 @@ def _allocate_working_ranges(
     return ranges if remaining <= 0 else []
 
 
-def _is_working_unit(start: datetime, options: dict) -> bool:
+def _is_working_unit(start: datetime, options: dict, instrument_id: int | None = None) -> bool:
+    context = options.get("working_time_context")
+    policy = context.policy_for(instrument_id) if context else None
+    day_start = policy.day_start_minutes if policy else options["day_start_minutes"]
+    day_end = policy.day_end_minutes if policy else options["day_end_minutes"]
+    include_weekends = policy.include_weekends if policy else options["include_weekends"]
+    include_holidays = policy.include_holidays if policy else options["include_holidays"]
     current_minutes = start.hour * 60 + start.minute
     return (
-        options["day_start_minutes"] <= current_minutes < options["day_end_minutes"]
+        day_start <= current_minutes < day_end
         and is_allowed_calendar_day(
             start.date(),
             options["calendar_days"],
-            options["include_weekends"],
-            options["include_holidays"],
+            include_weekends,
+            include_holidays,
         )
     )
 
@@ -371,7 +419,10 @@ def _has_instrument_conflict(db, instrument_id: int | None, start: datetime, end
         return False
     if has_instrument_unavailable_window(db, instrument_id, start, end):
         return True
-    slots = db.query(TimeSlot).filter(TimeSlot.instrument_id == instrument_id).all()
+    slots = db.query(TimeSlot).filter(
+        TimeSlot.instrument_id == instrument_id,
+        TimeSlot.lifecycle_status == "active",
+    ).all()
     for slot in slots:
         if slot.status == "completed":
             if slot.actual_start and slot.actual_end and slot.actual_start < end and slot.actual_end > start:

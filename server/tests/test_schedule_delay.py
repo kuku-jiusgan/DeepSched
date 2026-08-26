@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import InstrumentFault, Project, Task, TimeSlot, User
+from app.models import Instrument, InstrumentFault, Project, Task, TimeSlot, User
 from app.services.schedule_delay_service import (
     ScheduleDelayInvalidError,
     report_task_delay as report_task_delay_service,
@@ -29,6 +29,11 @@ class ScheduleDelayTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
+        self.db.add_all([
+            Instrument(id=1, code="I-001", name="测试仪器1"),
+            Instrument(id=2, code="I-002", name="测试仪器2"),
+        ])
+        self.db.commit()
 
     def tearDown(self):
         self.db.close()
@@ -82,6 +87,7 @@ class ScheduleDelayTest(unittest.TestCase):
         self.assertEqual(final_slot.id, result["slot_id"])
         self.db.refresh(task)
         self.assertEqual("delayed", task.delay_status)
+        self.assertEqual(120, task.additional_planned_minutes)
 
     def test_delay_does_not_change_paused_execution_status(self):
         task = Task(project_id=1, name="paused", task_type="test", status="paused")
@@ -168,6 +174,7 @@ class ScheduleDelayTest(unittest.TestCase):
 
         shifted = self.db.query(TimeSlot).filter(
             TimeSlot.task_id == following_task.id,
+            TimeSlot.lifecycle_status == "active",
         ).one()
         self.assertEqual(datetime(2026, 7, 13, 12, 0), shifted.plan_start)
         self.assertEqual(datetime(2026, 7, 13, 13, 0), shifted.plan_end)
@@ -204,6 +211,7 @@ class ScheduleDelayTest(unittest.TestCase):
 
         shifted = self.db.query(TimeSlot).filter(
             TimeSlot.task_id == following_task.id,
+            TimeSlot.lifecycle_status == "active",
         ).one()
         self.assertEqual(datetime(2026, 7, 13, 10, 30), shifted.plan_start)
         self.assertEqual(datetime(2026, 7, 13, 18, 30), shifted.plan_end)
@@ -262,7 +270,7 @@ class ScheduleDelayTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ScheduleDelayInvalidError,
-            "此次延期会导致项目【DELAY-END-1 截止项目】任务【方法开发】无法在规定时间内完成，禁止延期！",
+            "此次延期预计导致项目【DELAY-END-1 截止项目】最晚于 .+ 完成，超过项目截止时间 .+，禁止延期！",
         ):
             report_task_delay(self.db, slot.id, 2, "实验延迟")
 
@@ -321,7 +329,7 @@ class ScheduleDelayTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ScheduleDelayInvalidError,
-            "此次延期会导致项目【DELAY-END-3 被影响项目】任务【后续任务】无法在规定时间内完成，禁止延期！",
+            "此次延期预计导致项目【DELAY-END-[23] .+】最晚于 .+ 完成，超过项目截止时间 .+，禁止延期！",
         ):
             report_task_delay(self.db, delayed_slot.id, 2, "实验延迟")
 

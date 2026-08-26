@@ -87,8 +87,11 @@
         <a-table-column title="负责人" key="assignee" width="100">
           <template #default="{ record }">{{ !record.children?.length ? (record.assignee_name || getAssigneeName(record.assignee_id) || '-') : '' }}</template>
         </a-table-column>
-        <a-table-column title="耗时(h)" key="dur" width="90" align="center">
+        <a-table-column title="计划耗时(h)" key="dur" width="105" align="center">
           <template #default="{ record }">{{ !record.children?.length ? (record.est_duration_hours || '-') : sumChildrenHours(record).toFixed(1) }}</template>
+        </a-table-column>
+        <a-table-column title="实际耗时(h)" key="actual_hours" width="105" align="center">
+          <template #default="{ record }">{{ taskActualHoursText(record) }}</template>
         </a-table-column>
         <a-table-column title="前置任务" key="predecessors" width="140" :responsive="['xl']">
           <template #default="{ record }">
@@ -171,7 +174,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item label="指定仪器" :required="isInstrumentRequired">
-              <a-select v-model:value="tf.instrument_ids" mode="multiple" :options="instrumentOptions" :placeholder="isInstrumentRequired ? '必填：请选择仪器' : '选择仪器'" allowClear :disabled="!canEditScheduleFields" size="small" style="width: 100%" />
+              <a-select v-model:value="tf.instrument_id" :options="instrumentOptions" :placeholder="isInstrumentRequired ? '必填：请选择仪器' : '选择仪器'" allowClear :disabled="!canEditScheduleFields" size="small" style="width: 100%" />
             </a-form-item>
           </a-col>
         </a-row>
@@ -205,26 +208,27 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
 import { PlusOutlined, EditOutlined, LeftOutlined, PlayCircleOutlined, FileTextOutlined, ImportOutlined, HolderOutlined, SaveOutlined } from '@ant-design/icons-vue'
-import { commitProjectPlanDrafts, createApprovalGate, reorderProjectTasks, getProject, getProjectDAG, updateTask, deleteTask, getUserDirectory, getTaskTypes, getInstruments, applyProjectPlan, confirmProjectPlanInsert, type ApprovalGateCreatePayload, type Project, type Task, type DAGData, type TaskTypeConfig } from '@/services/api'
+import { commitProjectPlanDrafts, saveAndScheduleProjectPlan, createApprovalGate, reorderProjectTasks, getProject, getProjectDAG, updateTask, deleteTask, getUserDirectory, getTaskTypes, getInstruments, applyProjectPlan, confirmProjectPlanInsert, type ApprovalGateCreatePayload, type Project, type Task, type DAGData, type TaskTypeConfig } from '@/services/api'
 import type { ProjectPlanApplyResult } from '@/types'
 import PlanInsertPreviewModal from './components/PlanInsertPreviewModal.vue'
 import ApprovalGateModal from './components/ApprovalGateModal.vue'
 import ApprovalGateEditModal from './components/ApprovalGateEditModal.vue'
+import ScheduleFailureModal from './components/ScheduleFailureModal.vue'
 import dayjs from 'dayjs'
 import { canOperatePage, permissionState } from '@/services/permissions'
 import { taskStatusLabel } from '@/utils/statusMeta'
 import {
   buildTaskTree, countLeafTasks, gateDateText, gateStatusMeta, getTaskTypeColor,
-  parentTaskIds, priorityColor, priorityLabel, sumTaskHours,
+  localDraftDependsOnTask, parentTaskIds, priorityColor, priorityLabel, sumTaskHours, taskActualHoursText, taskTreeIds,
   taskInstrumentIds, taskTreeHasCompletedTask,
 } from './planBreakdownUtils'
-import { scheduleFailureContent } from './planScheduleFailure'
 import { buildStandardPlanDrafts } from './standardPlanDrafts'
+import { buildLocalTask, type LocalTaskPayload } from './planLocalTaskFactory'
 import { persistCommittedDraftOrders, siblingOrderGroups, toDraftPayload } from './planDraftPersistence'
 import { useApprovalGateEditor } from './useApprovalGateEditor'
 import './planBreakdown.css'
@@ -268,7 +272,7 @@ const instrumentCodeMap = computed(() => {
   instrumentOptions.value.forEach(instrument => { map[instrument.value] = instrument.label })
   return map
 })
-const tf = reactive({ name: '', task_type: '', est_duration_hours: 8, switchover_hours: 0.5, predecessor_ids: [] as number[], instrument_ids: [] as number[], assignee_id: null as number | null, parent_id: null as number | null })
+const tf = reactive({ name: '', task_type: '', est_duration_hours: 8, switchover_hours: 0.5, predecessor_ids: [] as number[], instrument_id: null as number | null, assignee_id: null as number | null, parent_id: null as number | null })
 const statusLabels: Record<string, string> = { active: '进行中', completed: '已完成', pending: '待启动', suspended: '已暂停', cancelled: '已取消', draft: '草稿' }
 function goBack() { router.push('/projects/ledger') }
 function getTaskTypeName(code: string) {
@@ -314,7 +318,7 @@ const canEditScheduleFields = computed(() => editingTask.value?.can_edit_schedul
 const isInstrumentRequired = computed(() => REQUIRED_INSTRUMENT_TASK_TYPES.has(tf.task_type))
 const hasLocalDrafts = computed(() => allTasks.value.some(task => task.is_local_draft))
 const { approvalGateEditOpen, approvalGateEditSubmitting, editingApprovalGate, openEditApprovalGate, closeEditApprovalGate, handleApprovalGateEditSubmit } = useApprovalGateEditor({
-  allTasks, hasLocalDrafts, project, getAssigneeName, fetchProject, errorDetail,
+  allTasks, project, getAssigneeName, errorDetail,
 })
 const hasPendingPlanChanges = computed(() => allTasks.value.some(task =>
   !task.children?.length
@@ -361,16 +365,12 @@ async function fetchProject() {
 }
 function openAddTask(parentId: number | null) {
   editingTask.value = null; parentTaskId.value = parentId
-  Object.assign(tf, { name: '', task_type: taskTypeOptions.value[0]?.value || '', est_duration_hours: 8, switchover_hours: 0.5, predecessor_ids: [], instrument_ids: [], assignee_id: null, parent_id: parentId })
+  Object.assign(tf, { name: '', task_type: taskTypeOptions.value[0]?.value || '', est_duration_hours: 8, switchover_hours: 0.5, predecessor_ids: [], instrument_id: null, assignee_id: null, parent_id: parentId })
   taskOpen.value = true
 }
 function openEditTask(t: Task) {
-  if (hasLocalDrafts.value && !t.is_local_draft) {
-    message.warning('请先保存当前新增草稿，再编辑数据库中的任务')
-    return
-  }
   editingTask.value = t; parentTaskId.value = null
-  Object.assign(tf, { name: t.name, task_type: t.task_type, est_duration_hours: t.est_duration_hours || 8, switchover_hours: t.switchover_hours, predecessor_ids: t.predecessor_ids || [], instrument_ids: t.instrument_ids || [], assignee_id: t.assignee_id || null, parent_id: t.parent_id || null })
+  Object.assign(tf, { name: t.name, task_type: t.task_type, est_duration_hours: t.est_duration_hours || 8, switchover_hours: t.switchover_hours, predecessor_ids: t.predecessor_ids || [], instrument_id: t.instrument_ids?.[0] || null, assignee_id: t.assignee_id || null, parent_id: t.parent_id || null })
   taskOpen.value = true
 }
 async function handleTaskSubmit() {
@@ -381,14 +381,14 @@ async function handleTaskSubmit() {
     if (!tf.task_type) { message.error('请选择任务类型'); return }
     if (!tf.assignee_id) { message.error('请选择负责人'); return }
     if (!tf.est_duration_hours || tf.est_duration_hours <= 0) { message.error('请输入预计耗时'); return }
-    if (isInstrumentRequired.value && !tf.instrument_ids.length) { message.error('方法开发和方法验证必须指定仪器'); return }
+    if (isInstrumentRequired.value && !tf.instrument_id) { message.error('方法开发和方法验证必须指定仪器'); return }
   }
   const payload = {
     name: tf.name, task_type: isParent ? 'group' : tf.task_type,
     requires_instrument: isParent ? false : (taskTypeMap.value[tf.task_type]?.resource_type || 'both') !== 'human',
     est_duration_hours: isParent ? null : tf.est_duration_hours, switchover_hours: isParent ? 0 : tf.switchover_hours,
     predecessor_ids: isParent ? [] : tf.predecessor_ids, assignee_id: isParent ? null : (tf.assignee_id || null),
-    parent_id: tf.parent_id, instrument_ids: isParent ? [] : tf.instrument_ids,
+    parent_id: tf.parent_id, instrument_ids: isParent || !tf.instrument_id ? [] : [tf.instrument_id],
   }
   try {
     if (editingTask.value?.is_local_draft) {
@@ -396,15 +396,22 @@ async function handleTaskSubmit() {
       const planOrder = editingTask.value.parent_id === payload.parent_id
         ? editingTask.value.plan_order
         : undefined
-      if (index >= 0) allTasks.value[index] = buildDraftTask(payload, editingTask.value.id, planOrder)
+      if (index >= 0) allTasks.value[index] = buildLocalTask(payload, {
+        projectId, id: editingTask.value.id, planOrder: planOrder ?? siblingTasks(payload.parent_id).length,
+        assigneeName: getAssigneeName(payload.assignee_id),
+      })
       expandTask(payload.parent_id)
       message.success('草稿任务已更新')
     } else if (editingTask.value) {
-      await updateTask(editingTask.value.id, payload)
+      const updatedTask = await updateTask(editingTask.value.id, payload)
+      const index = allTasks.value.findIndex(task => task.id === updatedTask.id)
+      if (index >= 0) allTasks.value[index] = updatedTask
       message.success('任务更新成功')
-      await fetchProject()
     } else {
-      allTasks.value.push(buildDraftTask(payload, nextDraftId--))
+      allTasks.value.push(buildLocalTask(payload, {
+        projectId, id: nextDraftId--, planOrder: siblingTasks(payload.parent_id).length,
+        assigneeName: getAssigneeName(payload.assignee_id),
+      }))
       expandTask(payload.parent_id)
       message.success('任务已加入本地草稿，保存前不会写入数据库')
     }
@@ -415,17 +422,7 @@ async function handleDeleteTask(taskId: number) {
   const task = allTasks.value.find(item => item.id === taskId)
   if (task && !canDeleteTask(task)) { message.warning('已完成任务不允许删除'); return }
   if (task?.is_local_draft) {
-    const removedIds = new Set<number>([taskId])
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const candidate of allTasks.value) {
-        if (candidate.parent_id && removedIds.has(candidate.parent_id) && !removedIds.has(candidate.id)) {
-          removedIds.add(candidate.id)
-          changed = true
-        }
-      }
-    }
+    const removedIds = taskTreeIds(allTasks.value, taskId)
     allTasks.value = allTasks.value
       .filter(candidate => !removedIds.has(candidate.id))
       .map(candidate => ({
@@ -435,47 +432,22 @@ async function handleDeleteTask(taskId: number) {
     message.success('未保存草稿已删除')
     return
   }
-  if (hasLocalDrafts.value) { message.warning('请先保存当前新增草稿，再删除数据库中的任务'); return }
-  try { await deleteTask(taskId); message.success(task?.is_external_gate ? '方案签批已删除' : '任务已删除'); await fetchProject() }
-  catch (error: unknown) { message.error(errorDetail(error, '删除失败')) }
-}
-function buildDraftTask(
-  payload: {
-    name: string; task_type: string; requires_instrument: boolean;
-    est_duration_hours: number | null; switchover_hours: number;
-    predecessor_ids: number[]; assignee_id: number | null;
-    parent_id: number | null; instrument_ids: number[];
-  },
-  id: number,
-  planOrder?: number,
-): Task {
-  return {
-    id,
-    project_id: projectId,
-    name: payload.name,
-    task_type: payload.task_type,
-    requires_instrument: payload.requires_instrument,
-    requires_human: payload.task_type !== 'group',
-    est_duration_hours: payload.est_duration_hours ?? undefined,
-    switchover_hours: payload.switchover_hours,
-    status: 'pending',
-    delay_status: 'not_delayed',
-    schedule_dirty: true,
-    schedule_lock_status: 'none',
-    can_edit_schedule_fields: true,
-    can_edit_basic_fields: true,
-    can_edit_schedule_window: true,
-    can_edit_resource_fields: true,
-    priority_weight: 1,
-    allow_split: false,
-    instrument_ids: [...payload.instrument_ids],
-    predecessor_ids: [...payload.predecessor_ids],
-    assignee_id: payload.assignee_id,
-    assignee_name: getAssigneeName(payload.assignee_id),
-    parent_id: payload.parent_id,
-    is_local_draft: true,
-    plan_order: planOrder ?? siblingTasks(payload.parent_id).length,
+  if (localDraftDependsOnTask(allTasks.value, taskId)) {
+    message.warning('该任务被未保存草稿作为父任务或前置任务引用，请先调整草稿关联')
+    return
   }
+  try {
+    const removedIds = taskTreeIds(allTasks.value, taskId)
+    await deleteTask(taskId)
+    allTasks.value = allTasks.value
+      .filter(candidate => !removedIds.has(candidate.id))
+      .map(candidate => ({
+        ...candidate,
+        predecessor_ids: candidate.predecessor_ids.filter(id => !removedIds.has(id)),
+      }))
+    message.success(task?.is_external_gate ? '方案签批已删除' : '任务已删除')
+  }
+  catch (error: unknown) { message.error(errorDetail(error, '删除失败')) }
 }
 async function handleCreateApprovalGate(payload: ApprovalGateCreatePayload) {
   approvalGateSubmitting.value = true
@@ -564,25 +536,39 @@ async function handleStartSchedule() {
   }
   scheduling.value = true
   try {
-    const saveResult = await saveLocalDrafts()
-    if (saveResult) {
-      message.success(saveResult.message)
-      await fetchProject()
-    }
-    const result = await applyProjectPlan(projectId)
+    const drafts = allTasks.value.filter(task => task.is_local_draft)
+    const result = await saveAndScheduleProjectPlan(projectId, drafts.map(task => toDraftPayload(task, isParentTask)))
     if (result.status === 'applied') {
       message.success(result.message || '排程完成')
       await fetchProject()
     } else if (result.status === 'no_changes') {
       message.info(result.message || '当前没有需要重新排程的任务')
+      await fetchProject()
     } else if (result.status === 'insert_confirmation_required') {
       insertPreview.value = result
       insertPreviewOpen.value = true
     } else {
-      Modal.error({ title: '排程失败', content: scheduleFailureContent(result.message || '当前计划无法在已有排程中安排。') })
+      Modal.error({
+        title: '排程失败',
+        width: 900,
+        wrapClassName: 'schedule-failure-modal',
+        content: h(ScheduleFailureModal, { projectId, result }),
+      })
     }
   } catch (error: unknown) {
-    Modal.error({ title: '排程请求失败', content: errorDetail(error, '服务器内部错误，请稍后重试。') })
+    const responseData = isAxiosError<ProjectPlanApplyResult & { detail?: string }>(error)
+      ? error.response?.data
+      : undefined
+    if (responseData?.schedule_failure) {
+      Modal.error({
+        title: '排程失败',
+        width: 900,
+        wrapClassName: 'schedule-failure-modal',
+        content: h(ScheduleFailureModal, { projectId, result: responseData }),
+      })
+    } else {
+      Modal.error({ title: '排程请求失败', content: errorDetail(error, '服务器内部错误，请稍后重试。') })
+    }
   } finally { scheduling.value = false }
 }
 async function handleConfirmInsert() {

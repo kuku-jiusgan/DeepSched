@@ -182,6 +182,43 @@ class ApprovalGateServiceTest(unittest.TestCase):
         self.assertNotIn(4, context.branch_task_ids)
         self.assertEqual(branch_done_at, context.anchor_at)
 
+    def test_approved_context_ignores_downstream_task_own_future_running_slot(self):
+        gate = Task(
+            id=3,
+            project_id=1,
+            name="方案签批",
+            task_type="approval_gate",
+            is_external_gate=True,
+            gate_status="approved",
+            status="completed",
+        )
+        old_plan_end = datetime.now() + timedelta(days=6)
+        self.validation.instrument_ids = [1]
+        self.db.add_all([
+            gate,
+            TaskDependency(task_id=2, predecessor_id=3),
+            TimeSlot(
+                schedule_run_id="old-run",
+                task_id=2,
+                instrument_id=1,
+                plan_start=datetime.now() + timedelta(days=6, hours=-2),
+                plan_end=old_plan_end,
+                actual_start=datetime.now(),
+                status="running",
+                lifecycle_status="active",
+            ),
+        ])
+        self.db.commit()
+
+        before = datetime.now()
+        context = build_approval_schedule_context(self.db, gate)
+        after = datetime.now()
+
+        self.assertEqual({2}, context.downstream_task_ids)
+        self.assertGreaterEqual(context.anchor_at, before)
+        self.assertLessEqual(context.anchor_at, after)
+        self.assertLess(context.anchor_at, old_plan_end)
+
     @patch("app.services.project_plan_apply_service.apply_project_plan")
     def test_submit_records_expected_date(self, apply_project_plan):
         apply_project_plan.return_value = type("Result", (), {

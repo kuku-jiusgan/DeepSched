@@ -7,12 +7,6 @@
     :mask-closable="false"
     @cancel="close"
   >
-    <a-alert
-      type="info"
-      show-icon
-      message="暂停不会完成任务，也不会解锁其后续任务。"
-      class="pause-task-alert"
-    />
     <a-descriptions v-if="task" :column="1" size="small" class="pause-task-summary">
       <a-descriptions-item label="当前任务">
         {{ task.project_code }} · {{ task.task_name }}
@@ -29,7 +23,7 @@
           placeholder="填写等待样品、等待反应或临时插单等原因"
         />
       </a-form-item>
-      <a-form-item label="接替任务" required extra="仅显示同一仪器且前置任务均已完成的任务">
+      <a-form-item label="接替任务" required>
         <a-select
           v-model:value="targetSlotId"
           allow-clear
@@ -158,7 +152,6 @@ function formatWindow(candidate: TaskSwitchCandidate) {
 </script>
 
 <style scoped>
-.pause-task-alert,
 .pause-task-summary {
   margin-bottom: 16px;
 }

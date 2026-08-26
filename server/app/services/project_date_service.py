@@ -21,6 +21,17 @@ def normalize_project_end(value: datetime | None) -> datetime | None:
     return local_value.replace(hour=23, minute=59, second=59, microsecond=999999)
 
 
+def validate_project_window(
+    start_date: datetime | None,
+    end_date: datetime | None,
+) -> None:
+    if start_date and end_date and end_date < start_date:
+        raise ValueError(
+            f"项目结题日期不能早于开始日期（开始日期：{start_date:%Y-%m-%d}，"
+            f"结题日期：{end_date:%Y-%m-%d}）"
+        )
+
+
 def _to_local_naive(value: datetime | None) -> datetime | None:
     if value is None:
         return None

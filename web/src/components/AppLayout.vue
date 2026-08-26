@@ -1,6 +1,7 @@
 ﻿<template>
   <a-layout style="min-height: 100vh; background: #f7f8fa">
     <a-layout-sider
+      v-if="!isMobile"
       width="220"
       :collapsed-width="64"
       :collapsed="isSiderCollapsed"
@@ -55,17 +56,45 @@
         </a-button>
       </div>
     </a-layout-sider>
+    <a-drawer
+      v-else
+      v-model:open="mobileMenuOpen"
+      placement="left"
+      :width="280"
+      class="mobile-navigation-drawer"
+      title="资源智能调度协同平台"
+    >
+      <a-menu
+        theme="dark"
+        mode="inline"
+        :selected-keys="[route.path]"
+        :default-open-keys="openKeys"
+        :items="menuItems"
+        class="app-menu mobile-app-menu"
+        @click="navigate"
+      />
+      <template #footer>
+        <a-button type="text" block class="logout-button" @click="handleLogout">
+          <template #icon><LogoutOutlined /></template>退出登录
+        </a-button>
+      </template>
+    </a-drawer>
     <a-layout style="background: #f7f8fa">
       <a-layout-content
         class="app-content"
         :class="{ 'app-content-cockpit': route.path === '/operations/cockpit' }"
       >
-        <div v-if="route.path !== '/operations/cockpit'" class="page-top-actions">
+        <div v-if="route.path !== '/operations/cockpit' || isMobile" class="page-top-actions">
+          <a-button v-if="isMobile" class="mobile-menu-button" aria-label="打开菜单" @click="mobileMenuOpen = true">
+            <template #icon><MenuOutlined /></template>
+          </a-button>
           <a-dropdown trigger="click">
-            <a-tag color="blue" class="current-user">
-              <UserOutlined />
-              <span>{{ currentUserLabel }}</span>
-            </a-tag>
+            <a-tooltip :title="currentUserLabel">
+              <a-tag color="blue" class="current-user" :aria-label="`${currentUserLabel} 的账户菜单`">
+                <span class="current-user-initial">{{ currentUserInitial }}</span>
+                <span>{{ currentUserLabel }}</span>
+              </a-tag>
+            </a-tooltip>
             <template #overlay>
               <a-menu>
                 <a-menu-item key="password" @click="openPasswordModal">修改密码</a-menu-item>
@@ -77,6 +106,15 @@
             <div class="notification-panel">
               <div class="notification-panel-head">
                 <span>站内通知</span>
+                <a-button
+                  type="link"
+                  size="small"
+                  :loading="markingAllNotificationsRead"
+                  :disabled="notifications.length === 0"
+                  @click="markAllNotificationsRead"
+                >
+                  全部已读
+                </a-button>
               </div>
               <a-empty v-if="notifications.length === 0" :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无未读通知" />
               <div v-else class="notification-list">
@@ -135,6 +173,7 @@
 
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { isMobileViewport, useMobileViewport } from '@/composables/useMobileViewport'
 import { useRouter, useRoute } from 'vue-router'
 import { Empty, message } from 'ant-design-vue'
 import dayjs from 'dayjs'
@@ -148,7 +187,7 @@ import {
   ApartmentOutlined, TableOutlined, ToolOutlined,
   ThunderboltOutlined, SwapOutlined, DollarOutlined,
   BellOutlined, TeamOutlined, CalendarOutlined, LogoutOutlined,
-  MenuFoldOutlined, MenuUnfoldOutlined, HomeOutlined,
+  MenuFoldOutlined, MenuUnfoldOutlined, MenuOutlined, HomeOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons-vue'
 import {
@@ -157,20 +196,26 @@ import {
   getNotifications,
   keepSessionAlive,
   logout,
+  markAllNotificationsRead as markAllNotificationsReadRequest,
   markNotificationRead,
   type NotificationRecord,
 } from '@/services/api'
 
 const router = useRouter()
 const route = useRoute()
-const mobileSiderMedia = window.matchMedia('(max-width: 768px)')
+const mobileSiderMedia = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+  ? window.matchMedia('(max-width: 768px)')
+  : null
+const { isMobile } = useMobileViewport()
+const mobileMenuOpen = ref(false)
 const isSiderCollapsed = ref(
-  mobileSiderMedia.matches || localStorage.getItem('siderCollapsed') === 'true',
+  isMobileViewport() || localStorage.getItem('siderCollapsed') === 'true',
 )
 const isSiderTooltipOpen = ref(false)
 const canShowSiderTooltip = ref(true)
 const notificationOpen = ref(false)
 const notifications = ref<NotificationRecord[]>([])
+const markingAllNotificationsRead = ref(false)
 const passwordModalOpen = ref(false)
 const passwordSubmitting = ref(false)
 const passwordForm = reactive({
@@ -274,6 +319,12 @@ const currentUserLabel = computed(() => {
   const user = getStoredUser()
   return user?.display_name || user?.username || '未登录'
 })
+const currentUserInitial = computed(() => {
+  const label = currentUserLabel.value.trim()
+  if (!label) return '我'
+  const chineseName = label.replace(/\s+/g, '')
+  return /^[\u4e00-\u9fff]/.test(chineseName) ? chineseName.slice(0, 1) : label.slice(0, 1).toUpperCase()
+})
 const newPasswordHelp = computed(() => (
   passwordForm.newPassword && !isStrongPassword(passwordForm.newPassword)
     ? '密码至少8位，且必须包含字母和数字'
@@ -361,6 +412,7 @@ function getErrorDetail(error: unknown, fallback: string) {
 
 function navigate({ key }: { key: string }) {
   router.push(key)
+  mobileMenuOpen.value = false
 }
 
 function toggleSider() {
@@ -455,6 +507,20 @@ async function readNotification(item: NotificationRecord) {
   notifications.value = notifications.value.filter(n => n.id !== item.id)
 }
 
+async function markAllNotificationsRead() {
+  if (notifications.value.length === 0 || markingAllNotificationsRead.value) return
+  markingAllNotificationsRead.value = true
+  try {
+    const result = await markAllNotificationsReadRequest()
+    notifications.value = []
+    message.success(result.updated_count > 0 ? '全部通知已标记为已读' : '暂无未读通知')
+  } catch {
+    message.error('全部标记已读失败，请稍后重试')
+  } finally {
+    markingAllNotificationsRead.value = false
+  }
+}
+
 async function confirmItem(item: NotificationRecord) {
   await confirmNotification(item.id)
   await markNotificationRead(item.id)
@@ -517,7 +583,7 @@ function notificationTypeColor(type: string) {
 }
 
 onMounted(() => {
-  mobileSiderMedia.addEventListener('change', syncSiderWithViewport)
+  mobileSiderMedia?.addEventListener('change', syncSiderWithViewport)
   markActivity()
   ACTIVITY_EVENTS.forEach(eventName => window.addEventListener(eventName, markActivity, { passive: true }))
   document.addEventListener('visibilitychange', checkIdleOnVisibilityChange)
@@ -527,7 +593,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  mobileSiderMedia.removeEventListener('change', syncSiderWithViewport)
+  mobileSiderMedia?.removeEventListener('change', syncSiderWithViewport)
   if (notificationTimer) window.clearInterval(notificationTimer)
   if (initialNotificationTimer) window.clearTimeout(initialNotificationTimer)
   if (sessionKeepAliveTimer) window.clearInterval(sessionKeepAliveTimer)

@@ -8,7 +8,7 @@ from app.core.database import Base
 from app.models import Project, Task
 from app.schemas.schemas import ProjectCreate
 from app.services.project_plan_change_service import PlanChangeInvalidError, update_project_plan
-from app.services.project_service import ProjectCodeExistsError, create_project
+from app.services.project_service import ProjectCodeExistsError, ProjectInvalidError, create_project
 
 
 class ProjectServiceTest(unittest.TestCase):
@@ -114,6 +114,35 @@ class ProjectServiceTest(unittest.TestCase):
 
         self.assertEqual(datetime(2026, 7, 20, 0, 0), project.start_date)
         self.assertEqual(datetime(2026, 7, 20, 23, 59, 59, 999999), project.end_date)
+
+    def test_create_project_rejects_end_before_start(self):
+        with self.assertRaisesRegex(ProjectInvalidError, "结题日期不能早于开始日期"):
+            create_project(
+                self.db,
+                ProjectCreate(
+                    name="日期错误项目",
+                    code="PRJ-006",
+                    start_date=datetime(2026, 8, 18),
+                    end_date=datetime(2026, 8, 8),
+                ),
+            )
+
+    def test_update_project_rejects_end_before_start(self):
+        project = Project(name="项目", code="PRJ-007", priority=1)
+        self.db.add(project)
+        self.db.commit()
+
+        with self.assertRaisesRegex(PlanChangeInvalidError, "结题日期不能早于开始日期"):
+            update_project_plan(
+                self.db,
+                project.id,
+                ProjectCreate(
+                    name="项目",
+                    code="PRJ-007",
+                    start_date=datetime(2026, 8, 18),
+                    end_date=datetime(2026, 8, 8),
+                ),
+            )
 
 
 if __name__ == "__main__":

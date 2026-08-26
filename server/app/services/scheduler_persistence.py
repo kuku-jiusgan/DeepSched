@@ -3,13 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.core.config import get_settings
-from app.models import TimeSlot
+from app.models import Task, TimeSlot
+from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.services.scheduler_helpers import (
     TIME_UNIT_MINUTES,
     is_allowed_calendar_day,
     natural_day_boundary,
 )
 from app.services.schedule_slot_change_log_service import record_slot_created
+from app.services.instrument_working_time_service import WorkingTimeContext
 
 ACTIVE_EXECUTION_STATUSES = {"running", "paused", "interrupted"}
 
@@ -23,16 +25,13 @@ def persist_slots(
     task_ends,
     presences,
     horizon_start,
-    day_start_minutes: int,
-    day_end_minutes: int,
+    working_context: WorkingTimeContext,
     freeze_days: int,
-    calendar_days=None,
-    include_weekends: bool = False,
-    include_holidays: bool = False,
     schedule_run_id: str = "legacy",
     commit: bool = True,
     split_unit_presences=None,
     forecast_task_ids: set[int] | None = None,
+    instrument_bridges: list[dict] | None = None,
 ) -> int:
     now = datetime.now()
     frozen_boundary = natural_day_boundary(now, freeze_days)
@@ -42,18 +41,12 @@ def persist_slots(
     created = 0
     split_unit_presences = split_unit_presences or {}
     forecast_task_ids = forecast_task_ids or set()
-
     for task in tasks:
         # Active execution slots are managed by task execution services; a new
         # schedule run must not replace their state with scheduled slots.
         if task.status in ACTIVE_EXECUTION_STATUSES:
             continue
-        assigned_instrument = _assigned_instrument(
-            task,
-            instruments,
-            solver,
-            presences,
-        )
+        assigned_instrument = _assigned_instrument(task, instruments, solver, presences)
         if task.requires_instrument and assigned_instrument is None:
             continue
 
@@ -75,6 +68,9 @@ def persist_slots(
 
         start_unit = solver.Value(task_starts[task.id])
         end_unit = solver.Value(task_ends[task.id])
+        policy = working_context.policy_for(
+            assigned_instrument.id if assigned_instrument else None,
+        )
         chunk_start = None
         for unit in range(start_unit, end_unit):
             current = horizon_start + timedelta(
@@ -82,12 +78,12 @@ def persist_slots(
             )
             current_minutes = current.hour * 60 + current.minute
             is_working = (
-                day_start_minutes <= current_minutes < day_end_minutes
+                policy.day_start_minutes <= current_minutes < policy.day_end_minutes
                 and is_allowed_calendar_day(
                     current.date(),
-                    calendar_days or {},
-                    include_weekends,
-                    include_holidays,
+                    working_context.calendar_days,
+                    policy.include_weekends,
+                    policy.include_holidays,
                 )
             )
             if is_working and chunk_start is None:
@@ -122,6 +118,8 @@ def persist_slots(
                 force_forecast=task.id in forecast_task_ids,
             )
         task.status = "scheduled"
+
+    rebuild_instrument_bridge_reservations(db, schedule_run_id)
 
     if commit:
         db.commit()

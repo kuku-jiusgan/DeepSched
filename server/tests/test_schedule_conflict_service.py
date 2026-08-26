@@ -8,6 +8,7 @@ from app.core.database import Base
 from app.models import Instrument, Project, Task, TimeSlot, User
 from app.services.schedule_conflict_service import (
     ScheduleConflictError,
+    ensure_no_dependency_conflicts,
     ensure_no_human_conflicts,
     ensure_no_instrument_conflicts,
     find_human_conflicts,
@@ -16,6 +17,68 @@ from app.services.schedule_conflict_service import (
 
 
 class ScheduleConflictServiceTest(unittest.TestCase):
+    def test_dependency_conflict_across_schedule_runs_is_rejected(self):
+        self._create_task(1, None, requires_human=False)
+        self._create_task(2, None, requires_human=False)
+        self.db.add_all([
+            TimeSlot(
+                task_id=1, schedule_run_id="current",
+                plan_start=datetime(2026, 8, 26, 16, 30),
+                plan_end=datetime(2026, 8, 28, 11, 30),
+                status="scheduled",
+            ),
+            TimeSlot(
+                task_id=2, schedule_run_id="old",
+                plan_start=datetime(2026, 8, 26, 10, 30),
+                plan_end=datetime(2026, 8, 26, 16, 30),
+                status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        with self.assertRaisesRegex(
+            ScheduleConflictError,
+            "任务【任务2】必须在前置任务【任务1】完成后开始",
+        ):
+            ensure_no_dependency_conflicts(self.db, [(2, 1)], "current")
+
+    def test_queue_dependency_ignores_successor_historical_execution(self):
+        self._create_task(1, None, requires_human=False)
+        self._create_task(2, None, requires_human=False)
+        self.db.add_all([
+            TimeSlot(
+                task_id=2,
+                schedule_run_id="history",
+                plan_start=datetime(2026, 8, 21, 17, 30),
+                plan_end=datetime(2026, 8, 21, 17, 31),
+                actual_start=datetime(2026, 8, 21, 17, 30),
+                actual_end=datetime(2026, 8, 21, 17, 31),
+                status="paused",
+            ),
+            TimeSlot(
+                task_id=1,
+                schedule_run_id="current",
+                plan_start=datetime(2026, 8, 25, 15, 0),
+                plan_end=datetime(2026, 8, 26, 9, 0),
+                status="scheduled",
+            ),
+            TimeSlot(
+                task_id=2,
+                schedule_run_id="current",
+                plan_start=datetime(2026, 8, 26, 9, 30),
+                plan_end=datetime(2026, 8, 27, 9, 30),
+                status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        ensure_no_dependency_conflicts(
+            self.db,
+            [(2, 1)],
+            "current",
+            task_slots_from_run_only=True,
+        )
+
     def setUp(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
@@ -254,6 +317,49 @@ class ScheduleConflictServiceTest(unittest.TestCase):
         self.db.commit()
 
         self.assertEqual([], find_human_conflicts(self.db))
+
+    def test_legacy_plan_seconds_do_not_turn_adjacent_human_tasks_into_overlap(self):
+        self._create_user(1)
+        self._create_task(1, 1)
+        self._create_task(2, 1)
+        self.db.add_all([
+            TimeSlot(
+                task_id=1,
+                plan_start=datetime(2026, 8, 25, 8, 30, 45),
+                plan_end=datetime(2026, 8, 25, 17, 30, 45),
+                status="scheduled",
+            ),
+            TimeSlot(
+                task_id=2,
+                plan_start=datetime(2026, 8, 25, 17, 30),
+                plan_end=datetime(2026, 8, 25, 20, 0),
+                status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        self.assertEqual([], find_human_conflicts(self.db))
+
+    def test_legacy_plan_seconds_do_not_turn_adjacent_instrument_tasks_into_overlap(self):
+        self._create_task(1, None, requires_human=False)
+        self._create_task(2, None, requires_human=False)
+        self.db.add_all([
+            TimeSlot(
+                task_id=1, instrument_id=1,
+                plan_start=datetime(2026, 8, 25, 8, 30, 45),
+                plan_end=datetime(2026, 8, 25, 17, 30, 45),
+                status="scheduled",
+            ),
+            TimeSlot(
+                task_id=2, instrument_id=1,
+                plan_start=datetime(2026, 8, 25, 17, 30),
+                plan_end=datetime(2026, 8, 25, 20, 0),
+                status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        self.assertEqual([], find_instrument_conflicts(self.db))
 
     def test_non_human_task_does_not_create_human_conflict(self):
         self._create_user(1)

@@ -1,11 +1,22 @@
 import unittest
+from datetime import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.api.projects import _task_to_out
-from app.models import AuditLog, Project, Task, TaskDependency, TaskTypeConfig, TimeSlot, User
+from app.models import (
+    AuditLog,
+    Project,
+    Task,
+    TaskDependency,
+    TaskExecutionSegment,
+    TaskNightRun,
+    TaskTypeConfig,
+    TimeSlot,
+    User,
+)
 from app.schemas.schemas import TaskUpdate
 from app.schemas.project_plan_draft_schemas import ProjectPlanDraftCommitIn, ProjectPlanDraftTaskIn
 from app.services.project_plan_draft_service import (
@@ -222,6 +233,42 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
         self.assertIn((tasks["方案撰写"].id, tasks["方法验证"].id), dependencies)
         self.assertEqual("pending", self.db.get(Task, tasks["方法验证"].id).status)
         self.assertTrue(self.db.get(Task, tasks["报告撰写"].id).schedule_dirty)
+
+    def test_admin_deletes_completed_task_tree_and_execution_history(self):
+        parent = Task(
+            project_id=1, name="标准计划", task_type="group", status="pending",
+        )
+        child = Task(
+            project_id=1, parent=parent, name="方法开发",
+            task_type="FFKF_001", status="completed",
+        )
+        self.db.add_all([parent, child])
+        self.db.flush()
+        slot = TimeSlot(
+            task_id=child.id, plan_start=datetime(2026, 8, 21, 8, 30),
+            plan_end=datetime(2026, 8, 21, 10, 0),
+            actual_start=datetime(2026, 8, 21, 8, 30),
+            actual_end=datetime(2026, 8, 21, 9, 30),
+            status="completed",
+        )
+        self.db.add(slot)
+        self.db.flush()
+        self.db.add(TaskExecutionSegment(
+            task_id=child.id, slot_id=slot.id,
+            started_at=slot.actual_start, ended_at=slot.actual_end,
+        ))
+        self.db.add(TaskNightRun(
+            task_id=child.id, slot_id=slot.id, instrument_id=1,
+            started_at=slot.actual_start, ended_at=slot.actual_end,
+        ))
+        self.db.commit()
+
+        delete_task_plan(self.db, parent.id, allow_completed=True)
+
+        self.assertEqual(0, self.db.query(Task).filter(Task.id.in_([parent.id, child.id])).count())
+        self.assertEqual(0, self.db.query(TimeSlot).filter(TimeSlot.task_id == child.id).count())
+        self.assertEqual(0, self.db.query(TaskExecutionSegment).filter(TaskExecutionSegment.task_id == child.id).count())
+        self.assertEqual(0, self.db.query(TaskNightRun).filter(TaskNightRun.task_id == child.id).count())
 
     def _task(
         self,

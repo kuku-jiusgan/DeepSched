@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from sqlalchemy import or_, and_
+from sqlalchemy.orm import selectinload, joinedload
 
 from app.models import AuditLog, Project, Task, TaskDependency, TimeSlot, User
 from app.domain.task_status import resolve_task_execution_status
@@ -112,7 +114,48 @@ def list_approval_gates(
     page_size: int = 20,
     workspace_only: bool = False,
 ) -> ApprovalGateListOut:
-    gates = db.query(Task).filter(Task.is_external_gate.is_(True)).order_by(
+    gates_query = db.query(Task).options(
+        selectinload(Task.project).selectinload(Project.manager),
+        joinedload(Task.assignee),
+        joinedload(Task.approved_by_user),
+        selectinload(Task.project).selectinload(Project.tasks).selectinload(Task.time_slots),
+        selectinload(Task.project).selectinload(Project.tasks).selectinload(Task.assignee),
+        selectinload(Task.predecessors).joinedload(TaskDependency.predecessor),
+    ).filter(Task.is_external_gate.is_(True), Task.project_id.isnot(None))
+    if workspace_only:
+        if not has_any_role(user, APPROVAL_WORKSPACE_ALL_VIEW_ROLES):
+            gates_query = gates_query.filter(or_(
+                Task.assignee_id == user.id,
+                Task.project.has(Project.manager_id == user.id),
+                Task.project.has(Project.tasks.any(and_(
+                    Task.assignee_id == user.id,
+                    Task.is_external_gate.is_(False),
+                ))),
+            ))
+    elif not has_any_role(user, FULL_PROJECT_ACCESS_ROLES):
+        gates_query = gates_query.filter(or_(
+            Task.project.has(Project.manager_id == user.id),
+            Task.project.has(Project.tasks.any(Task.assignee_id == user.id)),
+        ))
+    if status == "pending":
+        gates_query = gates_query.filter(Task.gate_status != "approved")
+    elif status == "approved":
+        gates_query = gates_query.filter(Task.gate_status == "approved")
+    if project_id:
+        gates_query = gates_query.filter(Task.project_id == project_id)
+    if manager_id:
+        gates_query = gates_query.filter(Task.project.has(Project.manager_id == manager_id))
+    if expected_from:
+        gates_query = gates_query.filter(Task.expected_approval_at >= _naive_datetime(expected_from))
+    if expected_to:
+        gates_query = gates_query.filter(Task.expected_approval_at <= _naive_datetime(expected_to))
+    if keyword:
+        normalized = f"%{keyword.strip()}%"
+        gates_query = gates_query.filter(or_(
+            Task.name.ilike(normalized),
+            Task.project.has(or_(Project.code.ilike(normalized), Project.name.ilike(normalized), Project.client_name.ilike(normalized))),
+        ))
+    gates = gates_query.order_by(
         Task.submitted_at.desc(), Task.id.desc()
     ).all()
     if workspace_only:

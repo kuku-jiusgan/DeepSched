@@ -7,6 +7,7 @@ from app.schemas.project_plan_template_schemas import StandardPlanImportOut, Sta
 from app.services.project_access_service import FULL_PROJECT_ACCESS_ROLES
 from app.services.project_hours_validation_service import validate_project_estimated_hours
 from app.services.user_role_service import has_any_role
+from app.services.task_dependency_service import create_continuous_successor
 
 
 TEMPLATE_STEPS = [
@@ -119,10 +120,10 @@ def import_standard_plan(db, project_id: int, user: User) -> StandardPlanImportO
     report_task.schedule_dirty = False
 
     db.add_all([
-        TaskDependency(task_id=scheme_task.id, predecessor_id=method_task.id),
+        create_continuous_successor(method_task, scheme_task),
         TaskDependency(task_id=restriction.id, predecessor_id=scheme_task.id),
         TaskDependency(task_id=validation_task.id, predecessor_id=restriction.id),
-        TaskDependency(task_id=report_task.id, predecessor_id=validation_task.id),
+        create_continuous_successor(validation_task, report_task),
     ])
     validate_project_estimated_hours(db, project.id)
     db.add(AuditLog(

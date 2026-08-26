@@ -27,6 +27,7 @@ def start_task_execution(
     slot_id: int,
     operator_id: int | None = None,
     allow_queue_insert: bool = False,
+    advance_schedule: bool = False,
 ) -> dict[str, str]:
     slot = db.query(TimeSlot).filter(TimeSlot.id == slot_id).first()
     if not slot:
@@ -37,6 +38,8 @@ def start_task_execution(
     reconcile_task_status_from_slots(task, slot)
     started_at = datetime.now()
     slot = _resume_anchor_slot(task, slot, started_at)
+    if advance_schedule:
+        _advance_resumed_schedule(task, slot, started_at)
     _ensure_can_start(db, task, slot, allow_queue_insert)
 
     task.status = "running"
@@ -63,14 +66,14 @@ def start_task_execution(
 
 
 def ensure_running_state_consistent(task: Task, slot: TimeSlot) -> None:
-    if task.status != "running" or slot.status != "running" or slot.actual_start is None:
+    if task.status != "running" or slot.lifecycle_status != "active" or slot.status != "running" or slot.actual_start is None:
         raise TaskExecutionInvalidError("任务与时间槽运行状态同步失败")
 
 
 def ensure_running_continuation_consistent(task: Task, start_slot: TimeSlot) -> None:
     stale_slots = [
         slot for slot in task.time_slots
-        if slot.plan_end >= start_slot.plan_start
+        if slot.lifecycle_status == "active" and slot.plan_end >= start_slot.plan_start
         and slot.status in {"paused", "blocked", "interrupted"}
     ]
     if stale_slots:
@@ -81,8 +84,8 @@ def reconcile_task_status_from_slots(task: Task, requested_slot: TimeSlot) -> No
     if task.status != "running":
         return
     has_running_slot = any(
-        slot.status == "running"
-        or (slot.actual_start is not None and slot.actual_end is None)
+        slot.lifecycle_status == "active"
+        and (slot.status == "running" or (slot.actual_start is not None and slot.actual_end is None))
         for slot in task.time_slots
     )
     if not has_running_slot and requested_slot.status in STARTABLE_SLOT_STATUSES:
@@ -123,7 +126,8 @@ def _ensure_can_start(db, task: Task, slot: TimeSlot, allow_queue_insert: bool =
     if task.status == "paused":
         ensure_paused_state_consistent(task)
     if task.status == "running" or any(
-        task_slot.actual_start is not None and task_slot.actual_end is None
+        task_slot.lifecycle_status == "active"
+        and task_slot.actual_start is not None and task_slot.actual_end is None
         for task_slot in task.time_slots
     ):
         raise TaskExecutionInvalidError("任务已经开始，不能重复操作")
@@ -160,7 +164,9 @@ def _ensure_earlier_instrument_tasks_completed(db, task: Task, slot: TimeSlot) -
             TimeSlot.instrument_id == slot.instrument_id,
             TimeSlot.task_id != task.id,
             TimeSlot.plan_start < slot.plan_start,
+            TimeSlot.plan_end > slot.plan_start,
             TimeSlot.status.in_(["scheduled", "running", "paused", "blocked", "interrupted"]),
+            TimeSlot.lifecycle_status == "active",
             Task.status.notin_(["done", "completed"]),
         )
         .order_by(TimeSlot.plan_start, TimeSlot.id)
@@ -184,6 +190,7 @@ def _continuous_slots(db, start_slot: TimeSlot) -> list[TimeSlot]:
             TimeSlot.task_id == start_slot.task_id,
             TimeSlot.plan_end >= start_slot.plan_start,
             TimeSlot.status.in_(RUNNING_CONTINUATION_STATUSES),
+            TimeSlot.lifecycle_status == "active",
         )
         .order_by(TimeSlot.plan_start, TimeSlot.id)
         .all()
@@ -196,18 +203,42 @@ def _resume_anchor_slot(task: Task, requested_slot: TimeSlot, started_at: dateti
     candidates = sorted(
         (
             slot for slot in task.time_slots
-            if slot.status in STARTABLE_SLOT_STATUSES and slot.plan_end >= started_at
+            if slot.lifecycle_status == "active"
+            and slot.status in STARTABLE_SLOT_STATUSES and slot.plan_end >= started_at
         ),
         key=lambda slot: (slot.plan_start, slot.id),
     )
-    return candidates[0] if candidates else requested_slot
+    if candidates:
+        return candidates[0]
+    raise TaskExecutionInvalidError("任务没有可恢复的未来活动时间槽，请先重新排程")
+
+
+def _advance_resumed_schedule(task: Task, anchor: TimeSlot, started_at: datetime) -> None:
+    """Move the unstarted continuation slots to the actual resume time."""
+    if anchor.actual_start is not None or not anchor.plan_start:
+        return
+    delta = started_at - anchor.plan_start
+    if delta.total_seconds() == 0:
+        return
+    for slot in sorted(task.time_slots, key=lambda item: (item.plan_start, item.id)):
+        if slot.lifecycle_status != "active" or slot.id < anchor.id or slot.actual_start is not None:
+            continue
+        if slot.status not in RUNNING_CONTINUATION_STATUSES or not slot.plan_start or not slot.plan_end:
+            continue
+        slot.plan_start += delta
+        slot.plan_end += delta
 
 
 def ensure_paused_state_consistent(task: Task) -> None:
     has_open_slot = any(
-        task_slot.actual_start is not None and task_slot.actual_end is None
+        task_slot.lifecycle_status == "active"
+        and task_slot.actual_start is not None and task_slot.actual_end is None
         for task_slot in task.time_slots
     )
-    has_open_segment = any(segment.ended_at is None for segment in task.execution_segments)
+    active_slot_ids = {slot.id for slot in task.time_slots if slot.lifecycle_status == "active"}
+    has_open_segment = any(
+        segment.ended_at is None and segment.slot_id in active_slot_ids
+        for segment in task.execution_segments
+    )
     if has_open_slot or has_open_segment:
         raise TaskExecutionInvalidError("任务暂停状态不完整，请先修复执行记录")

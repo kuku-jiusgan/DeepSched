@@ -3,30 +3,32 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.models import Instrument, Project, Task, TimeSlot
-from app.services.instrument_occupancy_service import (
-    ACTIVE_SLOT_STATUSES,
-    current_occupying_slot,
-)
+from app.services.instrument_occupancy_service import ACTIVE_SLOT_STATUSES
 
 
 PROTECTED_INSTRUMENT_STATUSES = {"fault", "maintenance"}
+COMPLETED_TASK_STATUSES = {"done", "completed"}
 
 
 def list_lab_status(db) -> list[dict]:
     instruments = db.query(Instrument).filter(Instrument.availability_status == "available").all()
     now = datetime.now()
-    items = [_instrument_status(db, instrument, now) for instrument in instruments]
+    current_slots = _current_slots_by_instrument(db)
+    status_data = _load_status_data(db, instruments, current_slots)
+    items = [
+        _instrument_status(instrument, now, current_slots.get(instrument.id), status_data)
+        for instrument in instruments
+    ]
     if db.dirty:
         db.commit()
     return items
 
 
-def _instrument_status(db, instrument: Instrument, now: datetime) -> dict:
-    current_slot = current_occupying_slot(db, instrument.id)
+def _instrument_status(instrument: Instrument, now: datetime, current_slot: TimeSlot | None, status_data) -> dict:
     status = _reconcile_instrument_status(instrument, current_slot)
-    current = _task_status_fields(db, current_slot, now)
-    upcoming = _next_task_slot(db, instrument.id, current["task_id"])
-    next_fields = _next_task_fields(db, upcoming)
+    current = _task_status_fields(current_slot, now, status_data)
+    upcoming = status_data["next_slots"].get(instrument.id)
+    next_fields = _next_task_fields(upcoming, status_data)
     return {
         "id": instrument.id,
         "code": instrument.code,
@@ -53,6 +55,54 @@ def _instrument_status(db, instrument: Instrument, now: datetime) -> dict:
     }
 
 
+def _load_status_data(db, instruments, current_slots):
+    instrument_ids = [instrument.id for instrument in instruments]
+    slots = db.query(TimeSlot).filter(
+        TimeSlot.instrument_id.in_(instrument_ids),
+        TimeSlot.status.in_(ACTIVE_SLOT_STATUSES | {"completed", "scheduled"}),
+    ).all() if instrument_ids else []
+    next_slots = {}
+    for slot in sorted((slot for slot in slots if slot.status == "scheduled"), key=lambda item: (item.plan_start, item.id)):
+        current = current_slots.get(slot.instrument_id)
+        if current and current.task_id == slot.task_id:
+            continue
+        next_slots.setdefault(slot.instrument_id, slot)
+    task_ids = {slot.task_id for slot in slots}
+    task_windows = {}
+    for slot in slots:
+        start, end = task_windows.get(slot.task_id, (None, None))
+        task_windows[slot.task_id] = (min(value for value in (start, slot.plan_start) if value), max(value for value in (end, slot.plan_end) if value))
+    project_ids = {slot.task.project_id for slot in slots if slot.task is not None}
+    projects = db.query(Project).filter(Project.id.in_(project_ids)).all() if project_ids else []
+    return {
+        "next_slots": next_slots,
+        "task_windows": task_windows,
+        "projects": {project.id: project for project in projects},
+    }
+
+
+def _current_slots_by_instrument(db) -> dict[int, TimeSlot]:
+    rows = (
+        db.query(TimeSlot)
+        .join(Task, Task.id == TimeSlot.task_id)
+        .filter(
+            TimeSlot.instrument_id.isnot(None),
+            TimeSlot.lifecycle_status == "active",
+            TimeSlot.actual_start.isnot(None),
+            TimeSlot.actual_end.is_(None),
+            TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),
+            ~Task.status.in_(COMPLETED_TASK_STATUSES),
+        )
+        .order_by(TimeSlot.actual_start.desc(), TimeSlot.id.desc())
+        .all()
+    )
+    current: dict[int, TimeSlot] = {}
+    for slot in rows:
+        if slot.instrument_id not in current:
+            current[slot.instrument_id] = slot
+    return current
+
+
 def _reconcile_instrument_status(instrument: Instrument, current_slot: TimeSlot | None) -> str:
     if instrument.status in PROTECTED_INSTRUMENT_STATUSES:
         return instrument.status
@@ -62,22 +112,12 @@ def _reconcile_instrument_status(instrument: Instrument, current_slot: TimeSlot 
     return effective_status
 
 
-def _next_task_slot(db, instrument_id: int, current_task_id: int | None) -> TimeSlot | None:
-    query = db.query(TimeSlot).filter(
-        TimeSlot.instrument_id == instrument_id,
-        TimeSlot.status == "scheduled",
-    )
-    if current_task_id:
-        query = query.filter(TimeSlot.task_id != current_task_id)
-    return query.order_by(TimeSlot.plan_start, TimeSlot.id).first()
-
-
-def _task_status_fields(db, slot: TimeSlot | None, now: datetime) -> dict:
+def _task_status_fields(slot: TimeSlot | None, now: datetime, status_data) -> dict:
     if not slot or not slot.task:
         return _empty_task_fields()
     task = slot.task
-    project = db.query(Project).filter(Project.id == task.project_id).first()
-    task_start, task_end = _task_window(db, task.id)
+    project = status_data["projects"].get(task.project_id)
+    task_start, task_end = status_data["task_windows"].get(task.id, (None, None))
     progress = None
     if task_start and task_end and task_end > task_start:
         elapsed = (now - task_start).total_seconds()
@@ -95,12 +135,12 @@ def _task_status_fields(db, slot: TimeSlot | None, now: datetime) -> dict:
     }
 
 
-def _next_task_fields(db, slot: TimeSlot | None) -> dict:
+def _next_task_fields(slot: TimeSlot | None, status_data) -> dict:
     if not slot or not slot.task:
         return _empty_next_fields()
     task = slot.task
-    project = db.query(Project).filter(Project.id == task.project_id).first()
-    task_start, _ = _task_window(db, task.id)
+    project = status_data["projects"].get(task.project_id)
+    task_start, _ = status_data["task_windows"].get(task.id, (None, None))
     return {
         "task_name": task.name,
         "task_start": task_start.isoformat() if task_start else None,
@@ -108,16 +148,6 @@ def _next_task_fields(db, slot: TimeSlot | None) -> dict:
         "project_code": project.code if project else None,
         "user_name": task.assignee_name,
     }
-
-
-def _task_window(db, task_id: int) -> tuple[datetime | None, datetime | None]:
-    slots = db.query(TimeSlot).filter(
-        TimeSlot.task_id == task_id,
-        TimeSlot.status.in_(ACTIVE_SLOT_STATUSES | {"completed"}),
-    ).all()
-    starts = [slot.plan_start for slot in slots if slot.plan_start]
-    ends = [slot.plan_end for slot in slots if slot.plan_end]
-    return (min(starts) if starts else None, max(ends) if ends else None)
 
 
 def _empty_task_fields() -> dict:

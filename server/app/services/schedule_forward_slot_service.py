@@ -15,7 +15,7 @@ SCHEDULE_UNIT_MINUTES = 30
 def build_forward_slots(
     db: Session,
     task: Task,
-    instrument_id: int,
+    instrument_id: int | None,
     duration_minutes: int,
     earliest_start: datetime,
     working_options: dict,
@@ -38,7 +38,8 @@ def build_forward_slots(
     cursor = _ceil_to_schedule_unit(earliest_start)
 
     while remaining > 0 and cursor < working_options["horizon_end"]:
-        next_cursor = cursor + timedelta(minutes=SCHEDULE_UNIT_MINUTES)
+        unit_minutes = min(SCHEDULE_UNIT_MINUTES, remaining)
+        next_cursor = cursor + timedelta(minutes=unit_minutes)
         if _can_use_unit(
             db,
             task,
@@ -50,7 +51,7 @@ def build_forward_slots(
         ):
             if chunk_start is None:
                 chunk_start = cursor
-            remaining -= SCHEDULE_UNIT_MINUTES
+            remaining -= unit_minutes
         else:
             if chunk_start is not None:
                 slots.append((chunk_start, cursor))
@@ -67,7 +68,7 @@ def build_forward_slots(
 def _build_contiguous_forward_slots(
     db: Session,
     task: Task,
-    instrument_id: int,
+    instrument_id: int | None,
     duration_minutes: int,
     earliest_start: datetime,
     working_options: dict,
@@ -89,8 +90,9 @@ def _build_contiguous_forward_slots(
         conflict = False
 
         while remaining > 0 and candidate < horizon_end:
-            next_candidate = candidate + timedelta(minutes=SCHEDULE_UNIT_MINUTES)
-            if _is_working_unit(candidate, working_options):
+            unit_minutes = min(SCHEDULE_UNIT_MINUTES, remaining)
+            next_candidate = candidate + timedelta(minutes=unit_minutes)
+            if _is_working_unit(candidate, working_options, instrument_id):
                 if not _can_use_unit(
                     db,
                     task,
@@ -105,7 +107,7 @@ def _build_contiguous_forward_slots(
                     break
                 if range_start is None:
                     range_start = candidate
-                remaining -= SCHEDULE_UNIT_MINUTES
+                remaining -= unit_minutes
             elif range_start is not None:
                 ranges.append((range_start, candidate))
                 range_start = None
@@ -121,15 +123,20 @@ def _build_contiguous_forward_slots(
     return []
 
 
-def _is_working_unit(start: datetime, working_options: dict) -> bool:
+def _is_working_unit(
+    start: datetime,
+    working_options: dict,
+    instrument_id: int | None = None,
+) -> bool:
+    options = _policy_options(working_options, instrument_id)
     current_minutes = start.hour * 60 + start.minute
     return (
-        working_options["day_start_minutes"] <= current_minutes < working_options["day_end_minutes"]
+        options["day_start_minutes"] <= current_minutes < options["day_end_minutes"]
         and is_allowed_calendar_day(
             start.date(),
             working_options["calendar_days"],
-            working_options["include_weekends"],
-            working_options["include_holidays"],
+            options["include_weekends"],
+            options["include_holidays"],
         )
     )
 
@@ -137,55 +144,52 @@ def _is_working_unit(start: datetime, working_options: dict) -> bool:
 def _can_use_unit(
     db: Session,
     task: Task,
-    instrument_id: int,
+    instrument_id: int | None,
     start: datetime,
     end: datetime,
     working_options: dict,
     ignore_instrument_free_human_conflicts: bool = False,
 ) -> bool:
+    options = _policy_options(working_options, instrument_id)
     current_minutes = start.hour * 60 + start.minute
     if (
-        current_minutes < working_options["day_start_minutes"]
-        or current_minutes >= working_options["day_end_minutes"]
+        current_minutes < options["day_start_minutes"]
+        or current_minutes >= options["day_end_minutes"]
         or not is_allowed_calendar_day(
             start.date(),
             working_options["calendar_days"],
-            working_options["include_weekends"],
-            working_options["include_holidays"],
+            options["include_weekends"],
+            options["include_holidays"],
         )
     ):
         return False
-    if _instrument_is_unavailable(
-        db,
-        instrument_id,
-        start,
-        end,
-        working_options,
-    ):
-        return False
-    instrument_conflict = (
-        db.query(TimeSlot.id)
-        .filter(
-            TimeSlot.instrument_id == instrument_id,
-            or_(
-                and_(
-                    TimeSlot.status == "completed",
-                    TimeSlot.actual_start.isnot(None),
-                    TimeSlot.actual_end.isnot(None),
-                    TimeSlot.actual_start < end,
-                    TimeSlot.actual_end > start,
+    if instrument_id is not None:
+        if _instrument_is_unavailable(db, instrument_id, start, end, working_options):
+            return False
+        instrument_conflict = (
+            db.query(TimeSlot.id)
+            .filter(
+                TimeSlot.instrument_id == instrument_id,
+                TimeSlot.lifecycle_status == "active",
+                or_(
+                    and_(
+                        TimeSlot.status == "completed",
+                        TimeSlot.actual_start.isnot(None),
+                        TimeSlot.actual_end.isnot(None),
+                        TimeSlot.actual_start < end,
+                        TimeSlot.actual_end > start,
+                    ),
+                    and_(
+                        TimeSlot.status != "completed",
+                        TimeSlot.plan_start < end,
+                        TimeSlot.plan_end > start,
+                    ),
                 ),
-                and_(
-                    TimeSlot.status != "completed",
-                    TimeSlot.plan_start < end,
-                    TimeSlot.plan_end > start,
-                ),
-            ),
+            )
+            .first()
         )
-        .first()
-    )
-    if instrument_conflict is not None:
-        return False
+        if instrument_conflict is not None:
+            return False
     if not task.requires_human or task.assignee_id is None:
         return True
     human_conflict_query = (
@@ -195,6 +199,7 @@ def _can_use_unit(
             Task.id != task.id,
             Task.requires_human.is_(True),
             Task.assignee_id == task.assignee_id,
+            TimeSlot.lifecycle_status == "active",
             or_(
                 and_(
                     TimeSlot.status == "completed",
@@ -217,6 +222,19 @@ def _can_use_unit(
         )
     human_conflict = human_conflict_query.first()
     return human_conflict is None
+
+
+def _policy_options(working_options: dict, instrument_id: int | None) -> dict:
+    context = working_options.get("working_time_context")
+    if context is None:
+        return working_options
+    policy = context.policy_for(instrument_id)
+    return {
+        "day_start_minutes": policy.day_start_minutes,
+        "day_end_minutes": policy.day_end_minutes,
+        "include_weekends": policy.include_weekends,
+        "include_holidays": policy.include_holidays,
+    }
 
 
 def _instrument_is_unavailable(

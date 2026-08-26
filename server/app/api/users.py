@@ -436,6 +436,16 @@ def keep_alive(token: str = Depends(auth_token), db: Session = Depends(get_db)):
 
 @router.post("/logout")
 def logout(token: str = Depends(auth_token), db: Session = Depends(get_db)):
+    user = get_current_user(token, db)
+    record_audit_log(
+        db, user.display_name or user.username, "user_logged_out", "user", user.id,
+        {
+            "target_display": f"{user.display_name}（{user.username}）",
+            "username": user.username,
+            "display_name": user.display_name,
+            "logout_method": "主动退出",
+        },
+    )
     revoke_session(db, token)
     db.commit()
     return {"detail": "已退出"}

@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -77,6 +78,76 @@ class TaskPauseServiceTest(unittest.TestCase):
         segment = self.db.query(TaskExecutionSegment).one()
         self.assertEqual("paused", segment.end_reason)
         self.assertEqual("等待样品", segment.pause_reason)
+
+    def test_pause_ignores_superseded_running_slot(self):
+        stale = TimeSlot(
+            task_id=self.source_task.id,
+            instrument_id=self.instrument.id,
+            plan_start=self.source_slot.plan_start,
+            plan_end=self.source_slot.plan_end,
+            status="running",
+            lifecycle_status="superseded",
+            actual_start=datetime.now() - timedelta(minutes=5),
+        )
+        self.db.add(stale)
+        self.db.commit()
+
+        pause_and_switch_task(self.db, self.source_slot.id, "等待样品", self.operator)
+
+        self.assertEqual("paused", self.source_task.status)
+        self.assertEqual("paused", self.source_slot.status)
+
+    def test_pause_and_switch_ignores_superseded_open_occupancy(self):
+        stale = TimeSlot(
+            task_id=self.source_task.id,
+            instrument_id=self.instrument.id,
+            plan_start=self.source_slot.plan_start,
+            plan_end=self.source_slot.plan_end,
+            status="running",
+            lifecycle_status="superseded",
+            actual_start=datetime.now() - timedelta(minutes=5),
+        )
+        self.db.add(stale)
+        self.db.commit()
+
+        pause_and_switch_task(
+            self.db, self.source_slot.id, "紧急切换", self.operator, self.target_slot.id,
+        )
+
+        self.assertEqual("paused", self.source_task.status)
+        self.assertEqual("running", self.target_task.status)
+
+    def test_pause_records_progress_and_reorder_uses_remaining_ledger(self):
+        self.source_task.est_duration_hours = 35
+        self.source_task.executed_minutes = 120
+        self.source_slot.plan_start = datetime.now() - timedelta(minutes=1)
+        self.source_slot.plan_end = datetime.now() + timedelta(minutes=1)
+        self.db.commit()
+
+        pause_and_switch_task(
+            self.db, self.source_slot.id, "等待样品", self.operator, self.target_slot.id,
+        )
+        self.db.commit()
+
+        self.assertEqual(120, self.source_task.executed_minutes)
+        source_minutes = self._total_minutes(self._future_slots(self.source_task.id))
+        self.assertEqual(35 * 60 - 120, source_minutes)
+
+    def test_pause_reorder_keeps_delay_added_workload(self):
+        self.source_task.est_duration_hours = 1
+        self.source_task.additional_planned_minutes = 44 * 60
+        self.source_task.executed_minutes = 60
+        self.source_slot.plan_start = datetime.now() - timedelta(minutes=1)
+        self.source_slot.plan_end = datetime.now() + timedelta(minutes=1)
+        self.db.commit()
+
+        pause_and_switch_task(
+            self.db, self.source_slot.id, "等待样品", self.operator, self.target_slot.id,
+        )
+        self.db.commit()
+
+        source_minutes = self._total_minutes(self._future_slots(self.source_task.id))
+        self.assertEqual(44 * 60, source_minutes)
 
     def test_pause_marks_continuous_running_slots_as_paused(self):
         followup_slot = TimeSlot(
@@ -179,6 +250,58 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertLessEqual(target_slots[-1].plan_end, source_slots[0].plan_start)
         self.assertTrue(all(slot.status == "running" for slot in target_slots))
         self.assertTrue(all(slot.status == "paused" for slot in source_slots))
+
+    def test_pause_and_switch_resumes_source_before_target_followup(self):
+        switch_time = datetime(2026, 8, 25, 10, 0)
+        self.source_task.est_duration_hours = 4
+        self.source_task.assignee_id = self.operator.id
+        self.target_task.est_duration_hours = 3
+        self.target_task.assignee_id = self.operator.id
+        self.source_slot.plan_start = datetime(2026, 8, 25, 8, 30)
+        self.source_slot.plan_end = datetime(2026, 8, 25, 11, 30)
+        self.source_slot.actual_start = self.source_slot.plan_start
+        self.target_slot.plan_start = self.source_slot.plan_end
+        self.target_slot.plan_end = datetime(2026, 8, 25, 14, 30)
+        followup_task = Task(
+            project_id=self.project_b.id,
+            name="方案撰写",
+            task_type="QCFA_001",
+            requires_human=True,
+            assignee_id=self.operator.id,
+            status="scheduled",
+            est_duration_hours=1,
+            plan_order=1,
+        )
+        self.db.add(followup_task)
+        self.db.flush()
+        self.db.add(TaskDependency(
+            task_id=followup_task.id,
+            predecessor_id=self.target_task.id,
+            dependency_type="continuous_successor",
+        ))
+        self.db.add(TimeSlot(
+            task_id=followup_task.id,
+            instrument_id=None,
+            plan_start=self.target_slot.plan_end,
+            plan_end=self.target_slot.plan_end + timedelta(hours=1),
+            status="scheduled",
+            tier="confirmed",
+        ))
+        self.db.commit()
+
+        with patch("app.services.task_pause_service.datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = switch_time
+            pause_and_switch_task(
+                self.db, self.source_slot.id, "优先处理目标项目", self.operator, self.target_slot.id,
+            )
+        self.db.commit()
+
+        target_slots = self._task_slots(self.target_task.id)
+        followup_slots = self._task_slots(followup_task.id)
+        source_slots = self._future_slots(self.source_task.id)
+        self.assertLessEqual(target_slots[-1].plan_end, source_slots[0].plan_start)
+        self.assertLessEqual(target_slots[-1].plan_end, followup_slots[0].plan_start)
+        self.assertLessEqual(followup_slots[-1].plan_end, source_slots[0].plan_start)
 
     def test_pause_and_switch_does_not_create_weekend_ranges(self):
         friday = datetime(2026, 8, 7, 19, 30)
@@ -284,20 +407,15 @@ class TaskPauseServiceTest(unittest.TestCase):
             self.db, self.source_slot.id, "切换任务", self.operator, self.target_slot.id,
         )
 
-        self.assertLessEqual(
-            self.target_slot.plan_end,
-            self.db.query(TimeSlot).filter(TimeSlot.task_id == future_task.id).one().plan_start,
-        )
-        self.assertLess(
-            self.db.query(TimeSlot).filter(TimeSlot.task_id == future_task.id).one().plan_start,
-            original_future_start,
-        )
+        future_slots = self._task_slots(future_task.id)
+        self.assertLessEqual(self.target_slot.plan_end, future_slots[0].plan_start)
+        self.assertLess(future_slots[0].plan_start, original_future_start)
 
     def test_pause_and_switch_rejects_task_that_exceeds_project_end_date(self):
         self.source_task.project.end_date = datetime.now() + timedelta(hours=1)
         self.db.commit()
 
-        with self.assertRaisesRegex(DomainConflictError, "【重排失败】"):
+        with self.assertRaisesRegex(DomainConflictError, "预计导致项目"):
             pause_and_switch_task(
                 self.db, self.source_slot.id, "切换任务", self.operator, self.target_slot.id,
             )
@@ -330,7 +448,11 @@ class TaskPauseServiceTest(unittest.TestCase):
     def _future_slots(self, task_id: int) -> list[TimeSlot]:
         return (
             self.db.query(TimeSlot)
-            .filter(TimeSlot.task_id == task_id, TimeSlot.actual_start.is_(None))
+            .filter(
+                TimeSlot.task_id == task_id,
+                TimeSlot.actual_start.is_(None),
+                TimeSlot.lifecycle_status == "active",
+            )
             .order_by(TimeSlot.plan_start, TimeSlot.id)
             .all()
         )
@@ -338,7 +460,7 @@ class TaskPauseServiceTest(unittest.TestCase):
     def _task_slots(self, task_id: int) -> list[TimeSlot]:
         return (
             self.db.query(TimeSlot)
-            .filter(TimeSlot.task_id == task_id)
+            .filter(TimeSlot.task_id == task_id, TimeSlot.lifecycle_status == "active")
             .order_by(TimeSlot.plan_start, TimeSlot.id)
             .all()
         )
@@ -375,6 +497,7 @@ class TaskPauseServiceTest(unittest.TestCase):
             if slot.status == "running" and slot.actual_start is not None
         ]
         self.assertEqual(1, len(resumed_slots))
+        self.assertEqual(resumed_slots[0].actual_start, resumed_slots[0].plan_start)
         self.assertIsNotNone(self.source_slot.actual_end)
         self.assertEqual("completed", self.target_task.status)
 

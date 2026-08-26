@@ -26,6 +26,15 @@
 .today-card-night-summary { margin-bottom: var(--space-xs); padding: 6px 8px; color: #166534; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: var(--radius-sm); font-size: 0.78rem; line-height: 1.45; }
 .today-card-actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
 .today-card-empty { min-height: 120px; display: flex; align-items: center; justify-content: center; color: var(--color-text-tertiary); background: var(--color-surface); border: 1px dashed var(--color-border); border-radius: var(--radius-sm); font-size: 0.82rem; }
+
+@media (max-width: 768px) {
+  .today-work-header { display: none; }
+  .today-card-grid { grid-template-columns: 1fr; gap: 12px; }
+  .today-card-group { padding: 0; background: transparent; border: 0; }
+  .today-card { padding: 14px; }
+  .today-card-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .today-card-actions .workspace-action-button.ant-btn { width: 100%; min-width: 0; min-height: 44px; padding-inline: 8px; white-space: normal; line-height: 1.3; }
+}
 .modal-task-summary, .delay-hint { margin-bottom: var(--space-md); padding: var(--space-sm) var(--space-md); color: var(--color-text-secondary); background: var(--color-bg); border: 1px solid var(--color-border-light); border-radius: var(--radius-sm); font-size: 0.84rem; }
 .night-run-time-hint { margin-top: 6px; color: var(--color-accent); font-size: 0.82rem; font-weight: 600; }
 .delay-hint { margin-bottom: 0; }

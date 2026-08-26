@@ -3,11 +3,12 @@ import { message } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
   getInstrumentFaults,
+  getInstrumentBridgeReservations,
   getInstruments,
   getTaskTypes,
   getTimeslots,
 } from '@/services/api'
-import type { Instrument, InstrumentFault, TimeSlot } from '@/types'
+import type { Instrument, InstrumentBridgeReservation, InstrumentFault, TimeSlot } from '@/types'
 
 export type InstrumentGanttViewMode = 'day' | 'week' | 'month'
 
@@ -38,6 +39,7 @@ export function useInstrumentGanttData(options: InstrumentGanttDataOptions) {
   const instruments = ref<Instrument[]>([])
   const slots = ref<TimeSlot[]>([])
   const faults = ref<InstrumentFault[]>([])
+  const bridgeReservations = ref<InstrumentBridgeReservation[]>([])
   const taskTypeMap = ref<Record<string, string>>({})
   let activeRequest: Promise<void> | null = null
   let isReloadPending = false
@@ -62,11 +64,12 @@ export function useInstrumentGanttData(options: InstrumentGanttDataOptions) {
     if (!silent) loading.value = true
     try {
       const range = visibleRange(options.viewMode.value, options.cursorDate.value)
-      const [timeslots, [instrumentItems, faultItems, types]] = await Promise.all([
-        getTimeslots(range, REQUEST_TIMEOUT_MS),
+      const [[timeslots, reservations], [instrumentItems, faultItems, types]] = await Promise.all([
+        Promise.all([getTimeslots(range, REQUEST_TIMEOUT_MS), getInstrumentBridgeReservations(range, REQUEST_TIMEOUT_MS)]),
         Promise.all([getInstruments(), getInstrumentFaults(), getTaskTypes()]),
       ])
       slots.value = timeslots
+      bridgeReservations.value = reservations
       instruments.value = instrumentItems
       faults.value = faultItems
       taskTypeMap.value = Object.fromEntries(types.map(type => [type.code, type.name]))
@@ -81,5 +84,5 @@ export function useInstrumentGanttData(options: InstrumentGanttDataOptions) {
     }
   }
 
-  return { faults, instruments, loadData, loading, slots, taskTypeMap }
+  return { bridgeReservations, faults, instruments, loadData, loading, slots, taskTypeMap }
 }

@@ -1,6 +1,7 @@
-from sqlalchemy import func
+import logging
+
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Tuple
 from uuid import uuid4
 from ortools.sat.python import cp_model
@@ -9,23 +10,34 @@ from app.core.config import get_settings
 from app.services.schedule_rule_service import get_solver_constraints
 from app.services.schedule_conflict_service import (
     ScheduleConflictError,
+    ensure_no_dependency_conflicts,
     ensure_no_human_conflicts,
     ensure_no_instrument_conflicts,
 )
 from app.services.scheduler_fixed_slots import (
     add_human_capacity_constraints,
     add_instrument_capacity_constraints,
+    load_fixed_bridge_reservations,
     load_fixed_slots,
 )
 from app.services.scheduler_persistence import persist_slots
 from app.services.scheduler_objective import add_scheduler_objective
 from app.services.scheduler_split_tasks import add_split_task_variables
+from app.services.scheduler_instrument_bridging import add_instrument_bridge_intervals
+from app.services.schedule_deadline_recommendation_job_service import (
+    create_deadline_recommendation_job,
+)
 from app.services.scheduler_diagnostics import (
-    frozen_schedule_message,
+    log_solver_failure_snapshot,
+    schedule_infeasibility_diagnostic,
     schedule_infeasibility_message,
     unavailable_instrument_message,
 )
-from app.services.scheduler_data import load_scheduler_data, load_task_children
+from app.services.scheduler_data import (
+    load_scheduler_data,
+    load_task_children,
+    load_diagnostic_resource_tasks,
+)
 from app.services.project_hours_validation_service import (
     ProjectHoursExceededError,
     validate_projects_estimated_hours,
@@ -36,10 +48,9 @@ from app.services.scheduler_helpers import (
     build_maintenance_windows,
     build_working_prefix_sum,
     datetime_to_units,
-    load_calendar_days,
     time_horizon,
+    TIME_UNIT_MINUTES,
     to_units,
-    working_time_bounds,
 )
 from app.services.approval_gate_service import unapproved_gate_context
 from app.services.schedule_advance_notification_service import (
@@ -49,6 +60,16 @@ from app.services.schedule_advance_notification_service import (
 )
 from app.services.calendar_service import ensure_calendar_range
 from app.services.schedule_calendar_snapshot_service import save_schedule_calendar_snapshot
+from app.services.scheduler_solver_trace_service import SolverTrace
+from app.services.scheduler_failure_diagnostics import build_task_window_failure
+from app.services.scheduler_predecessor_bounds import load_missing_predecessor_ends
+from app.services.instrument_working_time_service import (
+    load_working_time_context,
+    serialize_instrument_policies,
+)
+
+
+_logger = logging.getLogger(__name__)
 
 
 class SchedulerService:
@@ -70,7 +91,13 @@ class SchedulerService:
         advance_notification_reason: str = "重新排程",
         emit_advance_notifications: bool = True,
         early_start_task_ids: set[int] | None = None,
+        current_project_id: int | None = None,
+        rollback_on_conflict: bool = True,
+        include_failure_diagnostics: bool = True,
+        solver_time_limit: float = 30.0,
     ) -> dict:
+        if current_project_id is None:
+            return {"status": "error", "message": "排程请求缺少当前项目ID"}
         tasks, instruments = load_scheduler_data(
             self.db,
             project_ids,
@@ -79,6 +106,9 @@ class SchedulerService:
         )
         if not tasks:
             return {"status": "ok", "message": "没有待排仪器任务", "timeslots_created": 0}
+        # Resource release is a first-class priority: once hard constraints
+        # allow a task to start, avoid unexplained idle gaps before it.
+        early_start_task_ids = early_start_task_ids or {task.id for task in tasks}
         if original_schedule_windows is None:
             original_schedule_windows = capture_task_schedule_windows(
                 self.db,
@@ -95,7 +125,7 @@ class SchedulerService:
                 "message": f"排程失败：人工任务【{names}{suffix}】未指定负责人。",
             }
         try:
-            validate_projects_estimated_hours(self.db, {task.project_id for task in tasks})
+            validate_projects_estimated_hours(self.db, {current_project_id})
         except ProjectHoursExceededError as exc:
             return {"status": "error", "message": str(exc)}
         if not instruments:
@@ -127,10 +157,9 @@ class SchedulerService:
             return {"status": "error", "message": diagnostic_message}
 
         task_children = load_task_children(self.db, tasks)
-        task_deps = sorted(
-            set(build_dependencies(tasks, task_children))
-            | set(additional_dependencies or [])
-        )
+        business_task_deps = sorted(set(build_dependencies(tasks, task_children)))
+        queue_task_deps = sorted(set(additional_dependencies or []))
+        task_deps = sorted(set(business_task_deps) | set(queue_task_deps))
         maintenance_rule = constraints["maintenance_avoidance"]
         maint_windows = (
             build_maintenance_windows(instruments, horizon_start)
@@ -139,13 +168,15 @@ class SchedulerService:
         )
         working_rule = constraints["working_hours"]
         working_params = working_rule.params or {}
-        day_start_minutes, day_end_minutes = working_time_bounds(working_params)
-        include_weekends = bool(working_params.get("include_weekends", False))
-        include_holidays = bool(working_params.get("include_holidays", False))
-        if not working_rule.is_enabled:
-            day_start_minutes, day_end_minutes = 0, 24 * 60
-            include_weekends, include_holidays = True, True
-        calendar_days = load_calendar_days(self.db, horizon_start, horizon_end)
+        working_context = load_working_time_context(
+            self.db, horizon_start, horizon_end, instruments,
+        )
+        global_policy = working_context.global_policy
+        day_start_minutes = global_policy.day_start_minutes
+        day_end_minutes = global_policy.day_end_minutes
+        include_weekends = global_policy.include_weekends
+        include_holidays = global_policy.include_holidays
+        calendar_days = working_context.calendar_days
         global_prefix_sum = build_working_prefix_sum(
             horizon_start,
             total_units,
@@ -160,8 +191,8 @@ class SchedulerService:
             instrument.id: build_working_prefix_sum(
                 horizon_start,
                 total_units,
-                day_start_minutes,
-                day_end_minutes,
+                working_context.policy_for(instrument.id).day_start_minutes,
+                working_context.policy_for(instrument.id).day_end_minutes,
                 [window for window in maint_windows if window[0] == instrument.id],
                 calendar_days,
                 include_weekends,
@@ -169,6 +200,28 @@ class SchedulerService:
             )
             for instrument in instruments
         }
+
+        relevant_instrument_ids = {
+            instrument.id
+            for task in tasks
+            for instrument in compat.get(task.id, [])
+        }
+        relevant_assignee_ids = {
+            task.assignee_id
+            for task in tasks
+            if task.requires_human and task.assignee_id is not None
+        }
+        fixed_slots = load_fixed_slots(
+            self.db,
+            {task.id for task in tasks},
+            relevant_instrument_ids,
+            relevant_assignee_ids,
+        )
+        fixed_bridge_reservations = load_fixed_bridge_reservations(
+            self.db,
+            {task.id for task in tasks},
+            relevant_instrument_ids,
+        )
 
         model = cp_model.CpModel()
 
@@ -189,6 +242,15 @@ class SchedulerService:
             dur = to_units(t.est_duration_hours or 4)
             if t.switchover_hours and t.switchover_hours > 0:
                 dur += to_units(t.switchover_hours)
+            dur = _remaining_duration_units(
+                t,
+                dur,
+                fixed_slots,
+                global_prefix_sum,
+                instrument_prefix_sums,
+                horizon_start,
+                total_units,
+            )
 
             # Compute project-level hard constraint window
             p_start_unit = 0
@@ -197,7 +259,7 @@ class SchedulerService:
                 if t.project.start_date:
                     p_start_u = datetime_to_units(t.project.start_date, horizon_start)
                     p_start_unit = max(0, p_start_u)
-                if t.project.end_date and t.id not in (relaxed_project_end_task_ids or set()):
+                if t.project.end_date:
                     p_end_u = datetime_to_units(t.project.end_date, horizon_start)
                     p_end_unit = min(total_units, p_end_u)
             approval_bound = approval_bounds.get(t.id)
@@ -209,7 +271,13 @@ class SchedulerService:
 
             # Guard: task duration exceeds available project window
             if p_start_unit + dur > p_end_unit:
-                return {"status": "error", "message": f"排程失败：项目【{t.project.name if t.project else chr(39)+chr(39)}】时间窗口不足。"}
+                earliest_start = horizon_start + timedelta(
+                    minutes=p_start_unit * TIME_UNIT_MINUTES,
+                )
+                return {
+                    "status": "error",
+                    **build_task_window_failure(t, earliest_start, dur),
+                }
 
             # Constrain task start/end within project boundaries
             task_start_max = p_end_unit - dur
@@ -326,26 +394,21 @@ class SchedulerService:
         # === Cross-project switching: setup time + penalty ===
         setup_rule = constraints["cross_project_setup"]
         setup_hours = (
-            (setup_rule.params or {}).get("setup_hours", 2)
+            (setup_rule.params or {}).get("setup_hours", 0.5)
             if setup_rule.is_enabled
             else 0
         )
         CROSS_PROJECT_SETUP_UNITS = to_units(setup_hours) if setup_hours else 0
-        relevant_instrument_ids = {
-            instrument.id
-            for task in tasks
-            for instrument in compat.get(task.id, [])
-        }
-        relevant_assignee_ids = {
-            task.assignee_id
-            for task in tasks
-            if task.requires_human and task.assignee_id is not None
-        }
-        fixed_slots = load_fixed_slots(
-            self.db,
-            {task.id for task in tasks},
-            relevant_instrument_ids,
-            relevant_assignee_ids,
+        instrument_bridges = add_instrument_bridge_intervals(
+            model,
+            tasks,
+            task_deps,
+            compat,
+            task_starts,
+            task_ends,
+            capacity_intervals,
+            presences,
+            total_units,
         )
         add_instrument_capacity_constraints(
             model,
@@ -361,6 +424,7 @@ class SchedulerService:
             total_units,
             constraints["non_overlap"].is_enabled,
             CROSS_PROJECT_SETUP_UNITS,
+            fixed_bridge_reservations,
         )
         add_human_capacity_constraints(
             model,
@@ -423,15 +487,9 @@ class SchedulerService:
             if pred_id not in task_starts
         }
 
-        missing_pred_ends = {}
-        if missing_pred_ids:
-            latest_slots = self.db.query(
-                TimeSlot.task_id,
-                func.max(TimeSlot.plan_end).label("max_end")
-            ).filter(TimeSlot.task_id.in_(missing_pred_ids)).group_by(TimeSlot.task_id).all()
-            for pid, max_end in latest_slots:
-                if max_end:
-                    missing_pred_ends[pid] = max(0, datetime_to_units(max_end, horizon_start))
+        missing_pred_ends = load_missing_predecessor_ends(
+            self.db, missing_pred_ids, horizon_start,
+        )
 
         if constraints["precedence"].is_enabled:
             for tid, pred_id in task_deps:
@@ -531,40 +589,104 @@ class SchedulerService:
         )
 
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 30.0
+        solver.parameters.max_time_in_seconds = solver_time_limit
         solver.parameters.num_search_workers = 4
+        solver.parameters.log_search_progress = True
+        solver.parameters.log_to_stdout = False
+        solver_trace = SolverTrace(
+            current_project_id, len(tasks), mode, solver_time_limit,
+        )
+        solver_trace.write_model(model)
+        solver.log_callback = solver_trace.write
         status = solver.Solve(model)
+        elapsed_ms = solver_trace.finish(solver, solver.StatusName(status))
+        _logger.info(
+            "scheduler_solve project_id=%s tasks=%s mode=%s status=%s elapsed_ms=%s trace=%s",
+            current_project_id,
+            len(tasks),
+            mode,
+            solver.StatusName(status),
+            elapsed_ms,
+            solver_trace.path,
+        )
 
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            frozen_message = (
-                frozen_schedule_message(
-                    tasks,
-                    compat,
-                    fixed_slots,
-                    instrument_prefix_sums,
-                    horizon_start,
-                    total_units,
-                    CROSS_PROJECT_SETUP_UNITS,
-                )
-                if status == cp_model.INFEASIBLE
-                and constraints["non_overlap"].is_enabled
-                else None
+            if not include_failure_diagnostics:
+                return {
+                    "status": "error",
+                    "message": "未找到可行排程",
+                    "solver_status": solver.StatusName(status),
+                }
+            log_solver_failure_snapshot(
+                tasks,
+                compat,
+                task_deps,
+                missing_pred_ends,
+                fixed_slots,
+                instrument_prefix_sums,
+                horizon_start,
+                total_units,
+                status,
             )
-            if frozen_message:
-                return {"status": "error", "message": frozen_message}
-            return {
-                "status": "error",
-                "message": schedule_infeasibility_message(
-                    tasks,
+            try:
+                diagnostic_tasks = tasks + load_diagnostic_resource_tasks(
+                    self.db,
+                    {task.id for task in tasks},
+                    current_project_id=current_project_id,
+                )
+                diagnostic_compat = build_compatibility(
+                    diagnostic_tasks,
+                    instruments,
+                    constraints["capability_matching"].is_enabled,
+                )
+                diagnostic = schedule_infeasibility_diagnostic(
+                    diagnostic_tasks,
                     task_deps,
                     missing_pred_ends,
-                    compat,
+                    diagnostic_compat,
                     global_prefix_sum,
                     instrument_prefix_sums,
                     horizon_start,
                     total_units,
-                ),
+                    current_project_id=current_project_id,
+                    excluded_task_ids=relaxed_project_end_task_ids,
+                )
+                diagnostic_message = diagnostic["message"]
+                current_deadline = next(
+                    task.project.end_date for task in tasks
+                    if task.project_id == current_project_id
+                )
+                job = create_deadline_recommendation_job(
+                    current_project_id,
+                    [task.id for task in tasks],
+                    current_deadline,
+                    horizon_start,
+                    horizon_end,
+                    instrument_prefix_sums,
+                    diagnostic["schedule_failure"],
+                    {
+                        "project_ids": project_ids,
+                        "mode": mode,
+                        "task_ids": task_ids,
+                        "excluded_task_ids": excluded_task_ids,
+                        "additional_dependencies": additional_dependencies,
+                        "earliest_start_bounds": earliest_start_bounds,
+                        "relaxed_project_end_task_ids": relaxed_project_end_task_ids,
+                        "early_start_task_ids": early_start_task_ids,
+                        "rollback_on_conflict": False,
+                    },
+                )
+                if job:
+                    diagnostic["schedule_failure"]["recommendation_job"] = job
+            except Exception as exc:
+                diagnostic_message = f"排程诊断失败：{exc}"
+            response = {
+                "status": "error",
+                "message": diagnostic_message,
             }
+            if 'diagnostic' in locals() and isinstance(diagnostic, dict):
+                response["schedule_failure"] = diagnostic.get("schedule_failure")
+            return response
 
         # Persist results
         schedule_run_id = _new_schedule_run_id()
@@ -576,6 +698,7 @@ class SchedulerService:
             working_params,
             calendar_days,
             maint_windows,
+            serialize_instrument_policies(working_context),
         )
         created = persist_slots(
             self.db,
@@ -586,23 +709,28 @@ class SchedulerService:
             task_ends,
             presences,
             horizon_start,
-            day_start_minutes,
-            day_end_minutes,
+            working_context,
             freeze_days,
-            calendar_days,
-            include_weekends,
-            include_holidays,
             schedule_run_id,
             commit=False,
             split_unit_presences=split_unit_presences,
             forecast_task_ids=forecast_task_ids,
+            instrument_bridges=instrument_bridges,
         )
 
         try:
             ensure_no_instrument_conflicts(self.db, schedule_run_id)
             ensure_no_human_conflicts(self.db, schedule_run_id)
+            ensure_no_dependency_conflicts(self.db, business_task_deps, schedule_run_id)
+            ensure_no_dependency_conflicts(
+                self.db,
+                queue_task_deps,
+                schedule_run_id,
+                task_slots_from_run_only=True,
+            )
         except ScheduleConflictError as exc:
-            self.db.rollback()
+            if rollback_on_conflict:
+                self.db.rollback()
             return {"status": "error", "message": str(exc), "timeslots_created": 0}
         if emit_advance_notifications:
             notify_rescheduled_tasks_advanced(
@@ -649,3 +777,89 @@ def _optional_time_domain(lower_bound: int, upper_bound: int) -> cp_model.Domain
         (0, 0),
         (lower_bound, upper_bound),
     ])
+
+
+def _remaining_duration_units(
+    task,
+    duration_units: int,
+    fixed_slots,
+    global_prefix_sum,
+    instrument_prefix_sums,
+    horizon_start,
+    total_units: int,
+) -> int:
+    from app.services.task_progress_service import planned_task_minutes
+
+    planned_minutes = planned_task_minutes(task)
+    executed_minutes = int(getattr(task, "executed_minutes", 0) or 0)
+    if hasattr(task, "executed_minutes"):
+        return max(1, to_units(planned_minutes / 60) - to_units(executed_minutes / 60))
+    segments = list(getattr(task, "execution_segments", []) or [])
+    fixed_units = _executed_duration_units(
+        segments,
+        task,
+        global_prefix_sum,
+        instrument_prefix_sums,
+        horizon_start,
+        total_units,
+    )
+    if not segments:
+        fixed_units = _executed_slot_duration_units(
+            task,
+            fixed_slots,
+            global_prefix_sum,
+            instrument_prefix_sums,
+            horizon_start,
+            total_units,
+        )
+    return max(1, duration_units - fixed_units)
+
+
+def _executed_duration_units(
+    segments,
+    task,
+    global_prefix_sum,
+    instrument_prefix_sums,
+    horizon_start,
+    total_units,
+) -> int:
+    total = 0
+    instrument_id = next(
+        (getattr(segment, "instrument_id", None) for segment in segments
+         if getattr(segment, "instrument_id", None) is not None),
+        None,
+    )
+    prefix_sum = instrument_prefix_sums.get(instrument_id) if instrument_id else global_prefix_sum
+    if not prefix_sum:
+        return 0
+    for segment in segments:
+        start = max(0, datetime_to_units(segment.started_at, horizon_start))
+        end_time = segment.ended_at or datetime.now()
+        end = min(total_units, datetime_to_units(end_time, horizon_start))
+        if end > start:
+            total += prefix_sum[end] - prefix_sum[start]
+    return total
+
+
+def _executed_slot_duration_units(
+    task,
+    fixed_slots,
+    global_prefix_sum,
+    instrument_prefix_sums,
+    horizon_start,
+    total_units,
+) -> int:
+    total = 0
+    for slot in fixed_slots:
+        if slot.task_id != task.id or not slot.actual_start:
+            continue
+        start = max(0, datetime_to_units(slot.actual_start, horizon_start))
+        end_time = slot.actual_end or datetime.now()
+        end = min(total_units, datetime_to_units(end_time, horizon_start))
+        prefix_sum = (
+            instrument_prefix_sums.get(slot.instrument_id)
+            if slot.instrument_id is not None else global_prefix_sum
+        )
+        if prefix_sum and end > start:
+            total += prefix_sum[end] - prefix_sum[start]
+    return total

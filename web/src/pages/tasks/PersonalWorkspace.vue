@@ -25,6 +25,33 @@
     <a-spin v-if="loading" size="large" style="display: block; margin: 80px auto" />
 
     <template v-else>
+      <MobileWorkspaceTaskList
+        v-if="isMobile && activeTab !== 'active' && activeTab !== 'approved'"
+        :tasks="mobileTasks"
+        :title="mobileTitle"
+        :empty-text="mobileEmptyText"
+        :acting-id="actingId"
+        @start="handleStart"
+        @complete="handleComplete"
+        @pause="handlePause"
+      />
+      <section v-if="isMobile && activeTab === 'approved'" class="mobile-approved-list">
+        <article v-for="gate in filteredApprovedGates" :key="gate.id" class="mobile-approved-card">
+          <a-tag color="blue">已签批</a-tag>
+          <div class="mobile-approved-project">{{ gate.project_code }} · {{ gate.project_name }}</div>
+          <div class="mobile-approved-name">{{ gate.name }}</div>
+          <a-collapse ghost class="mobile-approved-details">
+            <a-collapse-panel key="details" header="查看签批详情">
+              <div>负责人：{{ gate.assignee_name || '未指定' }}</div>
+              <div>实际签批：{{ formatApprovedDateTime(gate.approved_at) }}</div>
+              <div>排程结果：{{ gate.schedule_message || scheduleLabel(gate.schedule_status) }}</div>
+              <div>备注：{{ gate.approval_note || '无' }}</div>
+            </a-collapse-panel>
+          </a-collapse>
+        </article>
+        <a-empty v-if="filteredApprovedGates.length === 0" description="暂无已签批方案" />
+      </section>
+
       <TodayTaskCards
         v-if="activeTab === 'active'"
         :tasks="tasks"
@@ -38,7 +65,7 @@
         </template>
       </TodayTaskCards>
 
-      <a-table v-if="activeTab === 'pending' || activeTab === 'completed'" :dataSource="filtered" :columns="columns" rowKey="task_id" size="middle"
+      <a-table v-if="!isMobile && (activeTab === 'pending' || activeTab === 'completed')" :dataSource="filtered" :columns="columns" rowKey="task_id" size="middle"
         :pagination="{ pageSize: 20, showSizeChanger: true }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'status'">
@@ -109,7 +136,7 @@
       </a-table>
 
       <a-table
-        v-else-if="activeTab === 'approved'"
+        v-if="!isMobile && activeTab === 'approved'"
         :dataSource="filteredApprovedGates"
         :columns="approvedColumns"
         rowKey="id"
@@ -188,7 +215,10 @@ import { isTaskCompleted, taskStatusColor, taskStatusLabel } from '@/utils/statu
 import TodayTaskCards from './TodayTaskCards.vue'
 import ApprovalConfirmationGroup from './ApprovalConfirmationGroup.vue'
 import PauseTaskModal from './PauseTaskModal.vue'
+import MobileWorkspaceTaskList from './MobileWorkspaceTaskList.vue'
+import { useMobileViewport } from '@/composables/useMobileViewport'
 import './workspaceActionButtons.css'
+import './personalWorkspace.css'
 import dayjs from 'dayjs'
 
 const tasks = ref<WorkspaceTask[]>([])
@@ -204,7 +234,8 @@ const releaseSubmitting = ref(false)
 const releaseConfirmTask = ref<WorkspaceTask | null>(null)
 const pauseModalOpen = ref(false)
 const pauseTaskRecord = ref<WorkspaceTask | null>(null)
-let isFetching = false
+const { isMobile } = useMobileViewport()
+let activeFetch: Promise<void> | null = null
 
 const EARLY_RELEASE_THRESHOLD_MINUTES = 30
 
@@ -238,6 +269,32 @@ const filteredApprovedGates = computed(() => {
     `${gate.project_code || ''} ${gate.project_name || ''}`.toLowerCase().includes(keyword),
   )
 })
+
+const mobileTasks = computed(() => {
+  if (activeTab.value === 'approved') return []
+  return [...filtered.value].sort((left, right) => mobileTaskPriority(left) - mobileTaskPriority(right))
+})
+
+const mobileTitle = computed(() => ({
+  active: '进行中任务',
+  pending: '待开始任务',
+  completed: '已完成任务',
+  approved: '已签批方案',
+}[activeTab.value] || '任务'))
+
+const mobileEmptyText = computed(() => `暂无${mobileTitle.value}`)
+
+function mobileTaskPriority(task: WorkspaceTask) {
+  const priorities: Record<string, number> = {
+    running: 0,
+    paused: 1,
+    blocked: 2,
+    interrupted: 2,
+    pending: 3,
+    scheduled: 3,
+  }
+  return priorities[workspaceActionStatus(task)] ?? 4
+}
 
 function applyProjectSearch() {
   appliedProjectKeyword.value = projectKeyword.value
@@ -335,23 +392,33 @@ const approvedColumns = [
   { title: '备注', key: 'approval_note', width: 180 },
 ]
 
-async function fetchData(isSilent = false) {
-  if (isFetching) return
-  isFetching = true
+async function fetchData(isSilent = false, refreshAfterActive = false) {
+  if (activeFetch) {
+    await activeFetch
+    if (refreshAfterActive) await fetchData(isSilent)
+    return
+  }
+  const request = loadWorkspaceData(isSilent)
+  activeFetch = request
   try {
-    const [taskResult, approvalResult, approvedResult] = await Promise.all([
+    await request
+  } finally {
+    if (activeFetch === request) activeFetch = null
+  }
+}
+
+async function loadWorkspaceData(isSilent: boolean) {
+  try {
+    const [taskResult, approvalResult] = await Promise.all([
       getMyTasks(),
-      getApprovalGates({ status: 'pending', page_size: 500, workspace_only: true }),
-      getApprovalGates({ status: 'approved', page_size: 500, workspace_only: true }),
+      getApprovalGates({ page_size: 500, workspace_only: true }),
     ])
     tasks.value = taskResult
-    approvalGates.value = approvalResult.items
-    approvedGates.value = approvedResult.items
-    loadTaskTypes()
+    approvalGates.value = approvalResult.items.filter((item) => item.gate_status !== 'approved')
+    approvedGates.value = approvalResult.items.filter((item) => item.gate_status === 'approved')
   } catch {
     if (!isSilent) message.error('加载工作台失败')
   } finally {
-    isFetching = false
     loading.value = false
   }
 }
@@ -426,10 +493,10 @@ async function submitComplete(record: WorkspaceTask, releaseInstrument: boolean)
   try {
     const result = await completeTask(slotId, { release_instrument: releaseInstrument })
     message.success(completionMessage(result, releaseInstrument))
-    await fetchData()
+    await fetchData(false, true)
     return true
-  } catch {
-    message.error('操作失败')
+  } catch (error: unknown) {
+    message.error(errorDetail(error, '完成任务失败'))
     return false
   } finally {
     actingId.value = null
@@ -473,71 +540,3 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', refreshWorkspaceWhenActive)
 })
 </script>
-
-<style scoped>
-.task-action-button {
-  min-width: 72px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-}
-
-.task-action-button-start {
-  background: var(--color-accent) !important;
-  border-color: var(--color-accent) !important;
-}
-
-.task-action-button-complete {
-  color: #ffffff !important;
-  background: var(--color-success) !important;
-  border-color: var(--color-success) !important;
-}
-
-.task-action-button-complete:hover,
-.task-action-button-complete:focus {
-  color: #ffffff !important;
-  background: #15803d !important;
-  border-color: #15803d !important;
-}
-
-.release-confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 24px;
-}
-
-.workspace-project-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 12px;
-}
-
-.workspace-project-search .ant-input-affix-wrapper { width: 240px; }
-
-.approved-project-code {
-  color: var(--color-accent);
-  font-family: var(--font-mono);
-  font-size: 12px;
-}
-
-.approved-project-name {
-  margin-left: 6px;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-}
-
-.approved-cell-ellipsis {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@media (max-width: 720px) {
-  .workspace-project-search { width: 100%; }
-  .workspace-project-search .ant-input-affix-wrapper { flex: 1; width: auto; }
-}
-</style>

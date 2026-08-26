@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 from typing import Callable
 
-from app.models import Project, Task, TimeSlot
+from app.models import Project, Task, TaskDependency, TimeSlot
 from app.services.approval_gate_schedule_context import ApprovalScheduleContext
 from app.services.schedule_insert_resources import resource_queue_task_ids
 
@@ -41,6 +41,43 @@ def load_approval_resource_queue_tasks(
     ]
 
 
+def expand_movable_downstream_tasks(db, tasks: list[Task]) -> list[Task]:
+    """Keep a moved predecessor and its unstarted scheduled successors together."""
+    if not tasks:
+        return []
+    project_ids = {task.project_id for task in tasks}
+    project_tasks = db.query(Task).filter(Task.project_id.in_(project_ids)).all()
+    project_task_ids = {task.id for task in project_tasks}
+    dependencies = db.query(TaskDependency).filter(
+        TaskDependency.task_id.in_(project_task_ids),
+    ).all()
+    successors: dict[int, set[int]] = {}
+    for dependency in dependencies:
+        successors.setdefault(dependency.predecessor_id, set()).add(dependency.task_id)
+
+    affected_ids = {task.id for task in tasks}
+    pending_ids = list(affected_ids)
+    while pending_ids:
+        predecessor_id = pending_ids.pop()
+        for task_id in successors.get(predecessor_id, set()):
+            if task_id not in affected_ids:
+                affected_ids.add(task_id)
+                pending_ids.append(task_id)
+
+    movable_statuses = {"scheduled", "paused", "blocked", "interrupted"}
+    downstream = [
+        task for task in project_tasks
+        if task.id in affected_ids
+        and not task.is_external_gate
+        and task.status in movable_statuses
+        and task.schedule_lock_status == "none"
+    ]
+    return sorted(
+        {task.id: task for task in [*tasks, *downstream]}.values(),
+        key=lambda task: (task.project_id, task.created_at, task.id),
+    )
+
+
 def approval_earliest_bounds(
     approval_context: ApprovalScheduleContext | None,
 ) -> dict[int, datetime]:
@@ -74,6 +111,16 @@ def plan_fingerprint(
         {task.id: task for task in tasks}.values(),
         key=lambda task: (task.project_id, task.created_at, task.id),
     )
+    task_ids = [task.id for task in unique_tasks]
+    dependencies_by_task: dict[int, list[int]] = {task_id: [] for task_id in task_ids}
+    if task_ids:
+        dependencies = db.query(TaskDependency).filter(
+            TaskDependency.task_id.in_(task_ids),
+        ).all()
+        for dependency in dependencies:
+            dependencies_by_task.setdefault(dependency.task_id, []).append(
+                dependency.predecessor_id,
+            )
     slots = db.query(TimeSlot).filter(TimeSlot.status.in_([
         "scheduled", "running", "completed", "paused", "blocked", "interrupted",
     ])).order_by(TimeSlot.id).all()
@@ -100,7 +147,7 @@ def plan_fingerprint(
                 task.milestone_id,
                 task.priority_weight,
                 sorted(task.instrument_ids or []),
-                sorted(task.predecessor_ids),
+                sorted(dependencies_by_task.get(task.id, [])),
                 task.parent_id,
                 bool(task.is_external_gate),
                 task.gate_status,

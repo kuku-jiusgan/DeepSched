@@ -6,11 +6,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.models import Instrument, Project, Task, TimeSlot
-from app.services.project_plan_apply_service import (
-    _build_project_impacts,
-    _priority_insert_dependencies,
-    _project_impact_message,
-)
+from app.services.project_plan_apply_service import _build_project_impacts, _project_impact_message
+from app.services.schedule_priority_dependency_service import build_schedule_priority_dependencies
 from app.services.schedule_insert_service import (
     _build_impacts,
     _load_lower_priority_movable_tasks,
@@ -115,11 +112,83 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         self.db.add_all([selected, movable])
         self.db.flush()
 
-        dependencies = _priority_insert_dependencies(
-            selected_project, [selected], [movable],
+        dependencies = build_schedule_priority_dependencies(
+            self.db, selected_project, [selected], [movable],
         )
 
         self.assertEqual([(movable.id, selected.id)], dependencies)
+
+    def test_closed_historical_pause_does_not_lock_future_slots(self):
+        _, task = self._scheduled_project("B", 3, 1)
+        task.status = "paused"
+        self.db.add(TimeSlot(
+            task_id=task.id,
+            instrument_id=1,
+            plan_start=datetime.now() - timedelta(days=2),
+            plan_end=datetime.now() - timedelta(days=1),
+            actual_start=datetime.now() - timedelta(days=2),
+            actual_end=datetime.now() - timedelta(days=1),
+            tier="frozen",
+            status="paused",
+            lifecycle_status="active",
+        ))
+        self.db.commit()
+
+        movable = _load_lower_priority_movable_tasks(
+            self.db,
+            insert_priority=1,
+            excluded_task_ids=set(),
+            selected_instrument_ids={1},
+        )
+
+        self.assertEqual([task.id], [item.id for item in movable])
+
+    def test_open_execution_segment_keeps_future_slots_immovable(self):
+        _, task = self._scheduled_project("B", 3, 1)
+        task.status = "paused"
+        self.db.add(TimeSlot(
+            task_id=task.id,
+            instrument_id=1,
+            plan_start=datetime.now() - timedelta(hours=1),
+            plan_end=datetime.now() + timedelta(hours=1),
+            actual_start=datetime.now() - timedelta(hours=1),
+            actual_end=None,
+            tier="frozen",
+            status="paused",
+            lifecycle_status="active",
+        ))
+        self.db.commit()
+
+        movable = _load_lower_priority_movable_tasks(
+            self.db,
+            insert_priority=1,
+            excluded_task_ids=set(),
+            selected_instrument_ids={1},
+        )
+
+        self.assertEqual([], movable)
+
+    def test_normal_replan_stays_after_fixed_higher_priority_detection(self):
+        detection_project, detection = self._scheduled_project("D", 1, 1)
+        detection_project.project_kind = "detection"
+        normal_project = Project(code="N", name="普通项目", priority=3)
+        normal = Task(
+            id=2,
+            project=normal_project,
+            name="方法开发",
+            task_type="test",
+            requires_instrument=True,
+            instrument_ids=[1],
+            status="pending",
+        )
+        self.db.add_all([normal_project, normal])
+        self.db.commit()
+
+        dependencies = build_schedule_priority_dependencies(
+            self.db, normal_project, [normal], [],
+        )
+
+        self.assertEqual([(normal.id, detection.id)], dependencies)
 
     def test_project_impact_reports_delay_and_deadline_risk(self):
         project, task = self._scheduled_project("B", 3, 1)
@@ -162,6 +231,7 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         }
 
         impacts = _build_impacts(
+            self.db,
             [inserted_task, shifted_task],
             {inserted_task.id},
             old_windows,
@@ -181,6 +251,7 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         )
 
         impacts = _build_impacts(
+            self.db,
             [unchanged_task],
             set(),
             {unchanged_task.id: unchanged_window},
@@ -189,6 +260,25 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         )
 
         self.assertEqual([], impacts)
+
+    def test_impact_delay_excludes_non_working_night_hours(self):
+        _, shifted_task = self._scheduled_project("B", 3, 1)
+        impacts = _build_impacts(
+            self.db,
+            [shifted_task],
+            set(),
+            {shifted_task.id: (
+                datetime(2026, 8, 26, 15, 30),
+                datetime(2026, 8, 26, 18, 0),
+            )},
+            {shifted_task.id: (
+                datetime(2026, 8, 26, 18, 30),
+                datetime(2026, 8, 27, 9, 30),
+            )},
+            {shifted_task.id: "shifted"},
+        )
+
+        self.assertEqual(3, impacts[0].delay_hours)
 
 
 if __name__ == "__main__":

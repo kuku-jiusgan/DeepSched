@@ -154,6 +154,26 @@ def _target_text(record: dict) -> str:
 
 def _legacy_summary(record: dict, action_label: str, target_display: str) -> str:
     detail = record.get("detail") or {}
+    action_summaries = {
+        "task_paused": "暂停任务",
+        "task_started": "开始任务",
+        "task_completed": "完成任务",
+        "task_interrupted": "中断任务",
+        "task_delay_reported": "提交任务延期",
+        "task_night_run": "设置夜间运行",
+    }
+    if record.get("action") in action_summaries:
+        is_failed = detail.get("result", "success") != "success" or not detail.get("success", True)
+        if is_failed:
+            reason = detail.get("reason")
+            suffix = f"：{reason}" if reason else ""
+            return f"{action_summaries[record['action']]}【{target_display}】 · 失败{suffix}"
+        if not detail.get("reason"):
+            return f"{action_summaries[record['action']]}【{target_display}】 · 成功"
+    if record.get("action") == "user_logged_in":
+        return f"用户登录【{target_display}】"
+    if record.get("action") == "user_logged_out":
+        return f"用户退出登录【{target_display}】"
     if detail.get("insert_summary"):
         return str(detail["insert_summary"])
     if detail.get("reason") and target_display:
@@ -177,7 +197,11 @@ def _path_action(path: str, action: str | None) -> str:
 
 
 def _business_detail(detail: dict) -> dict:
-    hidden = {"event_version", "category", "summary", "result", "changes", "target_display", "path", "status", "success", "client_ip", "duration_ms"}
+    hidden = {
+        "event_version", "category", "summary", "result", "changes",
+        "target_display", "task_display", "path", "status", "success",
+        "client_ip", "duration_ms",
+    }
     return {label("field", key, key): format_value(key, value) for key, value in detail.items() if key not in hidden and value not in (None, "", [], {})}
 
 

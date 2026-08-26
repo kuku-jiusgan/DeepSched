@@ -17,6 +17,7 @@ def current_occupying_slot(
         .join(Task, Task.id == TimeSlot.task_id)
         .filter(
             TimeSlot.instrument_id == instrument_id,
+            TimeSlot.lifecycle_status == "active",
             TimeSlot.actual_start.isnot(None),
             TimeSlot.actual_end.is_(None),
             TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),

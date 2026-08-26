@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta
+from threading import Lock
+from time import monotonic
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,8 +17,13 @@ from app.services.instrument_utilization_service import calculate_instrument_uti
 from app.api.users import auth_token, get_current_user
 from app.schemas.project_progress_schemas import ProjectProgressList
 from app.services.project_progress_service import list_project_progress
+from app.services.lab_status_snapshot_service import load_lab_status_snapshot
+from app.services.dashboard_snapshot_service import load_dashboard_snapshot, save_dashboard_snapshot
 
 router = APIRouter(prefix="/api/v1/stats", tags=["stats"])
+_DASHBOARD_CACHE_TTL_SECONDS = 60.0
+_dashboard_cache_lock = Lock()
+_dashboard_cache: dict[tuple[int, datetime, datetime], tuple[float, DashboardData]] = {}
 
 
 @router.get("/dashboard", response_model=DashboardData)
@@ -27,14 +34,20 @@ def dashboard(
 ):
     settings = get_settings()
     window_start, window_end = _stats_window(start_date, end_date, settings)
+    snapshot_key = _dashboard_snapshot_key(window_start, window_end)
+    snapshot_payload = load_dashboard_snapshot(db, snapshot_key)
+    if snapshot_payload:
+        return DashboardData.model_validate(snapshot_payload)
+    cache_enabled = db.bind.dialect.name != "sqlite"
+    cache_key = (id(db.bind), window_start, window_end)
+    if cache_enabled:
+        with _dashboard_cache_lock:
+            cached = _dashboard_cache.get(cache_key)
+            if cached and monotonic() - cached[0] < _DASHBOARD_CACHE_TTL_SECONDS:
+                return cached[1]
 
-    available_instruments = (
-        db.query(Instrument)
-        .filter(Instrument.availability_status == "available")
-        .all()
-    )
-    total_inst = len(available_instruments)
     active_inst = db.query(Instrument).filter(Instrument.availability_status == "available").count()
+    total_inst = active_inst
     project_window_filter = (
         or_(Project.start_date.is_(None), Project.start_date < window_end),
         or_(Project.end_date.is_(None), Project.end_date > window_start),
@@ -62,7 +75,7 @@ def dashboard(
     total_available = sum(row.total_available_hours for row in utilization_rows)
     avg_util = round(total_hours / total_available * settings.PERCENT_SCALE, 1) if total_available > 0 else 0
 
-    return DashboardData(
+    result = DashboardData(
         total_instruments=total_inst,
         active_instruments=active_inst,
         total_projects=total_proj,
@@ -72,6 +85,20 @@ def dashboard(
         buffer_warnings=[],
         milestone_risks=[],
     )
+    save_dashboard_snapshot(db, snapshot_key, result.model_dump(mode="json"))
+    if cache_enabled:
+        with _dashboard_cache_lock:
+            _dashboard_cache[cache_key] = (monotonic(), result)
+            if len(_dashboard_cache) > 128:
+                oldest_key = min(_dashboard_cache, key=lambda key: _dashboard_cache[key][0])
+                _dashboard_cache.pop(oldest_key, None)
+    return result
+
+
+def _dashboard_snapshot_key(window_start: datetime, window_end: datetime) -> str:
+    normalized_start = window_start.replace(second=0, microsecond=0)
+    normalized_end = window_end.replace(second=0, microsecond=0)
+    return f"{normalized_start.isoformat()}|{normalized_end.isoformat()}"
 
 
 @router.get("/utilization", response_model=List[UtilizationStats])
@@ -100,6 +127,9 @@ def _stats_window(start_date: datetime | None, end_date: datetime | None, settin
 
 @router.get("/lab-status")
 def lab_status(db: Session = Depends(get_db)):
+    snapshot = load_lab_status_snapshot(db)
+    if snapshot is not None:
+        return snapshot
     return list_lab_status(db)
 
 

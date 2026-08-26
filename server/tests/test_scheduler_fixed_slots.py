@@ -7,10 +7,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Project, Task, TimeSlot
+from app.models import InstrumentBridgeReservation, Project, Task, TimeSlot
 from app.services.scheduler_fixed_slots import (
     add_human_capacity_constraints,
     add_instrument_capacity_constraints,
+    load_fixed_bridge_reservations,
     load_fixed_slots,
 )
 
@@ -66,6 +67,21 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
 
         self.assertEqual([manual_slot.id], [slot.id for slot in fixed_slots])
 
+    def test_bridge_reservation_is_loaded_as_fixed_for_its_instrument(self):
+        reservation = InstrumentBridgeReservation(
+            task_id=1, instrument_id=2, previous_task_id=3, following_task_id=4,
+            schedule_run_id="run-1", plan_start=datetime(2026, 7, 15, 8, 30),
+            plan_end=datetime(2026, 7, 15, 10, 0),
+        )
+        self.db.add(reservation)
+        self.db.commit()
+
+        reservations = load_fixed_bridge_reservations(
+            self.db, relevant_instrument_ids={2},
+        )
+
+        self.assertEqual([reservation.id], [item.id for item in reservations])
+
     def test_protected_slots_for_replanned_tasks_remain_fixed(self):
         movable_slot = TimeSlot(
             task_id=1,
@@ -103,6 +119,22 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
         self.db.commit()
 
         self.assertEqual([frozen_slot.id], [slot.id for slot in load_fixed_slots(self.db)])
+
+    def test_future_segment_of_running_task_is_fixed(self):
+        future_slot = TimeSlot(
+            task_id=1,
+            instrument_id=1,
+            plan_start=datetime.now() + timedelta(days=1),
+            plan_end=datetime.now() + timedelta(days=1, hours=1, minutes=30),
+            status="running",
+            tier="confirmed",
+        )
+        self.db.add(future_slot)
+        self.db.commit()
+
+        self.assertEqual([future_slot.id], [
+            slot.id for slot in load_fixed_slots(self.db)
+        ])
 
     def test_only_slots_for_relevant_resources_are_loaded(self):
         project = Project(code="P1", name="测试项目", priority=3)

@@ -29,6 +29,8 @@ from app.schemas.workspace_schemas import (
     AgendaOut,
 )
 from app.services.task_execution_service import TaskExecutionInvalidError, ensure_paused_state_consistent
+from app.services.project_actual_hours_service import task_actual_hours_map
+from app.services.task_progress_service import planned_task_hours, planned_task_minutes
 from app.services.user_role_service import has_any_role
 
 
@@ -47,6 +49,7 @@ class WorkspaceAgendaPermissionError(Exception):
 def get_workspace_tasks(db, user, now: datetime | None = None) -> list[WorkspaceTaskOut]:
     current_time = now or datetime.now()
     tasks = list_workspace_tasks(db, user)
+    actual_hours_by_task = task_actual_hours_map(db, [task.id for task in tasks])
     task_segments = {task.id: workspace_segments(task) for task in tasks}
     slot_ids = [slot.id for segments in task_segments.values() for slot in segments]
     delay_by_slot = _delay_details_by_slot(list_delay_logs(db, slot_ids))
@@ -59,15 +62,19 @@ def get_workspace_tasks(db, user, now: datetime | None = None) -> list[Workspace
             delay_by_slot,
             resume_priority_by_task,
             current_time,
+            actual_hours_by_task.get(task.id),
         )
         for task in tasks
     ]
 
 
-def _workspace_task_out(task, segments, delay_by_slot, resume_priority_by_task, now: datetime) -> WorkspaceTaskOut:
+def _workspace_task_out(
+    task, segments, delay_by_slot, resume_priority_by_task, now: datetime, actual_duration_hours: float | None
+) -> WorkspaceTaskOut:
     planned_start, planned_end = planned_task_window(segments)
     actual_start, actual_end = actual_task_window(segments)
-    actual_duration_hours = _actual_duration_hours(task, segments)
+    if not _has_actual_duration(task, segments):
+        actual_duration_hours = None
     actionable = select_actionable_segment(segments, now)
     delay_detail = _task_delay_detail(task, actionable, segments, delay_by_slot)
 
@@ -84,7 +91,8 @@ def _workspace_task_out(task, segments, delay_by_slot, resume_priority_by_task, 
         project_name=task.project.name if task.project else None,
         project_code=task.project.code if task.project else None,
         execution_status=execution_status,
-        est_duration_hours=task.est_duration_hours,
+        est_duration_hours=planned_task_hours(task),
+        completion_ready=int(task.executed_minutes or 0) >= planned_task_minutes(task),
         actual_duration_hours=actual_duration_hours,
         task_window=TaskWindowOut(start=planned_start, end=planned_end),
         actual_window=TaskWindowOut(start=actual_start, end=actual_end),
@@ -98,6 +106,8 @@ def _workspace_task_out(task, segments, delay_by_slot, resume_priority_by_task, 
 def _workspace_execution_status(task, segments, actionable) -> str:
     if task.status == "paused" and _is_inconsistent_paused_task(task):
         return "interrupted"
+    if actionable and actionable.status in {"paused", "interrupted"}:
+        return actionable.status
     return resolve_task_execution_status(task)
 
 
@@ -161,7 +171,8 @@ def _agenda_item(slot) -> AgendaItemOut | None:
     task_plan_end = max(
         (
             item.plan_end for item in task.time_slots
-            if item.status in {"scheduled", "running", "paused", "blocked", "interrupted"}
+            if item.lifecycle_status == "active"
+            and item.status in {"scheduled", "running", "paused", "blocked", "interrupted"}
         ),
         default=slot.plan_end,
     )
@@ -235,28 +246,14 @@ def _is_inconsistent_paused_task(task) -> bool:
     return False
 
 
-def _actual_duration_hours(task, segments) -> float | None:
-    execution_segments = [
-        segment for segment in task.execution_segments
-        if segment.ended_at is not None
-    ]
-    if execution_segments:
-        total_seconds = sum(
-            (segment.ended_at - segment.started_at).total_seconds()
-            for segment in execution_segments
-        )
-        return round(total_seconds / 3600, 2)
-    completed_segments = [
-        segment for segment in segments
-        if segment.actual_start is not None and segment.actual_end is not None
-    ]
-    if not completed_segments:
-        return None
-    total_seconds = sum(
-        (segment.actual_end - segment.actual_start).total_seconds()
-        for segment in completed_segments
+def _has_actual_duration(task, segments) -> bool:
+    if any(segment.started_at is not None for segment in task.execution_segments):
+        return True
+    return any(
+        segment.actual_start is not None
+        and segment.status in {"completed", "running"}
+        for segment in segments
     )
-    return round(total_seconds / 3600, 2)
 
 
 def _segment_out(segment) -> WorkspaceSegmentOut:
@@ -266,6 +263,7 @@ def _segment_out(segment) -> WorkspaceSegmentOut:
         instrument_id=segment.instrument_id,
         instrument_name=instrument.name if instrument else None,
         instrument_code=instrument.code if instrument else None,
+        effective_work_end=instrument.effective_work_end if instrument else None,
         plan_start=segment.plan_start,
         plan_end=segment.plan_end,
         actual_start=segment.actual_start,

@@ -1,4 +1,5 @@
 from app.models import Project, Task
+from sqlalchemy.orm import selectinload
 from app.services.user_role_service import has_any_role
 
 
@@ -10,7 +11,11 @@ class ProjectNotVisibleError(Exception):
 
 
 def list_visible_projects(db, user) -> list[Project]:
-    query = db.query(Project).filter(Project.project_kind == "project")
+    query = db.query(Project).options(
+        selectinload(Project.tasks),
+        selectinload(Project.tasks).selectinload(Task.children),
+        selectinload(Project.manager),
+    ).filter(Project.project_kind == "project")
     if not has_any_role(user, FULL_PROJECT_ACCESS_ROLES):
         query = query.filter(
             (Project.manager_id == user.id)

@@ -11,6 +11,7 @@ export interface WorkspaceSegment {
   instrument_id: number | null
   instrument_name: string | null
   instrument_code: string | null
+  effective_work_end?: string | null
   plan_start: string
   plan_end: string
   actual_start: string | null
@@ -46,6 +47,7 @@ export interface WorkspaceTask {
   project_code: string | null
   execution_status: string
   est_duration_hours: number | null
+  completion_ready?: boolean
   actual_duration_hours?: number | null
   task_window: TaskTimeWindow
   actual_window: TaskTimeWindow
@@ -127,6 +129,7 @@ function normalizeWorkspaceSegment(value: unknown): WorkspaceSegment | null {
     instrument_id: numberValue(segment.instrument_id),
     instrument_name: stringValue(segment.instrument_name),
     instrument_code: stringValue(segment.instrument_code),
+    effective_work_end: stringValue(segment.effective_work_end),
     plan_start: planStart,
     plan_end: planEnd,
     actual_start: stringValue(segment.actual_start),
@@ -144,6 +147,7 @@ function normalizeLegacyWorkspaceSegment(task: UnknownRecord): WorkspaceSegment 
     instrument_id: task.instrument_id,
     instrument_name: task.instrument_name,
     instrument_code: task.instrument_code,
+    effective_work_end: task.effective_work_end,
     plan_start: task.plan_start,
     plan_end: task.plan_end,
     actual_start: task.actual_start,
@@ -204,7 +208,8 @@ export function canStartWorkspaceTask(task: WorkspaceTask) {
 }
 
 export function canCompleteWorkspaceTask(task: WorkspaceTask) {
-  return workspaceActionStatus(task) === 'running' && Boolean(actionableSlotId(task))
+  return (workspaceActionStatus(task) === 'running' || task.completion_ready === true)
+    && Boolean(actionableSlotId(task))
 }
 
 export function canPauseWorkspaceTask(task: WorkspaceTask) {

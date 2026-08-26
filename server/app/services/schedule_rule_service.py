@@ -45,9 +45,9 @@ CONSTRAINT_RULES = [
     },
     {
         "category": "constraint",
-        "name": "有效工作时段",
+        "name": "人员及非仪器任务有效工作时段",
         "code": "working_hours",
-        "description": "任务仅累计每日有效工作时段内的作业时间",
+        "description": "人员及非仪器任务使用该时段；仪器任务使用仪器管理中的独立时段",
         "params": {
             "day_start": "08:30",
             "day_end": "20:00",
@@ -78,7 +78,7 @@ CONSTRAINT_RULES = [
         "name": "跨项目切换间隔",
         "code": "cross_project_setup",
         "description": "同一仪器切换到不同项目时必须预留准备时间",
-        "params": {"setup_hours": 2, "strict": True},
+        "params": {"setup_hours": 0.5, "strict": True},
         "sort_order": 17,
     },
     {

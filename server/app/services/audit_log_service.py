@@ -11,6 +11,8 @@ USER_AUDIT_FIELDS = {
     "email": "邮箱",
     "phone": "手机号",
     "wecom_id": "企业微信号",
+    "login_method": "登录方式",
+    "logout_method": "退出方式",
     "is_active": "账号状态",
 }
 PROJECT_AUDIT_FIELDS = {
@@ -228,7 +230,7 @@ def has_business_audit_since(db, operator: str, started_at: datetime) -> bool:
     ).first() is not None
 
 
-def list_audit_logs(db, keyword: str | None = None, action: str | None = None, user_name: str | None = None, start_at=None, end_at=None):
+def list_audit_logs(db, keyword: str | None = None, action: str | None = None, user_name: str | None = None, start_at=None, end_at=None, offset: int | None = None, limit: int | None = None):
     query = db.query(AuditLog)
     if keyword:
         query = query.filter(AuditLog.action.contains(keyword) | AuditLog.user_name.contains(keyword))
@@ -240,7 +242,12 @@ def list_audit_logs(db, keyword: str | None = None, action: str | None = None, u
         query = query.filter(AuditLog.created_at >= start_at)
     if end_at:
         query = query.filter(AuditLog.created_at <= end_at)
-    logs = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).all()
+    query = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+    if offset is not None:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    logs = query.all()
     visible_logs = [
         log for log in logs
         if not isinstance(log.detail, dict)

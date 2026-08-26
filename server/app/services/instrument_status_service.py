@@ -1,7 +1,7 @@
 from typing import Iterable, Optional
 
 from app.models import Instrument, TimeSlot
-from app.services.schedule_slot_change_log_service import record_slot_deleted
+from app.services.schedule_slot_change_log_service import record_slot_deleted, supersede_slot
 
 
 PROTECTED_STATUSES = {"fault", "maintenance"}
@@ -47,14 +47,19 @@ def refresh_instrument_statuses(db, instrument_ids: Iterable[int | None]) -> Non
 
 
 def delete_time_slots_and_refresh(db, query, synchronize_session=False) -> int:
-    for slot in query.all():
-        record_slot_deleted(db, slot)
+    slots = query.all()
     instrument_ids = {
         instrument_id
         for instrument_id, in query.with_entities(TimeSlot.instrument_id).distinct().all()
         if instrument_id
     }
-    deleted_count = query.delete(synchronize_session=synchronize_session)
+    deleted_count = 0
+    for slot in slots:
+        if slot.actual_start is not None or slot.actual_end is not None:
+            continue
+        supersede_slot(db, slot, "排程重排")
+        slot.status = "cancelled"
+        deleted_count += 1
     db.flush()
     refresh_instrument_statuses(db, instrument_ids)
     return deleted_count
@@ -62,7 +67,8 @@ def delete_time_slots_and_refresh(db, query, synchronize_session=False) -> int:
 
 def delete_time_slot_and_refresh(db, slot: TimeSlot) -> None:
     instrument_id = slot.instrument_id
-    db.delete(slot)
+    supersede_slot(db, slot, "仪器状态变更")
+    slot.status = "cancelled"
     db.flush()
     refresh_instrument_status(db, instrument_id)
 

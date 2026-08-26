@@ -199,11 +199,17 @@ function markConflicts(items: AgendaDisplayItem[]) {
   const scheduledItems = items.filter(item => !item.isOverdue && !item.isTodayActivity)
   for (let index = 0; index < scheduledItems.length; index += 1) {
     for (let nextIndex = index + 1; nextIndex < scheduledItems.length; nextIndex += 1) {
-      if (!scheduledItems[nextIndex].displayStart.isBefore(scheduledItems[index].displayEnd)) break
+      if (!hasPlannedTimeConflict(scheduledItems[index], scheduledItems[nextIndex])) break
       scheduledItems[index].hasConflict = true
       scheduledItems[nextIndex].hasConflict = true
     }
   }
+}
+
+function hasPlannedTimeConflict(left: AgendaDisplayItem, right: AgendaDisplayItem) {
+  const leftEnd = left.displayEnd.startOf('minute')
+  const rightStart = right.displayStart.startOf('minute')
+  return rightStart.isBefore(leftEnd)
 }
 
 export function agendaTaskName(item: AgendaItem) {

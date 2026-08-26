@@ -2,11 +2,23 @@ from sqlalchemy import inspect, text
 
 
 def ensure_runtime_schema(engine) -> None:
-    from app.models import ScheduleCalendarSnapshot, ScheduleSlotChangeLog, TaskNightRun
+    from app.models import (
+        ScheduleCalendarSnapshot,
+        DashboardStatsSnapshot,
+        LabStatusSnapshot,
+        ScheduleDeadlineRecommendationJob,
+        InstrumentBridgeReservation,
+        ScheduleSlotChangeLog,
+        TaskNightRun,
+    )
 
     TaskNightRun.__table__.create(bind=engine, checkfirst=True)
     ScheduleCalendarSnapshot.__table__.create(bind=engine, checkfirst=True)
+    DashboardStatsSnapshot.__table__.create(bind=engine, checkfirst=True)
+    LabStatusSnapshot.__table__.create(bind=engine, checkfirst=True)
     ScheduleSlotChangeLog.__table__.create(bind=engine, checkfirst=True)
+    ScheduleDeadlineRecommendationJob.__table__.create(bind=engine, checkfirst=True)
+    InstrumentBridgeReservation.__table__.create(bind=engine, checkfirst=True)
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
 
@@ -55,16 +67,7 @@ def ensure_runtime_schema(engine) -> None:
                 connection.execute(text("ALTER TABLE project DROP COLUMN profit_weight"))
             connection.execute(text("UPDATE project SET priority = 1 WHERE priority IS NULL OR priority < 1"))
             connection.execute(text("UPDATE project SET priority = 3 WHERE priority > 3"))
-            if engine.dialect.name == "sqlite":
-                connection.execute(text(
-                    "UPDATE project SET start_date = datetime(date(start_date)) "
-                    "WHERE start_date IS NOT NULL"
-                ))
-                connection.execute(text(
-                    "UPDATE project SET end_date = datetime(date(end_date), '+1 day', '-1 second') "
-                    "WHERE end_date IS NOT NULL"
-                ))
-            elif engine.dialect.name == "mysql":
+            if engine.dialect.name == "mysql":
                 connection.execute(text(
                     "UPDATE project SET start_date = DATE(start_date) "
                     "WHERE start_date IS NOT NULL"
@@ -81,14 +84,62 @@ def ensure_runtime_schema(engine) -> None:
                 connection.execute(text("ALTER TABLE task ADD COLUMN plan_order INTEGER NOT NULL DEFAULT 0"))
             if "schedule_dirty" not in task_columns:
                 connection.execute(text("ALTER TABLE task ADD COLUMN schedule_dirty BOOLEAN DEFAULT 0"))
+    if "task_dependency" in table_names:
+        dependency_columns = {column["name"] for column in inspector.get_columns("task_dependency")}
+        with engine.begin() as connection:
+            if "dependency_type" not in dependency_columns:
+                connection.execute(text(
+                    "ALTER TABLE task_dependency ADD COLUMN dependency_type VARCHAR(30) "
+                    "NOT NULL DEFAULT 'predecessor'"
+                ))
+            if engine.dialect.name == "mysql":
+                connection.execute(text(
+                    "UPDATE task_dependency AS dependency "
+                    "JOIN task AS child ON child.id = dependency.task_id "
+                    "JOIN task AS parent ON parent.id = dependency.predecessor_id "
+                    "SET dependency.dependency_type = 'continuous_successor' "
+                    "WHERE child.task_type IN ('QCFA_001', 'ZXBG_001') "
+                    "AND parent.task_type IN ('FFKF_001', 'FFYZ_001')"
+                ))
+            else:
+                connection.execute(text(
+                    "UPDATE task_dependency SET dependency_type = 'continuous_successor' "
+                    "WHERE task_id IN (SELECT child.id FROM task child "
+                    "JOIN task parent ON parent.id = task_dependency.predecessor_id "
+                    "WHERE child.task_type IN ('QCFA_001', 'ZXBG_001') "
+                    "AND parent.task_type IN ('FFKF_001', 'FFYZ_001'))"
+                ))
                 connection.execute(text("UPDATE task SET schedule_dirty = 0 WHERE schedule_dirty IS NULL"))
             if "delay_status" not in task_columns:
                 connection.execute(text(
                     "ALTER TABLE task ADD COLUMN delay_status VARCHAR(20) DEFAULT 'not_delayed'"
                 ))
+                connection.execute(text(
+                    "UPDATE task SET delay_status = 'not_delayed' WHERE delay_status IS NULL"
+                ))
+            if "executed_minutes" not in task_columns:
+                connection.execute(text(
+                    "ALTER TABLE task ADD COLUMN executed_minutes INTEGER NOT NULL DEFAULT 0"
+                ))
+            connection.execute(text("UPDATE task SET executed_minutes = 0 WHERE executed_minutes IS NULL"))
+            if "additional_planned_minutes" not in task_columns:
+                connection.execute(text(
+                    "ALTER TABLE task ADD COLUMN additional_planned_minutes INTEGER NOT NULL DEFAULT 0"
+                ))
             connection.execute(text(
-                "UPDATE task SET delay_status = 'not_delayed' WHERE delay_status IS NULL"
+                "UPDATE task SET additional_planned_minutes = 0 WHERE additional_planned_minutes IS NULL"
             ))
+            slot_columns = {column["name"] for column in inspector.get_columns("time_slot")} if "time_slot" in table_names else set()
+            lifecycle_columns = {
+                "lifecycle_status": "VARCHAR(20) NOT NULL DEFAULT 'active'",
+                "superseded_at": "DATETIME",
+                "superseded_by_slot_id": "INTEGER",
+                "superseded_reason": "VARCHAR(200)",
+                "superseded_by": "INTEGER",
+            }
+            for column_name, column_type in lifecycle_columns.items():
+                if column_name not in slot_columns:
+                    connection.execute(text(f"ALTER TABLE time_slot ADD COLUMN {column_name} {column_type}"))
             approval_columns = {
                 "is_external_gate": "BOOLEAN DEFAULT 0",
                 "gate_status": "VARCHAR(30) DEFAULT 'not_submitted'",
@@ -122,9 +173,31 @@ def ensure_runtime_schema(engine) -> None:
 
     if "instrument" in table_names:
         instrument_columns = {column["name"] for column in inspector.get_columns("instrument")}
-        if "availability_status" not in instrument_columns:
-            with engine.begin() as connection:
+        with engine.begin() as connection:
+            if "availability_status" not in instrument_columns:
                 connection.execute(text("ALTER TABLE instrument ADD COLUMN availability_status VARCHAR(20) DEFAULT 'available'"))
+            if "effective_work_start" not in instrument_columns:
+                connection.execute(text(
+                    "ALTER TABLE instrument ADD COLUMN effective_work_start VARCHAR(5) NOT NULL DEFAULT '08:30'"
+                ))
+            if "effective_work_end" not in instrument_columns:
+                connection.execute(text(
+                    "ALTER TABLE instrument ADD COLUMN effective_work_end VARCHAR(5) NOT NULL DEFAULT '20:00'"
+                ))
+
+    if "schedule_calendar_snapshot" in table_names:
+        snapshot_columns = {
+            column["name"] for column in inspector.get_columns("schedule_calendar_snapshot")
+        }
+        if "instrument_working_hours" not in snapshot_columns:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "ALTER TABLE schedule_calendar_snapshot ADD COLUMN instrument_working_hours JSON"
+                ))
+                connection.execute(text(
+                    "UPDATE schedule_calendar_snapshot SET instrument_working_hours = '{}' "
+                    "WHERE instrument_working_hours IS NULL"
+                ))
 
     if "notification" in table_names:
         notification_columns = {column["name"] for column in inspector.get_columns("notification")}

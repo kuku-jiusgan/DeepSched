@@ -14,22 +14,33 @@
         导出 Excel
       </a-button>
     </section>
-    <a-table v-model:expandedRowKeys="expandedRowKeys" :data-source="logs" :loading="loading" row-key="id" :scroll="{ x: 980 }" :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (total: number) => `共 ${total} 条` }">
+    <a-table v-model:expandedRowKeys="expandedRowKeys" :data-source="logs" :loading="loading" row-key="id" :scroll="{ x: 980 }" :pagination="{ current: page, pageSize, total, showSizeChanger: true, showTotal: (count: number) => `共 ${count} 条`, onChange: handlePageChange }">
       <a-table-column title="时间" key="created_at" width="170"><template #default="{ record }">{{ formatTime(record.created_at) }}</template></a-table-column>
       <a-table-column title="操作人" key="user_name" width="120"><template #default="{ record }">{{ operatorLabel(record.user_name) }}</template></a-table-column>
-      <a-table-column title="分类" key="category" width="130"><template #default="{ record }"><a-tag>{{ record.category_label }}</a-tag></template></a-table-column>
-      <a-table-column title="操作摘要" key="summary"><template #default="{ record }"><span class="summary-text">{{ record.summary }}</span></template></a-table-column>
-      <a-table-column title="结果" key="result" width="90"><template #default="{ record }"><a-tag :color="record.result === 'success' ? 'green' : 'red'">{{ record.result === 'success' ? '成功' : '失败' }}</a-tag></template></a-table-column>
+      <a-table-column title="模块" key="category" width="130"><template #default="{ record }"><a-tag>{{ record.category_label }}</a-tag></template></a-table-column>
+      <a-table-column title="操作" key="summary"><template #default="{ record }"><span class="summary-text">{{ record.summary }}</span></template></a-table-column>
+      <a-table-column title="状态" key="result" width="90"><template #default="{ record }"><a-tag :color="record.result === 'success' ? 'green' : 'red'">{{ record.result === 'success' ? '成功' : '失败' }}</a-tag></template></a-table-column>
       <a-table-column title="详情" key="expand" width="80"><template #default="{ record }"><a-button type="link" size="small" @click="toggleDetail(record.id)">{{ expandedRowKeys.includes(record.id) ? '收起' : '查看' }}</a-button></template></a-table-column>
       <template #expandedRowRender="{ record }">
         <div class="audit-detail">
+          <div class="detail-meta">
+            <span>日志编号：{{ formatLogId(record.id) }}</span>
+            <span>时间：{{ formatTime(record.created_at) }}</span>
+            <span>对象：{{ record.target_display }}</span>
+            <span>操作人：{{ operatorLabel(record.user_name) }}</span>
+            <span>状态：{{ record.result === 'success' ? '成功' : '失败' }}</span>
+            <span v-if="record.technical_detail['来源 IP']">来源 IP：{{ formatValue(record.technical_detail['来源 IP']) }}</span>
+          </div>
+          <div v-if="record.result === 'failed' && record.detail.reason" class="failure-reason">失败原因：{{ formatValue(record.detail.reason) }}</div>
           <div class="detail-heading"><strong>{{ record.action_label }}</strong><span>{{ record.target_display }}</span></div>
           <dl v-if="record.changes.length" class="change-list">
             <template v-for="change in record.changes" :key="change.field">
               <dt>{{ change.field }}</dt><dd>{{ formatValue(change.before) }} <span class="change-arrow">→</span> {{ formatValue(change.after) }}</dd>
             </template>
           </dl>
+          <div v-else class="no-changes">本次审计未记录字段值变更。</div>
           <dl v-if="hasValues(record.business_detail)" class="context-list">
+            <dt class="context-title">业务详情</dt><dd class="context-title-spacer"></dd>
             <template v-for="(value, key) in record.business_detail" :key="key">
               <dt>{{ detailLabel(String(key)) }}</dt><dd>{{ formatValue(value) }}</dd>
             </template>
@@ -57,6 +68,9 @@ const logs = ref<AuditLogRecord[]>([])
 const loading = ref(false)
 const exporting = ref(false)
 const expandedRowKeys = ref<number[]>([])
+const page = ref(1)
+const pageSize = ref(50)
+const total = ref(0)
 const categoryOptions = ref<AuditLogCategoryOption[]>([])
 const filters = reactive({ keyword: '', category: undefined as string | undefined, action: undefined as string | undefined })
 const actionOptions = [
@@ -92,11 +106,18 @@ const detailLabels: Record<string, string> = {
 async function loadLogs() {
   loading.value = true
   try {
-    logs.value = await getAuditLogs({ keyword: filters.keyword || undefined, category: filters.category, action: filters.action })
+    const result = await getAuditLogs({ keyword: filters.keyword || undefined, category: filters.category, action: filters.action, page: page.value, page_size: pageSize.value })
+    logs.value = result.items
+    total.value = result.total
     expandedRowKeys.value = []
   }
   catch { message.error('加载操作日志失败') }
   finally { loading.value = false }
+}
+function handlePageChange(nextPage: number, nextPageSize: number) {
+  page.value = nextPageSize !== pageSize.value ? 1 : nextPage
+  pageSize.value = nextPageSize
+  void loadLogs()
 }
 async function exportExcel() {
   exporting.value = true
@@ -132,10 +153,12 @@ function formatValue(value: unknown): string {
 }
 function formatTime(value: string) { return dayjs(value).format('YYYY-MM-DD HH:mm:ss') }
 function operatorLabel(value: string) { return value === 'system' ? '系统自动任务' : value === 'anonymous' ? '未登录用户' : value }
+function formatLogId(id: number) { return `LOG-${String(id).padStart(4, '0')}` }
 onMounted(async () => {
-  try { categoryOptions.value = await getAuditLogCategories() }
-  catch { categoryOptions.value = [] }
-  await loadLogs()
+  await Promise.all([
+    getAuditLogCategories().then(value => { categoryOptions.value = value }).catch(() => { categoryOptions.value = [] }),
+    loadLogs(),
+  ])
 })
 </script>
 
@@ -149,7 +172,9 @@ onMounted(async () => {
 .export-button { margin-left: auto; }
 .summary-text { color: var(--color-text-primary); line-height: 1.6; }
 .audit-detail { padding: 8px 32px 12px 176px; color: var(--color-text-secondary); }
+.detail-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-bottom: 10px; color: var(--color-text-secondary); font-size: 13px; }
 .detail-heading { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }.detail-heading strong { color: var(--color-text-primary); }.detail-heading span { color: var(--color-text-secondary); }
+.failure-reason { margin: 6px 0 10px; color: #cf1322; }.no-changes { margin: 8px 0; color: var(--color-text-secondary); }
 .change-list, .context-list { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 16px; margin: 0; }.context-list { margin-top: 10px; }.change-list dt, .context-list dt { color: var(--color-text-secondary); }.change-list dd, .context-list dd { margin: 0; color: var(--color-text-primary); }.change-arrow { padding: 0 6px; color: #1677ff; }
 .technical-collapse { margin-top: 6px; }.technical-item { display: inline-block; margin-right: 20px; color: var(--color-text-secondary); }
 @media (max-width: 720px) { .filter-bar { flex-wrap: wrap; }.filter-bar .ant-input, .filter-bar .ant-select { width: 100%; }.export-button { margin-left: 0; }.audit-detail { padding: 8px 4px 12px; }.change-list, .context-list { grid-template-columns: 1fr; gap: 2px; }.change-list dd, .context-list dd { margin-bottom: 8px; } }

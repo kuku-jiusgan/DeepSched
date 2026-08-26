@@ -30,6 +30,7 @@ def commit_project_plan_drafts(
     project_id: int,
     data: ProjectPlanDraftCommitIn,
     user: User,
+    commit: bool = True,
 ) -> ProjectPlanDraftCommitOut:
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
@@ -121,7 +122,8 @@ def commit_project_plan_drafts(
         recalculate_project_parent_hours(db, project_id)
         validate_project_estimated_hours(db, project_id)
     except ProjectHoursExceededError as exc:
-        db.rollback()
+        if commit:
+            db.rollback()
         raise ProjectPlanDraftInvalidError(str(exc))
     db.add(AuditLog(
         user_name=user.display_name or user.username,
@@ -134,7 +136,8 @@ def commit_project_plan_drafts(
             "task_details": _plan_task_audit_details(db, data, id_map),
         },
     ))
-    db.commit()
+    if commit:
+        db.commit()
     return ProjectPlanDraftCommitOut(
         status="ok",
         message=f"已保存 {len(data.tasks)} 个计划节点",
@@ -144,6 +147,27 @@ def commit_project_plan_drafts(
             for client_id, task_id in id_map.items()
         ],
     )
+
+
+def save_and_schedule_project_plan(db, project_id: int, data: ProjectPlanDraftCommitIn, user: User):
+    if data.tasks:
+        draft_result = commit_project_plan_drafts(db, project_id, data, user, commit=False)
+    else:
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            raise ProjectPlanDraftNotFoundError("项目不存在")
+        if not has_any_role(user, FULL_PROJECT_ACCESS_ROLES) and project.manager_id != user.id:
+            raise ProjectPlanDraftPermissionError("无权保存该项目计划")
+        draft_result = ProjectPlanDraftCommitOut(status="ok", message="没有新增计划节点", created=0, id_map=[])
+    from app.services.project_plan_apply_service import apply_project_plan
+    result = apply_project_plan(db, project_id, preserve_existing=True)
+    if result.status == "error":
+        db.rollback()
+    else:
+        db.commit()
+    result.created = draft_result.created
+    result.id_map = draft_result.id_map
+    return result
 
 
 def _plan_task_audit_details(

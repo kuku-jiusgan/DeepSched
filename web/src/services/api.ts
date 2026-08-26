@@ -1,6 +1,6 @@
 import api from './http'
 import type {
-  Project, Instrument, TimeSlot, DashboardData, UtilizationStats, ProjectPlanApplyResult,
+  Project, Instrument, TimeSlot, InstrumentBridgeReservation, DashboardData, UtilizationStats, ProjectPlanApplyResult,
   DAGData, InsertCost, InsertOrderResult, Task, CapabilityReq, InstrumentFault,
   ApprovalGate, ApprovalGateAction, ApprovalGateList,
   StandardPlanImportResult,
@@ -18,8 +18,8 @@ export type {
 
 
 // Projects
-export const getProjects = (): Promise<Project[]> =>
-  api.get<Project[]>('/projects').then(r => r.data);
+export const getProjects = (status?: 'active' | 'pending' | 'completed'): Promise<Project[]> =>
+  api.get<Project[]>('/projects', { params: status ? { status } : undefined }).then(r => r.data);
 
 export const createProject = (data: Partial<Project>): Promise<Project> =>
   api.post<Project>('/projects', data).then(r => r.data);
@@ -174,6 +174,17 @@ export const commitProjectPlanDrafts = (
 ): Promise<{ status: string; message: string; created: number; id_map: { client_id: number; task_id: number }[] }> =>
   api.post(`/projects/${projectId}/plan-drafts/commit`, { tasks }).then(r => r.data)
 
+export const saveAndScheduleProjectPlan = (
+  projectId: number,
+  tasks: ProjectPlanDraftTaskPayload[],
+): Promise<ProjectPlanApplyResult> =>
+  api.post<ProjectPlanApplyResult>(`/projects/${projectId}/plan-drafts/save-and-schedule`, { tasks }).then(r => r.data)
+
+export const getDeadlineRecommendation = (projectId: number, jobId: string) =>
+  api.get<import('@/types').ScheduleRecommendationJob>(
+    `/projects/${projectId}/plan-drafts/deadline-recommendations/${jobId}`,
+  ).then(r => r.data)
+
 export interface ApprovalGateCreatePayload {
   name: string
   assignee_id?: number | null
@@ -241,6 +252,8 @@ export interface InstrumentPayload {
   availability_status: 'available' | 'unavailable'
   buffer_rate: number
   switchover_base_hours: number
+  effective_work_start: string
+  effective_work_end: string
   capabilities: { tag_name: string; tag_value: string }[]
 }
 
@@ -277,6 +290,12 @@ export const getTimeslots = (
   timeout?: number,
 ): Promise<TimeSlot[]> =>
   api.get<TimeSlot[]>('/schedules/timeslots', { params, timeout }).then(r => r.data);
+
+export const getInstrumentBridgeReservations = (
+  params?: Record<string, unknown>,
+  timeout?: number,
+): Promise<InstrumentBridgeReservation[]> =>
+  api.get<InstrumentBridgeReservation[]>('/schedules/instrument-bridge-reservations', { params, timeout }).then(r => r.data);
 
 export const generateSchedule = (projectIds?: number[]): Promise<{ status: string; message?: string }> =>
   api.post('/schedules/generate', { project_ids: projectIds, mode: 'normal' }).then(r => r.data);
@@ -641,6 +660,14 @@ export const getNotifications = (params: NotificationQuery): Promise<Notificatio
 export const markNotificationRead = (id: number): Promise<{ status: string }> =>
   api.put<{ status: string }>(`/notifications/${id}/read`).then(r => r.data)
 
+export interface NotificationReadAllResult {
+  status: string
+  updated_count: number
+}
+
+export const markAllNotificationsRead = (): Promise<NotificationReadAllResult> =>
+  api.put<NotificationReadAllResult>('/notifications/read-all').then(r => r.data)
+
 export const confirmNotification = (id: number): Promise<{ status: string }> =>
   api.post<{ status: string }>(`/notifications/${id}/confirm`).then(r => r.data)
 
@@ -682,15 +709,18 @@ export interface AuditLogQuery {
   action?: string
   category?: string
   user_name?: string
+  page?: number
+  page_size?: number
 }
+export interface AuditLogPage { items: AuditLogRecord[]; total: number; page: number; page_size: number }
 
 export interface AuditLogCategoryOption { value: string; label: string }
 
 export const getAuditLogCategories = (): Promise<AuditLogCategoryOption[]> =>
   api.get<AuditLogCategoryOption[]>('/audit-logs/categories').then(response => response.data)
 
-export const getAuditLogs = (params?: AuditLogQuery): Promise<AuditLogRecord[]> =>
-  api.get<AuditLogRecord[]>('/audit-logs', { params }).then(response => response.data)
+export const getAuditLogs = (params?: AuditLogQuery): Promise<AuditLogPage> =>
+  api.get<AuditLogPage>('/audit-logs', { params }).then(response => response.data)
 
 export const exportAuditLogs = (params?: AuditLogQuery): Promise<Blob> =>
   api.get('/audit-logs/export', { params, responseType: 'blob' }).then(response => response.data as Blob)

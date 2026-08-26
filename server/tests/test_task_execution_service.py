@@ -143,7 +143,7 @@ class TaskExecutionServiceTest(unittest.TestCase):
             task_id=earlier_task.id,
             instrument_id=1,
             plan_start=self.slot.plan_start - timedelta(hours=2),
-            plan_end=self.slot.plan_start - timedelta(hours=1),
+            plan_end=self.slot.plan_start + timedelta(minutes=15),
             status="scheduled",
             tier="confirmed",
         )
@@ -255,6 +255,64 @@ class TaskExecutionServiceTest(unittest.TestCase):
         self.assertEqual("running", self.slot.status)
         self.assertIsNotNone(self.slot.actual_start)
         self.assertIsNone(self.slot.actual_end)
+
+    def test_start_ignores_superseded_open_slot_when_reconciling_running_state(self):
+        self.predecessor.status = "done"
+        self.task.status = "running"
+        self.slot.status = "paused"
+        stale_slot = TimeSlot(
+            task_id=self.task.id,
+            instrument_id=self.slot.instrument_id,
+            plan_start=datetime.now() - timedelta(hours=2),
+            plan_end=datetime.now() - timedelta(hours=1),
+            actual_start=datetime.now() - timedelta(hours=2),
+            status="running",
+            lifecycle_status="superseded",
+            tier="confirmed",
+        )
+        self.db.add(stale_slot)
+        self.db.commit()
+
+        start_task_execution(self.db, self.slot.id)
+
+        self.assertEqual("running", self.task.status)
+        self.assertEqual("running", self.slot.status)
+        self.assertEqual("superseded", stale_slot.lifecycle_status)
+
+    def test_zero_length_previous_paused_slot_does_not_block_resume(self):
+        self.predecessor.status = "done"
+        self.task.requires_instrument = True
+        self.slot.plan_start = datetime.now()
+        self.slot.plan_end = self.slot.plan_start + timedelta(hours=1)
+        previous_task = Task(
+            id=3, project_id=1, name="前序暂停任务", task_type="FFKF_001", status="paused",
+            requires_instrument=True,
+        )
+        previous_slot = TimeSlot(
+            id=3, task_id=3, instrument_id=1,
+            plan_start=self.slot.plan_start - timedelta(minutes=5),
+            plan_end=self.slot.plan_start,
+            status="paused", tier="confirmed",
+        )
+        self.db.add_all([previous_task, previous_slot])
+        self.db.commit()
+
+        start_task_execution(self.db, self.slot.id, allow_queue_insert=False)
+
+        self.assertEqual("running", self.task.status)
+
+    def test_paused_task_cannot_resume_from_ended_slot(self):
+        self.predecessor.status = "done"
+        self.task.status = "paused"
+        self.slot.status = "paused"
+        self.slot.plan_start = datetime.now() - timedelta(hours=2)
+        self.slot.plan_end = datetime.now() - timedelta(hours=1)
+        self.slot.actual_start = self.slot.plan_start
+        self.slot.actual_end = self.slot.plan_end
+        self.db.commit()
+
+        with self.assertRaisesRegex(TaskExecutionInvalidError, "没有可恢复的未来活动时间槽"):
+            start_task_execution(self.db, self.slot.id)
 
 
 if __name__ == "__main__":

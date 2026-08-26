@@ -37,7 +37,9 @@ def create_instrument(
         brand=data.brand, model=data.model,
         location=data.location, availability_status=data.availability_status,
         buffer_rate=data.buffer_rate,
-        switchover_base_hours=data.switchover_base_hours
+        switchover_base_hours=data.switchover_base_hours,
+        effective_work_start=data.effective_work_start,
+        effective_work_end=data.effective_work_end,
     )
     db.add(inst)
     try:
@@ -95,6 +97,8 @@ def update_instrument(
     inst.availability_status = data.availability_status
     inst.buffer_rate = data.buffer_rate
     inst.switchover_base_hours = data.switchover_base_hours
+    inst.effective_work_start = data.effective_work_start
+    inst.effective_work_end = data.effective_work_end
     db.query(InstrumentCapability).filter(InstrumentCapability.instrument_id == inst_id).delete()
     for cap in data.capabilities:
         db.add(InstrumentCapability(instrument_id=inst_id, tag_name=cap.tag_name, tag_value=cap.tag_value))

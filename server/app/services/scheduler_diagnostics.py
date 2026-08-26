@@ -1,14 +1,85 @@
 from __future__ import annotations
 
-import json
+import logging
+from datetime import datetime, timedelta
 
 from app.models import Instrument, TimeSlot
 from app.services.scheduler_helpers import (
     TIME_UNIT_MINUTES,
     datetime_to_units,
+    _parse_instrument_ids,
     to_units,
     units_to_datetime,
 )
+from app.services.scheduler_failure_diagnostics import (
+    _project_instrument_intervals,
+    _remaining_task_hours,
+    build_project_failure_diagnostic,
+)
+
+_logger = logging.getLogger(__name__)
+
+
+def log_solver_failure_snapshot(
+    tasks,
+    compatibility,
+    task_dependencies,
+    missing_predecessor_ends,
+    fixed_slots,
+    instrument_prefix_sums,
+    horizon_start,
+    total_units,
+    solver_status,
+) -> None:
+    """Log solver inputs needed to identify deterministic infeasibility causes."""
+    task_snapshot = []
+    for task in tasks:
+        project = getattr(task, "project", None)
+        duration_units = to_units(getattr(task, "est_duration_hours", None) or 4)
+        switch_hours = getattr(task, "switchover_hours", 0) or 0
+        # 零切换时间不能被 to_units 的最小 1 单位规则放大为 30 分钟。
+        switch_units = to_units(switch_hours) if switch_hours > 0 else 0
+        task_snapshot.append({
+            "task_id": task.id,
+            "project_id": task.project_id,
+            "status": task.status,
+            "duration_hours": getattr(task, "est_duration_hours", None),
+            "switch_hours": switch_hours,
+            "discrete_hours": (duration_units + switch_units) * TIME_UNIT_MINUTES / 60,
+            "allow_split": bool(getattr(task, "allow_split", False)),
+            "requires_human": bool(getattr(task, "requires_human", False)),
+            "assignee_id": getattr(task, "assignee_id", None),
+            "project_start": _format_datetime(getattr(project, "start_date", None)),
+            "project_end": _format_datetime(getattr(project, "end_date", None)),
+            "candidate_instrument_ids": [item.id for item in compatibility.get(task.id, [])],
+        })
+    fixed_snapshot = [
+        {
+            "slot_id": slot.id,
+            "task_id": slot.task_id,
+            "instrument_id": slot.instrument_id,
+            "status": slot.status,
+            "tier": slot.tier,
+            "plan_start": _format_datetime(slot.plan_start),
+            "plan_end": _format_datetime(slot.plan_end),
+            "protected": slot.tier == "frozen" or slot.status == "running" or slot.actual_start is not None,
+        }
+        for slot in fixed_slots
+    ]
+    _logger.error(
+        "scheduler_infeasible_snapshot status=%s horizon=(%s,%s) total_units=%s "
+        "tasks=%s dependencies=%s missing_predecessor_ends=%s fixed_slots=%s "
+        "instrument_prefix_lengths=%s",
+        solver_status,
+        _format_datetime(horizon_start),
+        _format_datetime(horizon_start + timedelta(minutes=total_units * TIME_UNIT_MINUTES)),
+        total_units,
+        task_snapshot,
+        task_dependencies,
+        missing_predecessor_ends,
+        fixed_snapshot,
+        {instrument_id: len(prefix) for instrument_id, prefix in instrument_prefix_sums.items()},
+    )
 
 
 def unavailable_instrument_message(db, tasks, compatibility: dict[int, list[Instrument]]) -> str | None:
@@ -128,7 +199,86 @@ def schedule_infeasibility_message(
     instrument_prefix_sums: dict[int, list[int]],
     horizon_start,
     total_units: int,
+    current_project_id: int | None = None,
 ) -> str:
+    if current_project_id is None:
+        return _legacy_infeasibility_message(
+            tasks, task_dependencies, missing_predecessor_ends, compatibility,
+            global_prefix_sum, instrument_prefix_sums, horizon_start, total_units,
+        )
+    return schedule_infeasibility_diagnostic(
+        tasks, task_dependencies, missing_predecessor_ends, compatibility,
+        global_prefix_sum, instrument_prefix_sums, horizon_start, total_units,
+        current_project_id,
+    )["message"]
+
+
+def _legacy_infeasibility_message(
+    tasks, task_dependencies, missing_predecessor_ends, compatibility,
+    global_prefix_sum, instrument_prefix_sums, horizon_start, total_units,
+) -> str:
+    predecessor_ids_by_task: dict[int, list[int]] = {}
+    for task_id, predecessor_id in task_dependencies:
+        if predecessor_id in missing_predecessor_ends:
+            predecessor_ids_by_task.setdefault(task_id, []).append(predecessor_id)
+    for task in tasks:
+        project = task.project
+        window_start = max(0, datetime_to_units(project.start_date, horizon_start))
+        window_end = min(total_units, datetime_to_units(project.end_date, horizon_start))
+        predecessor_ends = [
+            missing_predecessor_ends[item]
+            for item in predecessor_ids_by_task.get(task.id, [])
+        ]
+        earliest_start = max([window_start, *predecessor_ends])
+        available_units = max((
+            _working_units(prefix, earliest_start, window_end)
+            for prefix in _task_prefix_sums(
+                task, compatibility, global_prefix_sum, instrument_prefix_sums,
+            )
+        ), default=0)
+        required_hours = _task_hours(task)
+        if available_units < to_units(required_hours):
+            return (
+                f"排程失败：项目【{_project_label(project)}】任务【{task.name}】无法排入。"
+                f"项目时间：{_format_datetime(project.start_date)} 至 {_format_datetime(project.end_date)}，"
+                f"最早可开始时间：{_format_datetime(units_to_datetime(earliest_start, horizon_start))}，"
+                f"任务需要约 {required_hours:g} 小时，剩余有效工时约 "
+                f"{available_units * TIME_UNIT_MINUTES / 60:g} 小时。"
+            )
+    summaries = []
+    for project_id in dict.fromkeys(task.project_id for task in tasks):
+        project_tasks = [task for task in tasks if task.project_id == project_id]
+        project = project_tasks[0].project
+        window_start = max(0, datetime_to_units(project.start_date, horizon_start))
+        window_end = min(total_units, datetime_to_units(project.end_date, horizon_start))
+        available_hours = _working_units(
+            global_prefix_sum, window_start, window_end,
+        ) * TIME_UNIT_MINUTES / 60
+        conflicts = _assignee_capacity_conflicts(project, project_tasks, available_hours)
+        if conflicts:
+            return "排程失败：" + "；".join(conflicts)
+        total = sum(_remaining_task_hours(task) for task in project_tasks)
+        summaries.append(
+            f"【{_project_label(project)}】项目时间：{_format_datetime(project.start_date)} 至 "
+            f"{_format_datetime(project.end_date)}，待排总工时约 {total:g} 小时"
+        )
+    return "排程失败：" + "；".join(summaries)
+
+
+def schedule_infeasibility_diagnostic(
+    tasks,
+    task_dependencies: list[tuple[int, int]],
+    missing_predecessor_ends: dict[int, int],
+    compatibility: dict[int, list[Instrument]],
+    global_prefix_sum: list[int],
+    instrument_prefix_sums: dict[int, list[int]],
+    horizon_start,
+    total_units: int,
+    current_project_id: int | None = None,
+    excluded_task_ids: set[int] | None = None,
+) -> dict:
+    if current_project_id is None:
+        raise ValueError("排程诊断缺少当前项目ID")
     predecessor_ids_by_task: dict[int, list[int]] = {}
     for task_id, predecessor_id in task_dependencies:
         if predecessor_id in missing_predecessor_ends:
@@ -175,19 +325,14 @@ def schedule_infeasibility_message(
         required_units = to_units(required_hours)
         available_hours = available_units * TIME_UNIT_MINUTES / 60
         earliest_time = units_to_datetime(earliest_start, horizon_start)
-        return (
-            f"排程失败：项目【{project.name}】整体任务无法在项目时间窗内完成。"
-            f"触发任务【{task.name}】；项目时间："
-            f"{_format_datetime(project.start_date)} 至 {_format_datetime(project.end_date)}；"
-            f"最早可开始时间：{_format_datetime(earliest_time)}；"
-            f"任务需要约 {required_hours:g} 小时，剩余有效工时约 {available_hours:g} 小时；"
-            f"项目累计任务工时：{required_hours:g} 小时。"
-            "请延长项目结束时间或缩短任务工时。"
+        return _project_summary_diagnostic(
+            tasks, task_dependencies, compatibility, global_prefix_sum, instrument_prefix_sums,
+            horizon_start, total_units, current_project_id, excluded_task_ids,
         )
 
-    return _project_summary_message(
-        tasks, compatibility, global_prefix_sum, instrument_prefix_sums,
-        horizon_start, total_units,
+    return _project_summary_diagnostic(
+        tasks, task_dependencies, compatibility, global_prefix_sum, instrument_prefix_sums,
+        horizon_start, total_units, current_project_id, excluded_task_ids,
     )
 
 
@@ -206,51 +351,20 @@ def _task_prefix_sums(
     ]
 
 
-def _project_summary_message(
+def _project_summary_diagnostic(
     tasks,
+    task_dependencies: list[tuple[int, int]],
     compatibility: dict[int, list[Instrument]],
     global_prefix_sum: list[int],
     instrument_prefix_sums: dict[int, list[int]],
     horizon_start,
     total_units: int,
-) -> str:
-    tasks_by_project = {}
-    for task in tasks:
-        if task.project:
-            tasks_by_project.setdefault(task.project_id, []).append(task)
-
-    conflict_details = []
-    project_details = []
-    for project_tasks in tasks_by_project.values():
-        project = project_tasks[0].project
-        total_hours = sum(task.est_duration_hours or 4 for task in project_tasks)
-        instrument_hours = sum(
-            task.est_duration_hours or 4
-            for task in project_tasks
-            if task.requires_instrument
-        )
-        project_details.append(
-            f"【{project.name}】项目时间：{_format_datetime(project.start_date)} 至 "
-            f"{_format_datetime(project.end_date)}，待排总工时约 {total_hours:g} 小时"
-            f"（其中仪器工时 {instrument_hours:g} 小时）"
-        )
-        window_start = max(0, datetime_to_units(project.start_date, horizon_start))
-        window_end = min(total_units, datetime_to_units(project.end_date, horizon_start))
-        available_hours = _working_units(global_prefix_sum, window_start, window_end) * TIME_UNIT_MINUTES / 60
-        conflict_details.extend(_assignee_capacity_conflicts(project, project_tasks, available_hours))
-        conflict_details.extend(_instrument_capacity_conflicts(
-            project, project_tasks, compatibility, instrument_prefix_sums,
-            window_start, window_end,
-        ))
-
-    if conflict_details:
-        return "排程失败：" + "；".join(conflict_details) + "。请延长项目时间、缩短任务工时，或更换/增加负责人和仪器。"
-
-    details = "；".join(project_details)
-    return (
-        f"排程失败：未找到同时满足全部约束的排程方案。"
-        f"{details}。"
-        f"调整后请重新点击“保存并开始排程”。"
+    current_project_id: int | None = None,
+    excluded_task_ids: set[int] | None = None,
+) -> dict:
+    return build_project_failure_diagnostic(
+        tasks, compatibility, instrument_prefix_sums, horizon_start, total_units,
+        current_project_id, excluded_task_ids, task_dependencies,
     )
 
 
@@ -269,35 +383,6 @@ def _assignee_capacity_conflicts(project, tasks, available_hours: float) -> list
         details.append(
             f"项目【{_project_label(project)}】的负责人【{assignee_name}】在项目时间窗内最多可排 {available_hours:g} 小时，"
             f"但其任务合计 {required_hours:g} 小时：{_task_hour_list(assignee_tasks)}"
-        )
-    return details
-
-
-def _instrument_capacity_conflicts(
-    project, tasks, compatibility, instrument_prefix_sums,
-    window_start: int, window_end: int,
-) -> list[str]:
-    tasks_by_instrument: dict[int, list] = {}
-    instruments: dict[int, Instrument] = {}
-    for task in tasks:
-        candidates = compatibility.get(task.id, []) if task.requires_instrument else []
-        if len(candidates) != 1:
-            continue
-        instrument = candidates[0]
-        instruments[instrument.id] = instrument
-        tasks_by_instrument.setdefault(instrument.id, []).append(task)
-    details = []
-    for instrument_id, instrument_tasks in tasks_by_instrument.items():
-        prefix_sum = instrument_prefix_sums.get(instrument_id)
-        if not prefix_sum:
-            continue
-        available_hours = _working_units(prefix_sum, window_start, window_end) * TIME_UNIT_MINUTES / 60
-        required_hours = sum(_task_hours(task) for task in instrument_tasks)
-        if required_hours <= available_hours:
-            continue
-        details.append(
-            f"项目【{_project_label(project)}】的仪器【{_instrument_label(instrument)}】在项目时间窗内最多可排 {available_hours:g} 小时，"
-            f"但指定该仪器的任务合计 {required_hours:g} 小时：{_task_hour_list(instrument_tasks)}"
         )
     return details
 
@@ -362,17 +447,3 @@ def _working_units(prefix_sum: list[int], start: int, end: int) -> int:
 
 def _instrument_label(instrument: Instrument) -> str:
     return f"{instrument.name}({instrument.code})"
-
-
-def _parse_instrument_ids(task) -> list[int]:
-    raw_ids = getattr(task, "instrument_ids", None)
-    if not raw_ids:
-        return []
-    if isinstance(raw_ids, str):
-        try:
-            raw_ids = json.loads(raw_ids)
-        except (json.JSONDecodeError, ValueError):
-            raw_ids = [item.strip() for item in raw_ids.split(",") if item.strip()]
-    if isinstance(raw_ids, list):
-        return [int(instrument_id) for instrument_id in raw_ids]
-    return [int(raw_ids)]

@@ -163,7 +163,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
@@ -201,6 +201,7 @@ const filterCode = ref('')
 const filterName = ref('')
 const filterClient = ref('')
 const projectStatusTab = ref<'active' | 'pending' | 'completed'>('active')
+watch(projectStatusTab, () => { fetchProjects() })
 const projectCodeCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' })
 const filterDateRange = ref<any>(null)
 const canManageProjectInfo = computed(() => {
@@ -216,7 +217,7 @@ const ef = reactive({ name: '', code: '', client_name: '', estimated_hours: null
 const tf = reactive({ name: '', task_type: '', est_duration_hours: 8, switchover_hours: 0.5, predecessor_ids: [] as number[], instrument_ids: [] as number[], assignee_id: null as number | null })
 const statusLabels: Record<string, string> = { active: '进行中', completed: '已完成', pending: '未开始', suspended: '已暂停', cancelled: '已取消', draft: '草稿' }
 const priorityOptions = [
-  { label: '一级（最高）', value: 1 },
+  { label: '一级', value: 1 },
   { label: '二级', value: 2 },
   { label: '三级', value: 3 },
 ]
@@ -270,17 +271,20 @@ const columns = [
   { title: '项目名称', dataIndex: 'name', key: 'name', width: 180, ellipsis: true },
   { title: '客户', dataIndex: 'client_name', key: 'client', width: 140 },
   { title: '负责人', dataIndex: 'manager', key: 'manager', width: 90 },
-  { title: '预计工时(h)', dataIndex: 'estimated_hours', key: 'estimated_hours', width: 110 },
-  { title: '实际工时(h)', dataIndex: 'actual_hours', key: 'actual_hours', width: 110 },
+  { title: '预计工时(h)', dataIndex: 'estimated_hours', key: 'estimated_hours', width: 90 },
+  { title: '实际工时(h)', dataIndex: 'actual_hours', key: 'actual_hours', width: 90 },
   { title: '计划开始', dataIndex: 'start_date', key: 'start', width: 110 },
   { title: '计划完成', dataIndex: 'end_date', key: 'end', width: 110 },
   { title: '优先级', dataIndex: 'priority', key: 'priority', width: 80 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 90 },
   { title: '操作', key: 'actions', width: 200 },
 ]
-async function fetchProjects() { loading.value = true; try { projects.value = await getProjects() } catch { message.error('加载项目失败') } finally { loading.value = false } }
-function openCreate() {
+async function fetchProjects() { loading.value = true; try { projects.value = await getProjects(projectStatusTab.value) } catch { message.error('加载项目失败') } finally { loading.value = false } }
+async function ensureProjectFormOptions() { await Promise.all([loadUsers(), loadTaskTypes()]) }
+async function ensureTaskFormOptions() { await Promise.all([loadUsers(), loadTaskTypes(), loadInstruments()]) }
+async function openCreate() {
   if (!ensureCanManageProjectInfo()) return
+  await ensureProjectFormOptions()
   Object.assign(cf, { name: '', code: '', client_name: '', estimated_hours: null, manager_id: null, priority: 3, start_date: null, end_date: null }); createOpen.value = true
 }
 async function handleCreate() {
@@ -343,9 +347,10 @@ function openPlanDetail(id: number) {
   router.push({ path: '/projects/plan-breakdown', query: { id } })
 }
 function openEditFromTable(record: Project) { selectedProject.value = record; openEditProject() }
-function openEditProject() {
+async function openEditProject() {
   if (!selectedProject.value) return
   if (!ensureCanManageProjectInfo()) return
+  await ensureProjectFormOptions()
   const p = selectedProject.value
   Object.assign(ef, { name: p.name, code: p.code, client_name: p.client_name || '', estimated_hours: p.estimated_hours ?? null, manager_id: p.manager_id || null, priority: p.priority, start_date: p.start_date ? dayjs(p.start_date) : null, end_date: p.end_date ? dayjs(p.end_date) : null })
   editOpen.value = true
@@ -401,9 +406,10 @@ async function handleDeleteTask(taskId: number) {
     selectedProject.value = p; dagData.value = d
   } catch { message.error('删除失败') }
 }
-function openAddTask() { editingTask.value = null; Object.assign(tf, { name: '', task_type: taskTypeOptions.value[0]?.value || '', est_duration_hours: 8, switchover_hours: 0.5, predecessor_ids: [],
+async function openAddTask() { await ensureTaskFormOptions(); editingTask.value = null; Object.assign(tf, { name: '', task_type: taskTypeOptions.value[0]?.value || '', est_duration_hours: 8, switchover_hours: 0.5, predecessor_ids: [],
       assignee_id: newAssigneeId.value || null, instrument_ids: [] }); taskOpen.value = true }
-function openEditTask(t: Task) {
+async function openEditTask(t: Task) {
+  await ensureTaskFormOptions()
   editingTask.value = t
   Object.assign(tf, { name: t.name, task_type: t.task_type, est_duration_hours: t.est_duration_hours || 8, switchover_hours: t.switchover_hours, predecessor_ids: t.predecessor_ids || [], instrument_ids: t.instrument_ids || [], assignee_id: t.assignee_id || null })
   taskOpen.value = true
@@ -454,5 +460,5 @@ async function loadTaskTypes() {
     return active
   } catch (e) { console.error('loadTaskTypes failed:', e); return [] }
 }
-onMounted(async () => { await loadTaskTypes(); await Promise.all([fetchProjects(), loadUsers(), loadInstruments()]) })
+onMounted(() => { fetchProjects() })
 </script>

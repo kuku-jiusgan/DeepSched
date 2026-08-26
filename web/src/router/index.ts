@@ -1,6 +1,7 @@
 ﻿import { createRouter, createWebHistory } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import { canViewPage, clearPermissions, firstViewablePage, loadMyPermissions } from '@/services/permissions'
+import { isMobileViewport } from '@/composables/useMobileViewport'
 
 const routes = [
   {
@@ -13,7 +14,7 @@ const routes = [
     component: AppLayout,
     meta: { requiresAuth: true },
     children: [
-      { path: '', redirect: '/operations/cockpit' },
+      { path: '', redirect: () => isMobileViewport() ? '/tasks/workspace' : '/operations/cockpit' },
       { path: 'dashboard', component: () => import('@/pages/Dashboard.vue') },
       { path: 'operations/cockpit', component: () => import('@/pages/operations/LabOperationsCockpit.vue') },
       { path: 'operations/lab-dashboard', redirect: '/operations/cockpit' },
@@ -68,7 +69,7 @@ router.beforeEach(async (to, _from, next) => {
   if (to.meta.requiresAuth && !token) {
     next('/login')
   } else if (to.path === '/login' && token) {
-    next('/operations/cockpit')
+    next(isMobileViewport() ? '/tasks/workspace' : '/operations/cockpit')
   } else {
     try {
       if (token) await loadMyPermissions(true)

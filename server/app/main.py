@@ -14,6 +14,18 @@ from app.services.calendar_sync_worker import (
     start_calendar_sync_worker,
     stop_calendar_sync_worker,
 )
+from app.services.schedule_deadline_recommendation_job_service import (
+    start_deadline_recommendation_worker,
+    stop_deadline_recommendation_worker,
+)
+from app.services.dashboard_snapshot_worker import (
+    start_dashboard_snapshot_worker,
+    stop_dashboard_snapshot_worker,
+)
+from app.services.lab_status_snapshot_worker import (
+    start_lab_status_snapshot_worker,
+    stop_lab_status_snapshot_worker,
+)
 from app.api import protected_router, users, wecom_auth
 from app.api.exception_handlers import register_domain_exception_handlers
 
@@ -45,12 +57,18 @@ def start_background_workers():
         db.close()
     start_calendar_sync_worker()
     start_wecom_delivery_worker()
+    start_deadline_recommendation_worker()
+    start_dashboard_snapshot_worker()
+    start_lab_status_snapshot_worker()
 
 
 @app.on_event("shutdown")
 def stop_background_workers():
     stop_calendar_sync_worker()
     stop_wecom_delivery_worker()
+    stop_deadline_recommendation_worker()
+    stop_dashboard_snapshot_worker()
+    stop_lab_status_snapshot_worker()
 
 app.add_middleware(
     CORSMiddleware,

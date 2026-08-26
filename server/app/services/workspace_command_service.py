@@ -5,6 +5,7 @@ from app.repositories.workspace_repository import get_task, get_time_slot
 from app.services.schedule_completion_service import complete_task_and_shift
 from app.services.instrument_status_service import refresh_instrument_status
 from app.services.task_delay_status_service import mark_task_delayed
+from app.services.task_progress_service import planned_task_minutes
 
 
 def complete_workspace_task(db, slot_id: int, release_instrument: bool) -> dict:
@@ -14,7 +15,8 @@ def complete_workspace_task(db, slot_id: int, release_instrument: bool) -> dict:
     task = get_task(db, slot.task_id)
     if task is None:
         raise DomainNotFoundError("任务不存在")
-    if task.status != "running" or not any(
+    progress_complete = int(task.executed_minutes or 0) >= planned_task_minutes(task)
+    if (task.status != "running" and not (task.status == "paused" and progress_complete)) or not any(
         task_slot.actual_start is not None
         for task_slot in task.time_slots
     ):

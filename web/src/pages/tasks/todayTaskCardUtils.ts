@@ -89,18 +89,26 @@ export function getNightRunEligibility(
   workdayEndTime: string,
   now: dayjs.Dayjs = dayjs(),
 ) {
+  if (task.execution_status !== 'running' || task.actionable_slot?.status !== 'running') {
+    return { isEligible: false, reason: '只有进行中的任务才能设置夜间运行' }
+  }
   const nightEnd = nightRunEndTime(task)
   if (!nightEnd) {
     return { isEligible: false, reason: '当前可执行时间段没有计划结束时间，不能继续夜间运行' }
   }
-  if (!nightEnd.isSame(now, 'day')) {
+  const slot = task.actionable_slot
+  const isActiveMultiDaySlot = task.execution_status === 'running'
+    && Boolean(slot?.plan_start)
+    && !dayjs(slot?.plan_start).isAfter(now)
+    && nightEnd.isAfter(now)
+  if (!nightEnd.isSame(now, 'day') && !isActiveMultiDaySlot) {
     return { isEligible: false, reason: '当前可执行时间段不是今天，不能设置今日夜间运行' }
   }
   const workdayEnd = parseClockOnSameDay(nightEnd, workdayEndTime)
   if (!workdayEnd) {
     return { isEligible: false, reason: '未读取到排程规则中的有效工作时段，暂不能继续夜间运行' }
   }
-  if (nightEnd.isBefore(workdayEnd)) {
+  if ((!isActiveMultiDaySlot || nightEnd.isSame(now, 'day')) && nightEnd.isBefore(workdayEnd)) {
     return {
       isEligible: false,
       reason: `首次设置夜间运行时，任务当天计划结束时间需不早于有效工作时段最晚时间 ${workdayEndTime}`,

@@ -11,6 +11,7 @@ def save_schedule_calendar_snapshot(
     working_params: dict,
     calendar_days: dict,
     maintenance_windows: list,
+    instrument_working_hours: dict | None = None,
 ) -> None:
     rules = db.query(ScheduleRule).order_by(ScheduleRule.code).all()
     db.add(ScheduleCalendarSnapshot(
@@ -18,6 +19,7 @@ def save_schedule_calendar_snapshot(
         horizon_start=horizon_start,
         horizon_end=horizon_end,
         working_hours=working_params,
+        instrument_working_hours=instrument_working_hours or {},
         calendar_days={key.isoformat(): value for key, value in calendar_days.items()},
         maintenance_windows=[
             {"instrument_id": instrument_id, "start_unit": start, "end_unit": end}

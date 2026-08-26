@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta
 
 from app.models import TaskExecutionSegment, TaskNightRun, TimeSlot
-from app.services.schedule_rule_service import get_solver_constraints
-from app.services.scheduler_helpers import is_allowed_calendar_day, load_calendar_days, working_time_bounds
+from app.services.instrument_working_time_service import load_working_time_context
+from app.services.scheduler_helpers import is_allowed_calendar_day
 
 
 TimeRange = tuple[datetime, datetime]
+ResourceRange = tuple[datetime, datetime, int | None]
 
 
 def project_actual_hours_map(db, projects) -> dict[int, float]:
@@ -42,24 +43,34 @@ def task_actual_hours_map(db, task_ids) -> dict[int, float]:
     if not all_ranges:
         return totals
 
-    working_ranges = _working_ranges(
-        db,
-        min(start for start, _ in all_ranges),
-        max(end for _, end in all_ranges),
-    )
+    overall_start = min(start for start, _, _ in all_ranges)
+    overall_end = max(end for _, end, _ in all_ranges)
+    context = load_working_time_context(db, overall_start, overall_end)
+    working_ranges: dict[int | None, list[TimeRange]] = {}
     night_ranges_by_task = _night_ranges_by_task(night_runs)
     for task_id, actual_ranges in ranges_by_task.items():
-        allowed_ranges = working_ranges + night_ranges_by_task.get(task_id, [])
-        totals[task_id] = _hours_within(actual_ranges, allowed_ranges)
+        hours = 0.0
+        for start, end, instrument_id in actual_ranges:
+            if instrument_id not in working_ranges:
+                working_ranges[instrument_id] = _working_ranges(
+                    context, overall_start, overall_end, instrument_id,
+                )
+            allowed_ranges = working_ranges[instrument_id] + night_ranges_by_task.get(task_id, [])
+            hours += _hours_within([(start, end)], allowed_ranges)
+        totals[task_id] = hours
     return {task_id: round(hours, 2) for task_id, hours in totals.items()}
 
 
-def _actual_ranges_by_task(task_ids, segments, slots) -> dict[int, list[TimeRange]]:
+def _actual_ranges_by_task(task_ids, segments, slots) -> dict[int, list[ResourceRange]]:
     now = datetime.now()
     result = {task_id: [] for task_id in task_ids}
+    slots_by_id = {slot.id: slot for slot in slots}
     segmented_slot_ids = set()
     for segment in segments:
-        result[segment.task_id].append((segment.started_at, segment.ended_at or now))
+        instrument_id = segment.instrument_id
+        if instrument_id is None and segment.slot_id in slots_by_id:
+            instrument_id = slots_by_id[segment.slot_id].instrument_id
+        result[segment.task_id].append((segment.started_at, segment.ended_at or now, instrument_id))
         segmented_slot_ids.add(segment.slot_id)
     for slot in slots:
         if slot.id in segmented_slot_ids or slot.status not in {"completed", "running"} or not slot.actual_start:
@@ -67,7 +78,7 @@ def _actual_ranges_by_task(task_ids, segments, slots) -> dict[int, list[TimeRang
         start = max(slot.actual_start, slot.plan_start)
         end = slot.actual_end or now
         if end > start:
-            result[slot.task_id].append((start, end))
+            result[slot.task_id].append((start, end, slot.instrument_id))
     return result
 
 
@@ -78,16 +89,17 @@ def _night_ranges_by_task(night_runs) -> dict[int, list[TimeRange]]:
     return result
 
 
-def _working_ranges(db, window_start: datetime, window_end: datetime) -> list[TimeRange]:
-    params = get_solver_constraints(db)["working_hours"].params or {}
-    day_start_minutes, day_end_minutes = working_time_bounds(params)
-    calendar_days = load_calendar_days(db, window_start, window_end)
-    include_weekends = bool(params.get("include_weekends", False))
-    include_holidays = bool(params.get("include_holidays", False))
+def _working_ranges(context, window_start: datetime, window_end: datetime, instrument_id: int | None) -> list[TimeRange]:
+    policy = context.policy_for(instrument_id)
+    day_start_minutes = policy.day_start_minutes
+    day_end_minutes = policy.day_end_minutes
+    calendar_days = context.calendar_days
     ranges = []
     current_date = window_start.date()
     while current_date <= window_end.date():
-        if is_allowed_calendar_day(current_date, calendar_days, include_weekends, include_holidays):
+        if is_allowed_calendar_day(
+            current_date, calendar_days, policy.include_weekends, policy.include_holidays,
+        ):
             day = datetime.combine(current_date, time.min)
             start = max(window_start, day + timedelta(minutes=day_start_minutes))
             end = min(window_end, day + timedelta(minutes=day_end_minutes))

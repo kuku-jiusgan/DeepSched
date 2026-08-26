@@ -111,6 +111,7 @@ class SchedulerParentDependenciesTest(unittest.TestCase):
             result = SchedulerService(self.db).generate(
                 project_ids=[project.id],
                 commit=False,
+                current_project_id=project.id,
             )
 
         child_slots = self.db.query(TimeSlot).filter(

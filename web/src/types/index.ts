@@ -87,6 +87,7 @@ export interface Task {
   requires_instrument: boolean;
   requires_human: boolean;
   est_duration_hours?: number;
+  actual_hours?: number;
   switchover_hours: number;
   status: string;
   delay_status: 'delayed' | 'not_delayed';
@@ -213,6 +214,8 @@ export interface Instrument {
   status: string;
   buffer_rate: number;
   switchover_base_hours: number;
+  effective_work_start: string;
+  effective_work_end: string;
   capabilities: CapabilityReq[];
 }
 
@@ -251,7 +254,7 @@ export interface FaultAffectedTask {
 export interface TimeSlot {
   id: number;
   task_id: number;
-  instrument_id: number;
+  instrument_id: number | null;
   plan_start: string;
   plan_end: string;
   actual_start?: string;
@@ -279,6 +282,25 @@ export interface TimeSlot {
   approval_risk_status?: ApprovalRiskStatus;
   approval_latest_at?: string | null;
   approval_unlock_tasks?: ApprovalGateTaskRef[];
+}
+
+export interface InstrumentBridgeReservation {
+  id: number;
+  kind: 'human_bridge_reservation';
+  schedule_run_id: string;
+  task_id: number;
+  instrument_id: number;
+  previous_task_id: number;
+  following_task_id: number;
+  plan_start: string;
+  plan_end: string;
+  task_name: string;
+  task_type?: string | null;
+  project_id?: number | null;
+  project_code?: string | null;
+  project_name?: string | null;
+  assignee_id?: number | null;
+  assignee_name?: string | null;
 }
 
 export interface DashboardData {
@@ -351,6 +373,96 @@ export interface ProjectPlanApplyResult {
   preview_token?: string | null;
   impacts: InsertOrderImpact[];
   project_impacts: ProjectScheduleImpact[];
+  schedule_failure?: ScheduleFailureDiagnostic | null;
+}
+
+export interface ScheduleRecommendationJob {
+  id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'stale';
+  poll_after_ms?: number;
+  recommendation?: ScheduleFailureRecommendation | null;
+  message?: string;
+}
+
+export interface ScheduleFailureDetail {
+  project_id: number;
+  project_label: string;
+  instrument_label: string;
+  scheduled_hours: number;
+  forecast_hours: number;
+  waiting_hours: number;
+  total_hours: number;
+}
+
+export interface ScheduleFailureGroup {
+  top_level_task_id: number;
+  top_level_task_name: string;
+  instrument_id: number;
+  instrument_label: string;
+  deadline: string;
+  available_hours: number;
+  occupied_hours: number;
+  remaining_hours: number;
+  required_hours: number;
+  deficit_hours: number;
+  details: ScheduleFailureDetail[];
+}
+
+export interface ScheduleFailureDiagnostic {
+  title: string;
+  kind: 'instrument_capacity' | 'scheduling_constraints';
+  summary: string;
+  deadline?: string;
+  groups: ScheduleFailureGroup[];
+  project_id?: number;
+  project_label?: string;
+  days_remaining?: number;
+  instruments?: ScheduleFailureInstrument[];
+  occupancy?: ScheduleFailureOccupancy[];
+  recommendations?: ScheduleFailureRecommendation[];
+  recommendation_job?: { id: string; status: string; poll_after_ms?: number } | null;
+  window?: ScheduleFailureWindow;
+}
+
+export interface ScheduleFailureWindow {
+  task_name: string;
+  earliest_start: string;
+  deadline: string;
+  required_hours: number;
+  available_hours: number;
+}
+
+export interface ScheduleFailureInstrument {
+  instrument_id: number;
+  instrument_label: string;
+  available_hours: number;
+  occupied_hours: number;
+  remaining_hours: number;
+  required_hours: number;
+  deficit_hours: number;
+}
+
+export interface ScheduleFailureOccupancy {
+  instrument_id: number;
+  instrument_label: string;
+  project_id: number;
+  project_label: string;
+  scheduled_hours: number;
+  forecast_hours: number;
+  total_hours: number;
+}
+
+export interface ScheduleFailureRecommendation {
+  code: string;
+  kind: string;
+  title: string;
+  description: string;
+  instrument_id?: number;
+  project_id?: number;
+  hours?: number;
+  verified: boolean;
+  verification: string;
+  projects?: Array<{ project_id: number; project_label: string; hours: number }>;
 }
 
 export interface InsertCost {

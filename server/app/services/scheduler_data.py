@@ -65,3 +65,29 @@ def load_task_children(db, tasks) -> dict[int, list[int]]:
     for task_id, parent_id in rows:
         children_by_parent.setdefault(parent_id, []).append(task_id)
     return children_by_parent
+
+
+def load_diagnostic_resource_tasks(
+    db,
+    excluded_task_ids: set[int] | None = None,
+    current_project_id: int | None = None,
+):
+    """Load resource work omitted from the solver input for failure diagnostics."""
+    conditions = [
+        Task.requires_instrument.is_(True),
+        Task.status.notin_(["done", "completed"]),
+    ]
+    if current_project_id is None:
+        conditions.append(Task.time_slots.any())
+    else:
+        # 保留其他项目已有的资源占用，并纳入当前项目等待签批的后续任务。
+        conditions.append(or_(Task.time_slots.any(), Task.project_id == current_project_id))
+    query = db.query(Task).filter(*conditions).options(
+        selectinload(Task.project),
+        selectinload(Task.time_slots),
+        selectinload(Task.predecessors),
+        selectinload(Task.capability_requirements),
+    )
+    if excluded_task_ids:
+        query = query.filter(~Task.id.in_(excluded_task_ids))
+    return query.all()

@@ -43,7 +43,10 @@ def filter_workspace_tasks_by_user(query, user):
 
 def workspace_segments(task: Task) -> list[TimeSlot]:
     return sorted(
-        (slot for slot in task.time_slots if slot.status in WORKSPACE_SLOT_STATUSES),
+        (
+            slot for slot in task.time_slots
+            if slot.lifecycle_status == "active" and slot.status in WORKSPACE_SLOT_STATUSES
+        ),
         key=lambda slot: (slot.plan_start, slot.id),
     )
 
@@ -157,6 +160,7 @@ def list_agenda_slots(db, assignee_id: int, start_at, end_at, today_start=None, 
             Task.is_external_gate.is_(False),
             ~Task.children.any(),
             TimeSlot.status.in_(WORKSPACE_SLOT_STATUSES),
+            TimeSlot.lifecycle_status == "active",
             or_(*time_filters),
         )
         .options(

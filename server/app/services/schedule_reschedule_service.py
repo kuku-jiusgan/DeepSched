@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models import Task, TimeSlot
@@ -29,7 +30,7 @@ def _local_repair(db: Session, data: RescheduleRequest) -> dict:
             delete_time_slots_and_refresh(db, db.query(TimeSlot).filter(
                 TimeSlot.task_id == data.affected_task_id,
                 TimeSlot.tier.in_(["confirmed", "forecast"]),
-                TimeSlot.status.in_(["scheduled", "blocked"]),
+                TimeSlot.status.in_(["scheduled", "blocked", "paused", "interrupted"]),
             ))
             task.status = "pending"
             reset_task_delay(task)
@@ -55,12 +56,17 @@ def _project_reschedule(db: Session, data: RescheduleRequest) -> dict:
                 TimeSlot.task_id.in_(
                     db.query(Task.id).filter(Task.project_id == task.project_id)
                 ),
-                TimeSlot.tier.in_(["confirmed", "forecast"]),
-                TimeSlot.status.in_(["scheduled", "blocked"]),
+                or_(
+                    (
+                        TimeSlot.tier.in_(["confirmed", "forecast"])
+                        & TimeSlot.status.in_(["scheduled", "blocked"])
+                    ),
+                    TimeSlot.status.in_(["paused", "interrupted"]),
+                ),
             ))
             db.query(Task).filter(
                 Task.project_id == task.project_id,
-                Task.status == "scheduled",
+                Task.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
             ).update({"status": "pending", "delay_status": NOT_DELAYED_STATUS})
             db.commit()
             return _generate(
@@ -68,6 +74,7 @@ def _project_reschedule(db: Session, data: RescheduleRequest) -> dict:
                 [task.project_id],
                 original_windows=original_windows,
                 advance_reason="项目重排",
+                current_project_id=task.project_id,
             )
     return {"status": "error", "message": "未指定受影响任务"}
 
@@ -121,6 +128,7 @@ def _generate(
     excluded_task_ids: set[int] | None = None,
     original_windows: dict[int, ScheduleWindow] | None = None,
     advance_reason: str = "重新排程",
+    current_project_id: int | None = None,
 ) -> dict:
     from app.services.scheduler import SchedulerService
 
@@ -130,6 +138,7 @@ def _generate(
         excluded_task_ids=excluded_task_ids,
         original_schedule_windows=original_windows,
         advance_notification_reason=advance_reason,
+        current_project_id=current_project_id,
     )
 
 

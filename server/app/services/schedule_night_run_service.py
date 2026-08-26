@@ -5,10 +5,10 @@ from typing import Optional
 
 from app.models import TaskNightRun, TimeSlot
 from app.services.instrument_status_service import (
-    delete_time_slot_and_refresh,
     mark_instrument_running,
 )
 from app.domain.errors import DomainNotFoundError, DomainValidationError
+from app.services.instrument_working_time_service import load_working_time_context
 
 
 class ScheduleNightRunNotFoundError(DomainNotFoundError):
@@ -32,6 +32,18 @@ def record_night_run(
         raise ScheduleNightRunNotFoundError("时间槽不存在")
     if not slot.instrument_id:
         raise ScheduleNightRunInvalidError("该任务未绑定仪器，不能记录夜间运行")
+    if slot.status != "running" or slot.task.status != "running":
+        raise ScheduleNightRunInvalidError("只有进行中的任务才能记录夜间运行")
+    context = load_working_time_context(db, slot.plan_start, slot.plan_end + timedelta(days=1))
+    policy = context.policy_for(slot.instrument_id)
+    work_end = slot.plan_end.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        minutes=policy.day_end_minutes,
+    )
+    if slot.plan_end < work_end:
+        raise ScheduleNightRunInvalidError(
+            f"当前时间槽须运行至仪器有效工作时段结束时间 {policy.day_end_minutes // 60:02d}:"
+            f"{policy.day_end_minutes % 60:02d} 后才能设置夜间运行"
+        )
 
     start_time = _resolve_night_start(slot, earliest_start)
     end_time = start_time + timedelta(hours=duration_hours)
@@ -89,13 +101,6 @@ def _merge_or_create_night_slot(
         TimeSlot.status.in_(["scheduled", "running"]),
     ).first()
 
-    if start_time <= slot.plan_end:
-        slot.plan_end = end_time
-        slot.is_night_run = True
-        if existing_slot:
-            slot.plan_end = max(slot.plan_end, existing_slot.plan_end)
-            delete_time_slot_and_refresh(db, existing_slot)
-        return slot
     if existing_slot:
         existing_slot.plan_end = end_time
         existing_slot.is_night_run = True

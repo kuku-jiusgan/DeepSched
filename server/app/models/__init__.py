@@ -3,7 +3,8 @@
     ScheduleRule,
     Project, Milestone, Task, TaskDependency, TaskCapabilityRequirement,
     Instrument, InstrumentCapability, MaintenanceWindow, InstrumentFault,
-    TimeSlot, ScheduleSlotChangeLog, TaskExecutionSegment, TaskNightRun, AuditLog, Notification, TaskTypeConfig, AlertRule, PushChannelConfig,
+    TimeSlot, InstrumentBridgeReservation, ScheduleSlotChangeLog, TaskExecutionSegment, TaskNightRun, AuditLog, Notification, TaskTypeConfig, AlertRule, PushChannelConfig,
     AuthSession, WeComOAuthState, LoginFailure, WorkerLease, RolePermission,
-    SysCalendar, ScheduleCalendarSnapshot
+    ScheduleDeadlineRecommendationJob,
+    SysCalendar, ScheduleCalendarSnapshot, DashboardStatsSnapshot, LabStatusSnapshot
 )

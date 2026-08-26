@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.core.database import get_db
 from app.models import Notification, User
-from app.schemas.schemas import NotificationOut
+from app.schemas.schemas import NotificationOut, NotificationReadAllOut
+from app.services.notification_service import mark_all_site_notifications_read
 from app.services.task_action_reminder_service import (
     start_task_action_reminder_worker,
     stop_task_action_reminder_worker,
@@ -45,6 +46,15 @@ def list_notifications(
     if unread_only:
         query = query.filter(Notification.is_read == False)
     return query.order_by(Notification.created_at.desc()).limit(50).all()
+
+
+@router.put("/read-all", response_model=NotificationReadAllOut)
+def mark_all_read(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
+):
+    updated_count = mark_all_site_notifications_read(db, user.username)
+    return {"status": "ok", "updated_count": updated_count}
 
 @router.put("/{nid}/read")
 def mark_read(

@@ -5,14 +5,16 @@ from datetime import datetime
 
 from ortools.sat.python import cp_model
 
-from app.models import TimeSlot
+from app.models import InstrumentBridgeReservation, TimeSlot
 from app.services.scheduler_helpers import datetime_to_units
 
 
 FIXED_SLOT_STATUSES = ["scheduled", "running", "completed", "paused", "blocked", "interrupted"]
 
 
-def _fixed_slot_range(slot: TimeSlot) -> tuple[datetime, datetime]:
+def _fixed_slot_range(slot: TimeSlot | InstrumentBridgeReservation) -> tuple[datetime, datetime]:
+    if isinstance(slot, InstrumentBridgeReservation):
+        return slot.plan_start, slot.plan_end
     if slot.status == "completed":
         return slot.actual_start, slot.actual_end
     if slot.actual_start:
@@ -43,15 +45,6 @@ def _is_protected_slot(slot: TimeSlot) -> bool:
     )
 
 
-def _is_future_unstarted_running(slot: TimeSlot) -> bool:
-    return (
-        slot.tier != "frozen"
-        and slot.status == "running"
-        and slot.actual_start is None
-        and slot.plan_start > datetime.now()
-    )
-
-
 def load_fixed_slots(
     db,
     excluded_task_ids: set[int] | None = None,
@@ -64,8 +57,7 @@ def load_fixed_slots(
     slots = query.order_by(TimeSlot.instrument_id, TimeSlot.plan_start, TimeSlot.id).all()
     fixed_slots = [
         slot for slot in slots
-        if not _is_future_unstarted_running(slot)
-        and (slot.status != "completed" or (slot.actual_start and slot.actual_end))
+        if slot.status != "completed" or (slot.actual_start and slot.actual_end)
     ]
     if excluded_task_ids:
         fixed_slots = [
@@ -86,6 +78,23 @@ def load_fixed_slots(
             and slot.task.assignee_id in assignee_ids
         )
     ]
+
+
+def load_fixed_bridge_reservations(
+    db,
+    excluded_task_ids: set[int] | None = None,
+    relevant_instrument_ids: set[int] | None = None,
+) -> list[InstrumentBridgeReservation]:
+    query = db.query(InstrumentBridgeReservation)
+    if excluded_task_ids:
+        query = query.filter(~InstrumentBridgeReservation.task_id.in_(excluded_task_ids))
+    if relevant_instrument_ids is not None:
+        query = query.filter(InstrumentBridgeReservation.instrument_id.in_(relevant_instrument_ids))
+    return query.order_by(
+        InstrumentBridgeReservation.instrument_id,
+        InstrumentBridgeReservation.plan_start,
+        InstrumentBridgeReservation.id,
+    ).all()
 
 
 def add_human_capacity_constraints(
@@ -143,9 +152,11 @@ def add_instrument_capacity_constraints(
     total_units: int,
     non_overlap_enabled: bool,
     setup_units: int,
+    fixed_bridge_reservations: list[InstrumentBridgeReservation] | None = None,
 ) -> None:
-    fixed_by_instrument: dict[int, list[tuple[TimeSlot, int, int]]] = defaultdict(list)
-    for slot in fixed_slots:
+    fixed_by_instrument: dict[int, list[tuple[TimeSlot | InstrumentBridgeReservation, int, int]]] = defaultdict(list)
+    fixed_bridge_reservations = fixed_bridge_reservations or []
+    for slot in [*fixed_slots, *fixed_bridge_reservations]:
         if slot.instrument_id is None:
             continue
         start_time, end_time = _fixed_slot_range(slot)
@@ -178,7 +189,7 @@ def add_instrument_capacity_constraints(
         protected_ends = [
             end_unit
             for slot, _, end_unit in fixed_by_instrument.get(instrument.id, [])
-            if _is_protected_slot(slot)
+            if isinstance(slot, TimeSlot) and _is_protected_slot(slot)
         ]
         if protected_ends:
             protected_queue_end = max(protected_ends)

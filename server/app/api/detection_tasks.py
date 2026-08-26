@@ -43,9 +43,9 @@ def get_detection_tasks(db: Session = Depends(get_db), user=Depends(require_auth
 
 
 @router.post("", response_model=DetectionTaskOut)
-def add_detection_task(data: DetectionTaskCreate, db: Session = Depends(get_db), _=Depends(require_management_user)):
+def add_detection_task(data: DetectionTaskCreate, db: Session = Depends(get_db), user=Depends(require_management_user)):
     try:
-        project, schedule = create_detection_task(db, data)
+        project, schedule = create_detection_task(db, data, user)
         return _response(project, db, schedule)
     except DetectionTaskInvalidError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
