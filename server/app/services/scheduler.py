@@ -95,6 +95,7 @@ class SchedulerService:
         rollback_on_conflict: bool = True,
         include_failure_diagnostics: bool = True,
         solver_time_limit: float = 30.0,
+        remaining_duration_minutes: dict[int, int] | None = None,
     ) -> dict:
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -250,6 +251,7 @@ class SchedulerService:
                 instrument_prefix_sums,
                 horizon_start,
                 total_units,
+                remaining_duration_minutes,
             )
 
             # Compute project-level hard constraint window
@@ -787,9 +789,12 @@ def _remaining_duration_units(
     instrument_prefix_sums,
     horizon_start,
     total_units: int,
+    remaining_duration_minutes: dict[int, int] | None = None,
 ) -> int:
     from app.services.task_progress_service import planned_task_minutes
 
+    if remaining_duration_minutes and task.id in remaining_duration_minutes:
+        return max(1, to_units(remaining_duration_minutes[task.id] / 60))
     planned_minutes = planned_task_minutes(task)
     executed_minutes = int(getattr(task, "executed_minutes", 0) or 0)
     if hasattr(task, "executed_minutes"):
