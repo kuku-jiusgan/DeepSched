@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.database import Base
 from app.models import AuditLog, Instrument, InstrumentFault, Project, Task, TaskDependency, TaskExecutionSegment, TimeSlot, User
 from app.services.instrument_fault_service import list_open_faults, resolve_fault
-from app.services.instrument_fault_schedule_service import shift_faulted_instrument_slots
+from app.services.instrument_fault_schedule_service import evaluate_fault_impact, shift_faulted_instrument_slots
 from app.services.fault_replan_context_service import build_fault_replan_context
 from app.services.fault_replan_result_service import build_fault_impact_details
 from app.services.scheduler import _supersede_replaceable_slots
@@ -223,6 +223,42 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
             )
 
         self.assertEqual({root_task.id, successor.id}, replan.call_args.kwargs["seed_task_ids"])
+
+    def test_fault_preview_uses_same_resource_closure_as_replan(self):
+        assignee = User(username="preview", display_name="预览技术员", role="技术员", is_active=True)
+        project = Project(name="故障预览项目", code="FAULT-PREVIEW")
+        instrument = Instrument(code="ZBYY-002-0011", name="故障预览仪器")
+        root_task = Task(
+            project=project, name="故障根任务", task_type="test", status="scheduled",
+            requires_instrument=True, requires_human=True, assignee=assignee,
+        )
+        same_owner_task = Task(
+            project=project, name="同负责人任务", task_type="test", status="scheduled",
+            requires_human=True, assignee=assignee,
+        )
+        self.db.add_all([assignee, project, instrument, root_task, same_owner_task])
+        self.db.flush()
+        self.db.add_all([
+            TimeSlot(
+                task_id=root_task.id, instrument_id=instrument.id,
+                plan_start=datetime(2026, 8, 10, 8, 30),
+                plan_end=datetime(2026, 8, 10, 10, 30), status="scheduled",
+            ),
+            TimeSlot(
+                task_id=same_owner_task.id,
+                plan_start=datetime(2026, 8, 10, 10, 30),
+                plan_end=datetime(2026, 8, 10, 11, 30), status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        impact = evaluate_fault_impact(
+            self.db, instrument, datetime(2026, 8, 10, 8, 45), datetime(2026, 8, 11, 8, 45),
+        )
+
+        self.assertEqual({root_task.id, same_owner_task.id}, {
+            detail["task_id"] for detail in impact["affected_task_details"]
+        })
 
     def test_fault_cascades_to_dependencies_but_not_manual_same_owner_task(self):
         assignee = User(

@@ -225,7 +225,9 @@ def evaluate_fault_impact(
     if not affected_slots:
         return _impact([], 0, 0, 0, 0)
 
-    affected_task_ids = _affected_task_ids(db, affected_slots)
+    affected_task_ids = _expand_resource_closure(
+        db, _affected_task_ids(db, affected_slots), instrument.id, reported_at,
+    )
     slots = _movable_slots(db, affected_task_ids, reported_at)
     if not slots:
         return _impact([], 0, 0, 0, 0)
