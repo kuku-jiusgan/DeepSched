@@ -17,6 +17,7 @@ def replan_resource_closure(
     advance_notification_reason: str = "资源变更重排",
     commit: bool = False,
     remaining_duration_minutes: dict[int, int] | None = None,
+    planning_start_at: datetime | None = None,
 ) -> dict:
     """Run the authoritative CP-SAT replan for a resource-impact closure."""
     if not seed_task_ids:
@@ -55,4 +56,5 @@ def replan_resource_closure(
         commit=commit,
         remaining_duration_minutes=remaining_duration_minutes,
         replaceable_task_ids=closure_ids,
+        planning_start_at=planning_start_at,
     )

@@ -25,8 +25,8 @@ def natural_day_boundary(now: datetime, days: int) -> datetime:
     return next_boundary - timedelta(microseconds=1)
 
 
-def time_horizon() -> tuple[datetime, datetime, int]:
-    now = datetime.now().replace(second=0, microsecond=0)
+def time_horizon(start_at: datetime | None = None) -> tuple[datetime, datetime, int]:
+    now = (start_at or datetime.now()).replace(second=0, microsecond=0)
     remaining_minutes = (-now.minute) % TIME_UNIT_MINUTES
     if remaining_minutes:
         now += timedelta(minutes=remaining_minutes)

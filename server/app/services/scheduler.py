@@ -98,6 +98,7 @@ class SchedulerService:
         solver_time_limit: float = 30.0,
         remaining_duration_minutes: dict[int, int] | None = None,
         replaceable_task_ids: set[int] | None = None,
+        planning_start_at: datetime | None = None,
     ) -> dict:
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -136,7 +137,7 @@ class SchedulerService:
             return {"status": "error", "message": "没有可用仪器"}
 
         constraints = get_solver_constraints(self.db)
-        horizon_start, horizon_end, total_units = time_horizon()
+        horizon_start, horizon_end, total_units = time_horizon(planning_start_at)
         ensure_calendar_range(self.db, horizon_start.date(), horizon_end.date())
         approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
         if earliest_start_bounds:
