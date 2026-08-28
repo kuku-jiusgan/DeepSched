@@ -73,7 +73,11 @@ def pause_and_switch_task(
     source_task.executed_minutes = min(
         planned_task_minutes(source_task),
         int(source_task.executed_minutes or 0)
-        + _elapsed_execution_minutes(db, source_task, paused_at),
+        + _elapsed_execution_minutes(
+            db, source_task, paused_at,
+            fallback_started_at=source_slot.actual_start,
+            fallback_instrument_id=source_slot.instrument_id,
+        ),
     )
     source_task.status = "paused"
     _close_execution_segment(db, source_slot, paused_at, clean_reason, operator.id)
@@ -236,7 +240,11 @@ def _close_execution_segment(
     ))
 
 
-def _elapsed_execution_minutes(db, task: Task, ended_at: datetime) -> int:
+def _elapsed_execution_minutes(
+    db, task: Task, ended_at: datetime,
+    fallback_started_at: datetime | None = None,
+    fallback_instrument_id: int | None = None,
+) -> int:
     """本次执行累计的有效工时（分钟）。
 
     executed_minutes 会被 planned_task_minutes 减去，用来决定求解器重排时
@@ -249,9 +257,15 @@ def _elapsed_execution_minutes(db, task: Task, ended_at: datetime) -> int:
         None,
     )
     if not segment:
-        return 0
+        if not fallback_started_at:
+            return 0
+        started_at = fallback_started_at
+        instrument_id = fallback_instrument_id
+    else:
+        started_at = segment.started_at
+        instrument_id = segment.instrument_id
     hours = working_hours_between(
-        db, segment.started_at, ended_at, segment.instrument_id,
+        db, started_at, ended_at, instrument_id,
     )
     return max(0, int(hours * 60))
 
