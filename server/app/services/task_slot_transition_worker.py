@@ -63,7 +63,9 @@ def advance_running_tasks(db, now: datetime) -> int:
             if slot.plan_end <= now and slot.status in {"scheduled", "running"}:
                 slot.status = "completed"
                 slot.actual_start = slot.actual_start or slot.plan_start
-                slot.actual_end = slot.actual_end or slot.plan_end
+                # 计划结束早于实际开始时（计划时间已过才点开始），直接填计划
+                # 结束会写出"结束早于开始"的矛盾数据，流进工时统计。
+                slot.actual_end = slot.actual_end or max(slot.plan_end, slot.actual_start)
                 changed += 1
         for slot in slots:
             if slot.status == "running" and slot.actual_start is None:

@@ -6,7 +6,7 @@ from app.domain.errors import DomainConflictError, DomainNotFoundError, DomainVa
 from app.models import Task, TaskExecutionSegment, TimeSlot
 from app.services.audit_log_service import record_audit_log
 from app.services.instrument_status_service import refresh_instrument_status
-from app.services.task_execution_service import ensure_running_state_consistent, predecessors_completed, start_task_execution
+from app.services.task_execution_service import predecessors_completed, start_task_execution
 from app.services.schedule_working_time_service import working_hours_between
 from app.services.task_progress_service import planned_task_minutes
 from app.services.task_pause_solver_service import replan_pause_switch
@@ -69,7 +69,10 @@ def pause_and_switch_task(
     paused_slots = _running_task_slots(db, source_slot)
     for slot in paused_slots:
         slot.status = "paused"
-    source_slot.actual_end = paused_at
+    # 已经按计划边界结束的时间槽不再改写：任务被按天切割产生的中间边界用的是
+    # 计划时间，暂停发生在它之后，不该回头覆盖它。只有还在跑、尚未结束的时间槽
+    # 才写入真实的暂停时刻。
+    source_slot.actual_end = source_slot.actual_end or paused_at
     source_task.executed_minutes = min(
         planned_task_minutes(source_task),
         int(source_task.executed_minutes or 0)
@@ -158,17 +161,36 @@ def _running_source(db, slot_id: int) -> tuple[TimeSlot, Task]:
     task = slot.task
     if not task:
         raise DomainNotFoundError("任务不存在")
-    if task.status == "running":
-        active_slot = _actual_running_slot(task, slot.instrument_id)
-        if active_slot is not None:
-            slot = active_slot
-        try:
-            ensure_running_state_consistent(task, slot)
-        except DomainConflictError:
-            raise DomainConflictError("任务与时间槽状态不一致，请刷新工作台后重试")
-    if task.status != "running" or slot.actual_end is not None:
+    if task.status != "running":
         raise DomainConflictError("只有正在运行且占用仪器的任务可以暂停")
-    return slot, task
+    active_slot = _actual_running_slot(task, slot.instrument_id)
+    if active_slot is not None:
+        return active_slot, task
+    # 跨时间段的空档期：任务被按天切成多个时间槽，上一段已按计划边界结束，
+    # 下一段还没到（隔夜、周末、或被别的项目插队），此时没有"正在运行"的
+    # 时间槽，但人确实还在这个任务上。执行流水才是人在不在干活的真实记录，
+    # 时间槽只是计划，所以这里以流水为准，否则空档期里暂停会被拒绝，而同样
+    # 状态下"完成"却是允许的，两条路对同一个状态给出不同结论。
+    segment = _open_execution_segment(task)
+    segment_slot = _segment_slot(db, segment) if segment else None
+    # 还要求这个时间槽真实开始过。任务挂着 running 却没有任何时间槽被真正开始
+    # 过，是脏状态而不是空档期，仍然要拒绝。
+    if segment_slot is None or segment_slot.actual_start is None:
+        raise DomainConflictError("任务与时间槽状态不一致，请刷新工作台后重试")
+    return segment_slot, task
+
+
+def _open_execution_segment(task: Task) -> TaskExecutionSegment | None:
+    return next(
+        (item for item in reversed(task.execution_segments) if item.ended_at is None),
+        None,
+    )
+
+
+def _segment_slot(db, segment: TaskExecutionSegment) -> TimeSlot | None:
+    if segment.slot_id is None:
+        return None
+    return db.query(TimeSlot).filter(TimeSlot.id == segment.slot_id).first()
 
 
 def _actual_running_slot(task: Task, instrument_id: int | None) -> TimeSlot | None:
