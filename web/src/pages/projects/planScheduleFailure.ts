@@ -73,7 +73,7 @@ function recommendations(diagnostic: ScheduleFailureDiagnostic) {
             row.verified ? '求解器已验证' : '容量下限'),
         ]))
       : [h('div', { class: 'schedule-failure-empty' }, isSearching
-          ? '正在验证候选日期调整，完成后将在此处显示可行方案。'
+          ? '正在通过完整排程约束计算可行调整方案，通常需要 1–2 分钟，结果会更新到上方“调整方案”区域。'
           : '当前搜索范围内没有能使排程成功的日期调整方案。')]),
   ])
 }
