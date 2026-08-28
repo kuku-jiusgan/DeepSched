@@ -9,7 +9,9 @@ def planned_task_minutes(task) -> int:
 
 
 def remaining_task_minutes(task) -> int:
-    return max(0, planned_task_minutes(task) - int(task.executed_minutes or 0))
+    # 诊断层也会拿非 ORM 的任务对象调用这里，缺字段时按未执行处理。
+    executed_minutes = int(getattr(task, "executed_minutes", None) or 0)
+    return max(0, planned_task_minutes(task) - executed_minutes)
 
 
 def planned_task_hours(task) -> float:

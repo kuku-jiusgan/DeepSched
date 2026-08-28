@@ -4,6 +4,8 @@ from collections import defaultdict
 
 from ortools.sat.python import cp_model
 
+from app.services.scheduler_helpers import task_duration_hours
+
 
 def instrument_bridge_candidates(tasks, task_dependencies, compatibility):
     """Return manual tasks bracketed by the same assignee and instrument."""
@@ -102,11 +104,9 @@ def bridged_instrument_hours(
     task_ids = bridged_instrument_task_ids(
         tasks, task_dependencies, compatibility, instrument_id, top_level_task_id,
     )
-    return sum(
-        float(getattr(tasks_by_id[task_id], "est_duration_hours", None) or 4)
-        + float(getattr(tasks_by_id[task_id], "switchover_hours", 0) or 0)
-        for task_id in task_ids
-    )
+    # 必须和求解器同口径按 30 分钟单元取整：桥接工时会并进缺口分析的 required_hours，
+    # 与已量化的 task_duration_hours 相加，混用浮点小时会让缺口偏小。
+    return sum(task_duration_hours(tasks_by_id[task_id]) for task_id in task_ids)
 
 
 def _top_level_task_id(task):

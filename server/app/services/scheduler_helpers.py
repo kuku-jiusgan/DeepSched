@@ -52,6 +52,23 @@ def to_units(hours: float) -> int:
     return max(1, math.ceil(hours * 60 / TIME_UNIT_MINUTES))
 
 
+def task_duration_units(task) -> int:
+    """任务在求解器里占用的单元数：计划时长与切换时间各自向上取整后相加。
+
+    诊断与求解必须共用这一口径，否则缺口分析算出的需求和求解器实际需要的
+    不是同一个数：求解器按 30 分钟单元建模，诊断若按原始浮点小时累加，
+    会低估需求，出现"第一层判定工时够用、第二层排不下"。
+    """
+    duration_units = to_units(getattr(task, "est_duration_hours", None) or 4)
+    switch_hours = float(getattr(task, "switchover_hours", None) or 0)
+    # 零切换时间不能被 to_units 的最小 1 单位规则放大成 30 分钟。
+    return duration_units + (to_units(switch_hours) if switch_hours > 0 else 0)
+
+
+def task_duration_hours(task) -> float:
+    return task_duration_units(task) * TIME_UNIT_MINUTES / 60
+
+
 def datetime_to_units(dt: datetime, horizon_start: datetime) -> int:
     return int(
         (dt - horizon_start).total_seconds()

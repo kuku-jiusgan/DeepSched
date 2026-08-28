@@ -8,6 +8,7 @@ from app.services.scheduler_helpers import (
     TIME_UNIT_MINUTES,
     datetime_to_units,
     _parse_instrument_ids,
+    task_duration_hours,
     to_units,
     units_to_datetime,
 )
@@ -35,17 +36,14 @@ def log_solver_failure_snapshot(
     task_snapshot = []
     for task in tasks:
         project = getattr(task, "project", None)
-        duration_units = to_units(getattr(task, "est_duration_hours", None) or 4)
         switch_hours = getattr(task, "switchover_hours", 0) or 0
-        # 零切换时间不能被 to_units 的最小 1 单位规则放大为 30 分钟。
-        switch_units = to_units(switch_hours) if switch_hours > 0 else 0
         task_snapshot.append({
             "task_id": task.id,
             "project_id": task.project_id,
             "status": task.status,
             "duration_hours": getattr(task, "est_duration_hours", None),
             "switch_hours": switch_hours,
-            "discrete_hours": (duration_units + switch_units) * TIME_UNIT_MINUTES / 60,
+            "discrete_hours": task_duration_hours(task),
             "allow_split": bool(getattr(task, "allow_split", False)),
             "requires_human": bool(getattr(task, "requires_human", False)),
             "assignee_id": getattr(task, "assignee_id", None),

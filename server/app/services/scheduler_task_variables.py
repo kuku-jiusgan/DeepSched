@@ -18,7 +18,7 @@ from app.services.scheduler_helpers import (
     TIME_UNIT_MINUTES,
     datetime_to_units,
     optional_time_domain,
-    to_units,
+    task_duration_units,
 )
 from app.services.scheduler_split_tasks import add_split_task_variables
 from app.services.scheduler_task_duration import remaining_duration_units
@@ -60,9 +60,7 @@ def build_task_variables(
         variables.capacity_intervals[instrument.id] = []
 
     for t in tasks:
-        dur = to_units(t.est_duration_hours or 4)
-        if t.switchover_hours and t.switchover_hours > 0:
-            dur += to_units(t.switchover_hours)
+        dur = task_duration_units(t)
         dur = remaining_duration_units(
             t,
             dur,

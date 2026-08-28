@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from app.services.scheduler_helpers import TIME_UNIT_MINUTES, datetime_to_units, to_units, units_to_datetime
+from app.services.scheduler_helpers import (
+    TIME_UNIT_MINUTES,
+    datetime_to_units,
+    task_duration_hours,
+    units_to_datetime,
+)
+from app.services.task_progress_service import remaining_task_minutes
 from app.services.scheduler_instrument_bridging import (
     bridged_instrument_hours,
     bridged_instrument_task_ids,
@@ -144,7 +150,7 @@ def _instrument_failure_groups(
             instrument_prefix_sums[instrument_id], start_unit, end_unit,
         ) * TIME_UNIT_MINUTES / 60
         required_hours = sum(
-            _discrete_task_hours(task)
+            task_duration_hours(task)
             for task in current_tasks
             if getattr(task, "requires_instrument", False)
             and (
@@ -286,22 +292,19 @@ def format_failure_message(failure: dict) -> str:
     return "\n".join(lines)
 
 
-def _discrete_task_hours(task) -> float:
-    duration_units = to_units(task.est_duration_hours or 4)
-    switch_units = to_units(task.switchover_hours) if task.switchover_hours else 0
-    return (duration_units + switch_units) * TIME_UNIT_MINUTES / 60
-
-
 def _remaining_task_hours(task) -> float:
+    """任务剩余工时，口径与求解器一致。
+
+    求解器排已开始的任务时只排剩余部分，用的是 remaining_duration_units；
+    对带 executed_minutes 字段的真实任务，它扣的是累计有效执行分钟数。
+    诊断这里原先改按 execution_segments 的墙钟跨度扣减，把夜间和周末也算成
+    已执行工时（周五 18:00 到周一 10:00 会被记成 64 小时），于是缺口分析以为
+    任务快做完了，求解器却还要排掉大半——第一层判定工时够用，第二层排不下。
+    墙钟口径同时看不见延期追加的计划工时（additional_planned_minutes）。
+    """
     if getattr(task, "status", None) in {"done", "completed"}:
         return 0
-    planned = float(task.est_duration_hours or 4) + float(task.switchover_hours or 0)
-    elapsed = sum(
-        max(0, (segment.ended_at - segment.started_at).total_seconds() / 3600)
-        for segment in getattr(task, "execution_segments", []) or []
-        if segment.started_at and segment.ended_at
-    )
-    return max(0, planned - elapsed)
+    return remaining_task_minutes(task) / 60
 
 
 def _project_instrument_intervals(
