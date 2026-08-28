@@ -53,6 +53,39 @@ class ScheduleRescheduleServiceTest(unittest.TestCase):
         self.assertEqual("scheduled", self.db.get(Task, task.id).status)
         self.assertIsNotNone(self.db.get(TimeSlot, slot.id))
 
+    def test_project_reschedule_failure_restores_existing_schedule(self):
+        project = Project(name="项目回滚测试", code="PROJECT-ROLLBACK")
+        self.db.add(project)
+        self.db.flush()
+        task = Task(
+            project_id=project.id, name="原排程任务", task_type="test",
+            requires_human=False, status="scheduled",
+        )
+        self.db.add(task)
+        self.db.flush()
+        slot = TimeSlot(
+            task_id=task.id, plan_start=datetime(2026, 8, 3, 8, 30),
+            plan_end=datetime(2026, 8, 3, 9, 30), tier="confirmed",
+            status="scheduled",
+        )
+        self.db.add(slot)
+        self.db.commit()
+        request = type("Request", (), {
+            "strategy": "project", "affected_task_id": task.id,
+        })()
+
+        with patch(
+            "app.services.scheduler.SchedulerService.generate",
+            return_value={"status": "error", "message": "求解失败"},
+        ):
+            result = reschedule(self.db, request)
+
+        self.assertEqual("error", result["status"])
+        self.assertEqual("scheduled", self.db.get(Task, task.id).status)
+        restored = self.db.get(TimeSlot, slot.id)
+        self.assertEqual("scheduled", restored.status)
+        self.assertEqual("active", restored.lifecycle_status)
+
     def test_global_reschedule_preserves_and_excludes_locked_tasks(self):
         project = Project(name="锁定任务测试", code="GLOBAL-LOCKED")
         self.db.add(project)

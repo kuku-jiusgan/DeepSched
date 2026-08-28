@@ -45,11 +45,24 @@ class PauseSwitchContext:
 
     @property
     def queue_dependencies(self) -> list[tuple[int, int]]:
-        return [
-            (entry.task.id, predecessor.task.id)
-            for predecessor, entry in zip(self.queue, self.queue[1:])
-            if entry.task.id != predecessor.task.id
-        ]
+        dependencies: list[tuple[int, int]] = []
+        for index, entry in enumerate(self.queue[1:], start=1):
+            predecessor = self.queue[index - 1]
+            if entry.task.id == predecessor.task.id:
+                continue
+            if not entry.task.requires_instrument:
+                dependencies.append((entry.task.id, predecessor.task.id))
+                continue
+            previous_instrument = _previous_instrument_entry(self.queue, predecessor)
+            if previous_instrument is None:
+                continue
+            if predecessor.task.requires_instrument or _queue_dependency_allowed(
+                self.queue, predecessor, entry,
+            ):
+                dependencies.append((entry.task.id, predecessor.task.id))
+            else:
+                dependencies.append((entry.task.id, previous_instrument.task.id))
+        return list(dict.fromkeys(dependencies))
 
 
 def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot, started_at: datetime) -> PauseSwitchContext:
@@ -76,3 +89,41 @@ def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot,
 
 def _followup_entries(groups: list[list[TimeSlot]]) -> list[PauseSwitchQueueEntry]:
     return [PauseSwitchQueueEntry(group[0].task, None, remaining_minutes(group[0].task), group[0].status, group[0]) for group in groups]
+
+
+def _queue_dependency_allowed(
+    queue: list[PauseSwitchQueueEntry],
+    predecessor: PauseSwitchQueueEntry,
+    entry: PauseSwitchQueueEntry,
+) -> bool:
+    """Do not let an unqualified manual task block another instrument task."""
+    if getattr(predecessor.task, "requires_instrument", False) or not getattr(entry.task, "requires_instrument", False):
+        return True
+    previous_instrument = _previous_instrument_entry(queue, predecessor)
+    if previous_instrument is None:
+        return False
+    return (
+        previous_instrument.template_slot.instrument_id == entry.template_slot.instrument_id
+        and _same_assignee(predecessor.task, previous_instrument.task, entry.task)
+    )
+
+
+def _previous_instrument_entry(
+    queue: list[PauseSwitchQueueEntry],
+    predecessor: PauseSwitchQueueEntry,
+) -> PauseSwitchQueueEntry | None:
+    predecessor_index = next(
+        index for index, item in enumerate(queue) if item is predecessor
+    )
+    return next(
+        (
+            item for item in reversed(queue[:predecessor_index])
+            if item.task.requires_instrument
+        ),
+        None,
+    )
+
+
+def _same_assignee(*tasks: Task) -> bool:
+    assignee_id = tasks[0].assignee_id
+    return assignee_id is not None and all(task.assignee_id == assignee_id for task in tasks)

@@ -62,7 +62,7 @@ def log_solver_failure_snapshot(
             "tier": slot.tier,
             "plan_start": _format_datetime(slot.plan_start),
             "plan_end": _format_datetime(slot.plan_end),
-            "protected": slot.tier == "frozen" or slot.status == "running" or slot.actual_start is not None,
+            "protected": slot.tier == "frozen" or slot.actual_start is not None,
         }
         for slot in fixed_slots
     ]

@@ -155,6 +155,7 @@ def _target_text(record: dict) -> str:
 def _legacy_summary(record: dict, action_label: str, target_display: str) -> str:
     detail = record.get("detail") or {}
     action_summaries = {
+        "task_deleted": "删除任务",
         "task_paused": "暂停任务",
         "task_started": "开始任务",
         "task_completed": "完成任务",

@@ -221,10 +221,6 @@ class ApprovalGateServiceTest(unittest.TestCase):
 
     @patch("app.services.project_plan_apply_service.apply_project_plan")
     def test_submit_records_expected_date(self, apply_project_plan):
-        apply_project_plan.return_value = type("Result", (), {
-            "status": "applied", "message": "预测排程已更新", "preview_token": None,
-            "schedule_run_id": "run-1", "moved_tasks": 0,
-        })()
         gate = create_approval_gate(
             self.db,
             1,
@@ -241,15 +237,15 @@ class ApprovalGateServiceTest(unittest.TestCase):
         )
 
         self.assertEqual("waiting_approval", result.gate.gate_status)
-        self.assertEqual("forecast", result.schedule_status)
+        self.assertEqual("pending_approval", result.schedule_status)
         self.assertIsNotNone(result.gate.expected_approval_at)
+        # 签批通过前不生成任何排程，下游任务状态必须保持不变。
+        apply_project_plan.assert_not_called()
+        self.assertEqual("waiting_external", self.validation.status)
+        self.assertFalse(self.validation.schedule_dirty)
 
     @patch("app.services.project_plan_apply_service.apply_project_plan")
     def test_submit_allows_expected_date_before_predecessor_completion(self, apply_project_plan):
-        apply_project_plan.return_value = type("Result", (), {
-            "status": "applied", "message": "预测排程已更新", "preview_token": None,
-            "schedule_run_id": "run-early-forecast", "moved_tasks": 0,
-        })()
         gate = create_approval_gate(
             self.db,
             1,
@@ -265,14 +261,10 @@ class ApprovalGateServiceTest(unittest.TestCase):
         )
 
         self.assertEqual("waiting_approval", result.gate.gate_status)
-        apply_project_plan.assert_called_once()
+        apply_project_plan.assert_not_called()
 
     @patch("app.services.project_plan_apply_service.apply_project_plan")
     def test_submit_allows_expected_time_before_recorded_predecessor_completion(self, apply_project_plan):
-        apply_project_plan.return_value = type("Result", (), {
-            "status": "applied", "message": "预测排程已更新", "preview_token": None,
-            "schedule_run_id": "run-before-completion", "moved_tasks": 0,
-        })()
         gate = create_approval_gate(
             self.db,
             1,
@@ -300,7 +292,7 @@ class ApprovalGateServiceTest(unittest.TestCase):
         )
 
         self.assertEqual("waiting_approval", result.gate.gate_status)
-        apply_project_plan.assert_called_once()
+        apply_project_plan.assert_not_called()
 
     def test_workspace_gate_exposes_predecessor_status_and_completion_time(self):
         gate = create_approval_gate(

@@ -52,30 +52,43 @@ def _project_reschedule(db: Session, data: RescheduleRequest) -> dict:
                 ).all()
             }
             original_windows = capture_task_schedule_windows(db, project_task_ids)
-            delete_time_slots_and_refresh(db, db.query(TimeSlot).filter(
-                TimeSlot.task_id.in_(
-                    db.query(Task.id).filter(Task.project_id == task.project_id)
-                ),
-                or_(
-                    (
-                        TimeSlot.tier.in_(["confirmed", "forecast"])
-                        & TimeSlot.status.in_(["scheduled", "blocked"])
+            savepoint = db.begin_nested()
+            try:
+                delete_time_slots_and_refresh(db, db.query(TimeSlot).filter(
+                    TimeSlot.task_id.in_(project_task_ids),
+                    or_(
+                        (
+                            TimeSlot.tier.in_(["confirmed", "forecast"])
+                            & TimeSlot.status.in_(["scheduled", "blocked"])
+                        ),
+                        TimeSlot.status.in_(["paused", "interrupted"]),
                     ),
-                    TimeSlot.status.in_(["paused", "interrupted"]),
-                ),
-            ))
-            db.query(Task).filter(
-                Task.project_id == task.project_id,
-                Task.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
-            ).update({"status": "pending", "delay_status": NOT_DELAYED_STATUS})
-            db.commit()
-            return _generate(
-                db,
-                [task.project_id],
-                original_windows=original_windows,
-                advance_reason="项目重排",
-                current_project_id=task.project_id,
-            )
+                ))
+                db.query(Task).filter(
+                    Task.id.in_(project_task_ids),
+                    Task.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
+                ).update(
+                    {"status": "pending", "delay_status": NOT_DELAYED_STATUS},
+                    synchronize_session=False,
+                )
+                result = _generate(
+                    db,
+                    [task.project_id],
+                    commit=False,
+                    original_windows=original_windows,
+                    advance_reason="项目重排",
+                    current_project_id=task.project_id,
+                )
+                if result.get("status") != "ok":
+                    savepoint.rollback()
+                    db.expire_all()
+                    return result
+                savepoint.commit()
+                return result
+            except Exception:
+                savepoint.rollback()
+                db.expire_all()
+                raise
     return {"status": "error", "message": "未指定受影响任务"}
 
 

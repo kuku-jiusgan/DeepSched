@@ -193,6 +193,7 @@ class DetectionTaskOut(BaseModel):
     schedule_status: Optional[str] = None
     schedule_message: Optional[str] = None
     preview_token: Optional[str] = None
+    project_impacts: List["ProjectScheduleImpact"] = []
 
 # ---- Instrument ----
 class CapabilityCreate(BaseModel):
@@ -288,6 +289,8 @@ class TimeSlotOut(BaseModel):
     plan_end: datetime
     actual_start: Optional[datetime]
     actual_end: Optional[datetime]
+    task_actual_start: Optional[datetime] = None
+    task_actual_end: Optional[datetime] = None
     is_night_run: bool = False
     tier: str
     status: str
@@ -399,6 +402,10 @@ class ProjectScheduleImpact(BaseModel):
     delay_hours: float = 0
     exceeds_end_date: bool = False
     overdue_hours: float = 0
+    pending_approval_hours: float = 0
+
+DetectionTaskOut.model_rebuild()
+
 
 class ProjectPlanApplyResponse(BaseModel):
     status: Literal["applied", "no_changes", "insert_confirmation_required", "error"]

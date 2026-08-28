@@ -327,8 +327,7 @@ watch(
 function canNightRunTask(task: WorkspaceTask, storedNightRun?: StoredAutoSequenceForm | null) {
   if (task.execution_status !== 'running' || task.actionable_slot?.status !== 'running') return false
   if (storedNightRun) return true
-  const workdayEndTime = normalizeWorkdayEndTime(task.actionable_slot?.effective_work_end)
-  if (!workdayEndTime) return false
+  const workdayEndTime = normalizeWorkdayEndTime(task.actionable_slot?.effective_work_end) || '20:00'
   return getNightRunEligibility(task, workdayEndTime).isEligible
 }
 
@@ -336,8 +335,7 @@ function nightRunDisabledReason(task: WorkspaceTask, storedNightRun?: StoredAuto
   if (canNightRunTask(task, storedNightRun)) return ''
   if (task.execution_status !== 'running' || task.actionable_slot?.status !== 'running') return '只有进行中的任务才能设置夜间运行'
   if (!task.actionable_slot?.plan_end) return '当前可执行时间段没有计划结束时间，不能继续夜间运行'
-  const workdayEndTime = normalizeWorkdayEndTime(task.actionable_slot?.effective_work_end)
-  if (!workdayEndTime) return '当前仪器未配置有效工作时段，暂不能继续夜间运行'
+  const workdayEndTime = normalizeWorkdayEndTime(task.actionable_slot?.effective_work_end) || '20:00'
   return getNightRunEligibility(task, workdayEndTime).reason
 }
 

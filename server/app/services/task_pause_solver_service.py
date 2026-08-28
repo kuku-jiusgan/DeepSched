@@ -51,7 +51,9 @@ def replan_pause_switch(
         )
         if result.get("status") != "ok":
             savepoint.rollback()
-            raise DomainConflictError(result.get("message") or "暂停切换重排失败")
+            message = result.get("message") or "暂停切换重排失败"
+            detail = {"message": message, "schedule_failure": result.get("schedule_failure")}
+            raise DomainConflictError(message, detail=detail if detail["schedule_failure"] else None)
         savepoint.commit()
     except Exception:
         if savepoint.is_active:

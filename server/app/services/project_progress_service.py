@@ -4,17 +4,30 @@ from app.models import Project
 from app.schemas.project_progress_schemas import ProjectProgressList, ProjectProgressOverview
 from app.services.project_access_service import list_visible_projects
 from app.services.project_health_service import get_project_health
+from app.services.project_pending_workload_service import (
+    PendingWorkload,
+    pending_approval_workload,
+)
 
 
 def list_project_progress(db, user) -> ProjectProgressList:
     projects = list_visible_projects(db, user)
-    items = [_project_progress(db, project) for project in projects]
+    # 一次性取全部项目的签批后未排工时，避免逐个项目重复查询。
+    workloads = pending_approval_workload(db, {project.id for project in projects})
+    items = [
+        _project_progress(db, project, workloads.get(project.id, PendingWorkload()))
+        for project in projects
+    ]
     items.sort(key=_progress_sort_key)
     return ProjectProgressList(generated_at=datetime.now(), items=items)
 
 
-def _project_progress(db, project: Project) -> ProjectProgressOverview:
-    health = get_project_health(db, project)
+def _project_progress(
+    db,
+    project: Project,
+    pending_workload: PendingWorkload,
+) -> ProjectProgressOverview:
+    health = get_project_health(db, project, pending_workload)
     tasks = health.timeline.tasks
     complete_actuals = [task for task in tasks if task.actual_start and task.actual_end]
     open_actual_starts = [task.actual_start for task in tasks if task.actual_start and not task.actual_end]

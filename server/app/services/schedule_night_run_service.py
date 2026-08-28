@@ -37,13 +37,12 @@ def record_night_run(
         raise ScheduleNightRunInvalidError("只有进行中的任务才能记录夜间运行")
     context = load_working_time_context(db, slot.plan_start, slot.plan_end + timedelta(days=1))
     policy = context.policy_for(slot.instrument_id)
-    work_end = slot.plan_end.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
-        minutes=policy.day_end_minutes,
-    )
+    day_end_minutes = policy.day_end_minutes if policy else 20 * 60
+    work_end = slot.plan_end.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=day_end_minutes)
     if slot.plan_end < work_end:
         raise ScheduleNightRunInvalidError(
-            f"当前时间槽须运行至仪器有效工作时段结束时间 {policy.day_end_minutes // 60:02d}:"
-            f"{policy.day_end_minutes % 60:02d} 后才能设置夜间运行"
+            f"当前时间槽须运行至仪器有效工作时段结束时间 {day_end_minutes // 60:02d}:"
+            f"{day_end_minutes % 60:02d} 后才能设置夜间运行"
         )
 
     start_time = _resolve_night_start(slot, earliest_start)

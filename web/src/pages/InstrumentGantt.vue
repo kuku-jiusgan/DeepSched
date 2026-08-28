@@ -114,8 +114,8 @@
       <div class="tooltip-row"><span>类型</span>{{ hoveredSlot.isBridgeReservation ? '非仪器任务' : hoveredSlot.status === 'fault' ? '仪器故障' : getTaskTypeLabel(hoveredSlot.task_type) }}</div>
       <div class="tooltip-row"><span>项目</span>{{ getBarProjectText(hoveredSlot) }}</div>
       <div class="tooltip-row"><span>负责人</span>{{ hoveredSlot.assignee_name || '-' }}</div>
-      <div class="tooltip-row"><span>实际开始</span>{{ hoveredSlot.actual_start ? dayjs(hoveredSlot.actual_start).format('MM-DD HH:mm:ss') : '未开始' }}</div>
-      <div class="tooltip-row"><span>实际结束</span>{{ hoveredSlot.actual_end ? dayjs(hoveredSlot.actual_end).format('MM-DD HH:mm:ss') : '未结束' }}</div>
+      <div class="tooltip-row"><span>实际开始</span>{{ (hoveredSlot.task_actual_start || hoveredSlot.actual_start) ? dayjs(hoveredSlot.task_actual_start || hoveredSlot.actual_start).format('MM-DD HH:mm:ss') : '未开始' }}</div>
+      <div class="tooltip-row"><span>实际结束</span>{{ hoveredSlot.task_actual_end ? dayjs(hoveredSlot.task_actual_end).format('MM-DD HH:mm:ss') : '未结束' }}</div>
       <div class="tooltip-row"><span>计划时间</span>{{ dayjs(hoveredSlot.originalPlanStart || hoveredSlot.plan_start).format('MM-DD HH:mm') }}–{{ dayjs(hoveredSlot.originalPlanEnd || hoveredSlot.plan_end).format('MM-DD HH:mm') }}</div>
       <div class="tooltip-row"><span>状态</span>{{ statusLabel(hoveredSlot) }}</div>
       <div v-if="hoveredSlot.status === 'fault' && hoveredSlot.faultDescription" class="tooltip-row">

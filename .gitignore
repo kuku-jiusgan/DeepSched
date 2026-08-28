@@ -35,4 +35,5 @@ server/*.db
 web/public/models/
 server/tokens.json
 server/logs/
+solver_logs/*.log
 temp_patch1.txt

@@ -6,6 +6,11 @@ from datetime import datetime, timedelta
 from app.models import AuditLog, Project, Task, TimeSlot
 from app.schemas.project_health_schemas import ProjectHealthOut
 from app.services.project_status_service import calculate_project_status
+from app.services.project_pending_workload_service import (
+    PendingWorkload,
+    pending_approval_workload,
+)
+from app.services.schedule_working_time_service import advance_working_hours
 from app.domain.task_status import resolve_task_execution_status
 
 
@@ -20,13 +25,21 @@ OPEN_STATUSES = {"pending", "scheduled", "running", "paused", "blocked", "interr
 COMPLETED_STATUSES = {"done", "completed"}
 
 
-def get_project_health(db, project: Project) -> ProjectHealthOut:
+def get_project_health(
+    db,
+    project: Project,
+    pending_workload: PendingWorkload | None = None,
+) -> ProjectHealthOut:
     tasks = _leaf_tasks(project.tasks or [])
     slots = [slot for task in tasks for slot in task.time_slots]
     now = datetime.now()
     delay_details = _delay_details(db, {task.id for task in tasks})
     due_date = project.end_date
-    predicted_end = _predicted_end(tasks, slots, due_date)
+    if pending_workload is None:
+        pending_workload = pending_approval_workload(db, {project.id}).get(
+            project.id, PendingWorkload(),
+        )
+    predicted_end = _predicted_end(db, tasks, slots, due_date, pending_workload, now)
     counts = _task_counts(tasks)
     schedule_state = _schedule_state(tasks, slots, counts)
     delivery_status, days_delta = _delivery_status(predicted_end, due_date, now)
@@ -81,11 +94,41 @@ def _task_counts(tasks: list[Task]) -> dict[str, int]:
     }
 
 
-def _predicted_end(tasks: list[Task], slots: list[TimeSlot], due_date: datetime | None) -> datetime | None:
+def _predicted_end(
+    db,
+    tasks: list[Task],
+    slots: list[TimeSlot],
+    due_date: datetime | None,
+    pending_workload: PendingWorkload,
+    now: datetime,
+) -> datetime | None:
+    # 已排时间槽与未排任务的交期必须取并集。原先的 or 短路意味着：只要项目
+    # 有任意一个已排任务，未排任务的交期就被整体丢弃，"还没排进去的工作"
+    # 因此完全不体现在交付预测里。
     open_slots = [slot.plan_end for slot in slots if slot.task.status not in COMPLETED_STATUSES]
     unscheduled_due = [task.latest_due for task in tasks if task.status not in COMPLETED_STATUSES and task.latest_due]
-    values = open_slots or unscheduled_due or ([due_date] if due_date else [])
-    return max(values) if values else None
+    values = [*open_slots, *unscheduled_due] or ([due_date] if due_date else [])
+    predicted_end = max(values) if values else None
+    return _append_pending_workload(db, predicted_end, pending_workload, now)
+
+
+def _append_pending_workload(
+    db,
+    predicted_end: datetime | None,
+    pending_workload: PendingWorkload,
+    now: datetime,
+) -> datetime | None:
+    """把"签批通过后才会排程"的工时接在预测完工时间之后。
+
+    这段推演沿工作日历前推，不考虑其它项目对同一台仪器或同一个人的资源竞争，
+    因此偏乐观：它能说明"肯定来不及"，不能保证"一定来得及"。
+    """
+    if pending_workload.hours <= 0:
+        return predicted_end
+    tail_start = max(
+        [value for value in (predicted_end, pending_workload.gate_expected_at, now) if value],
+    )
+    return advance_working_hours(db, tail_start, pending_workload.hours)
 
 
 def _schedule_state(tasks: list[Task], slots: list[TimeSlot], counts: dict[str, int]) -> str:

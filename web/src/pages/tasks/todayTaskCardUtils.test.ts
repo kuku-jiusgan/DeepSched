@@ -94,7 +94,7 @@ describe('getNightRunEligibility', () => {
     expect(getNightRunEligibility(futureSegment, '20:00', now).reason).toContain('不是今天')
   })
 
-  it('allows an active multi-day segment to continue night running today', () => {
+  it('rejects a segment whose planned end is on a later day', () => {
     const activeMultiDay = task({
       actionable_slot: {
         ...task().actionable_slot!,
@@ -104,8 +104,8 @@ describe('getNightRunEligibility', () => {
     })
 
     expect(getNightRunEligibility(activeMultiDay, '20:00', dayjs('2026-07-21T15:30:00'))).toEqual({
-      isEligible: true,
-      reason: '',
+      isEligible: false,
+      reason: '当前可执行时间段不是今天，不能设置今日夜间运行',
     })
   })
 })

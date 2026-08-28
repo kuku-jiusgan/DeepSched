@@ -3,6 +3,10 @@ import AppLayout from '@/components/AppLayout.vue'
 import { canViewPage, clearPermissions, firstViewablePage, loadMyPermissions } from '@/services/permissions'
 import { isMobileViewport } from '@/composables/useMobileViewport'
 
+function defaultAuthenticatedPath() {
+  return isMobileViewport() ? '/tasks/workspace' : '/operations/cockpit'
+}
+
 const routes = [
   {
     path: '/login',
@@ -14,7 +18,7 @@ const routes = [
     component: AppLayout,
     meta: { requiresAuth: true },
     children: [
-      { path: '', redirect: () => isMobileViewport() ? '/tasks/workspace' : '/operations/cockpit' },
+      { path: '', redirect: defaultAuthenticatedPath },
       { path: 'dashboard', component: () => import('@/pages/Dashboard.vue') },
       { path: 'operations/cockpit', component: () => import('@/pages/operations/LabOperationsCockpit.vue') },
       { path: 'operations/lab-dashboard', redirect: '/operations/cockpit' },
@@ -69,8 +73,18 @@ router.beforeEach(async (to, _from, next) => {
   if (to.meta.requiresAuth && !token) {
     next('/login')
   } else if (to.path === '/login' && token) {
-    next(isMobileViewport() ? '/tasks/workspace' : '/operations/cockpit')
+    try {
+      await loadMyPermissions(true)
+      next(defaultAuthenticatedPath())
+    } catch {
+      clearSession()
+      next('/login')
+    }
   } else {
+    if (token && isMobileViewport() && to.path === '/operations/cockpit') {
+      next('/tasks/workspace')
+      return
+    }
     try {
       if (token) await loadMyPermissions(true)
       if (!to.meta.guest && token && !canViewPage(to.path)) {

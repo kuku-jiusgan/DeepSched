@@ -78,11 +78,12 @@ def add_instrument_bridge_intervals(
     return bridges
 
 
-def bridged_instrument_hours(
+def bridged_instrument_task_ids(
     tasks, task_dependencies, compatibility, instrument_id, top_level_task_id=None,
-):
+) -> set[int]:
+    """夹在两个"同仪器 + 同负责人"任务之间、会占住该仪器的非仪器任务。"""
     tasks_by_id = {task.id: task for task in tasks}
-    task_ids = {
+    return {
         task_id
         for task_id, _previous_id, _following_id, candidate_instrument_id
         in instrument_bridge_candidates(tasks, task_dependencies, compatibility)
@@ -92,6 +93,15 @@ def bridged_instrument_hours(
             or _top_level_task_id(tasks_by_id[task_id]) == top_level_task_id
         )
     }
+
+
+def bridged_instrument_hours(
+    tasks, task_dependencies, compatibility, instrument_id, top_level_task_id=None,
+):
+    tasks_by_id = {task.id: task for task in tasks}
+    task_ids = bridged_instrument_task_ids(
+        tasks, task_dependencies, compatibility, instrument_id, top_level_task_id,
+    )
     return sum(
         float(getattr(tasks_by_id[task_id], "est_duration_hours", None) or 4)
         + float(getattr(tasks_by_id[task_id], "switchover_hours", 0) or 0)

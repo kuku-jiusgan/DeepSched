@@ -42,14 +42,17 @@ export async function loadMyPermissions(force = false) {
 }
 
 export function canViewPage(path: string) {
+  if (permissionState.roles.includes('系统管理员')) return true
   return permissionState.permissions.find(item => item.page_key === normalizedPath(path))?.can_view ?? false
 }
 
 export function canOperatePage(path: string) {
+  if (permissionState.roles.includes('系统管理员')) return true
   return permissionState.permissions.find(item => item.page_key === normalizedPath(path))?.actions.some(action => action.allowed) ?? false
 }
 
 export function canOperateAction(path: string, actionKey: string) {
+  if (permissionState.roles.includes('系统管理员')) return true
   return permissionState.permissions
     .find(item => item.page_key === normalizedPath(path))
     ?.actions.find(action => action.action_key === actionKey)?.allowed ?? false

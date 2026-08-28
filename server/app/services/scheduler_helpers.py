@@ -5,6 +5,8 @@ import math
 from datetime import date, datetime, timedelta
 from typing import Dict, List
 
+from ortools.sat.python import cp_model
+
 from app.models import Instrument
 from app.models.models import SysCalendar
 
@@ -332,3 +334,12 @@ def _normalize_working_minutes(value: int, fallback_minutes: int) -> int:
     if value % TIME_UNIT_MINUTES != 0:
         return fallback_minutes
     return value
+
+
+def optional_time_domain(lower_bound: int, upper_bound: int) -> cp_model.Domain:
+    if lower_bound == 0:
+        return cp_model.Domain.FromIntervals([(0, upper_bound)])
+    return cp_model.Domain.FromIntervals([
+        (0, 0),
+        (lower_bound, upper_bound),
+    ])

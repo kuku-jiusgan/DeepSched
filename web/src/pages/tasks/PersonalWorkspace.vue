@@ -522,6 +522,7 @@ function formatApprovedDateTime(value?: string | null) {
 function scheduleLabel(status?: string | null) {
   if (!status) return '-'
   return {
+    pending_approval: '签批通过后生成排程',
     forecast: '预测排程已更新',
     applied: '正式排程已更新',
     confirmation_required: '待确认排程影响',

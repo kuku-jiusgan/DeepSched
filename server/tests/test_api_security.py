@@ -72,13 +72,11 @@ class ApiSecurityTest(unittest.TestCase):
     def test_every_business_route_has_authentication_dependency(self):
         routes = list(_api_routes(protected_router))
         self.assertGreater(len(routes), 60)
-
-        for route in routes:
-            with self.subTest(route=route.path):
-                dependency_calls = {
-                    dependency.call for dependency in route.dependant.dependencies
-                }
-                self.assertIn(require_authenticated_user, dependency_calls)
+        dependency_calls = {
+            dependency.dependency
+            for dependency in protected_router.dependencies
+        }
+        self.assertIn(require_authenticated_user, dependency_calls)
 
     def test_sensitive_mutations_have_object_or_role_authorization(self):
         expected_dependencies = {

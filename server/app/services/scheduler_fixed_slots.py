@@ -40,7 +40,6 @@ def _merge_task_ranges(
 def _is_protected_slot(slot: TimeSlot) -> bool:
     return (
         slot.tier == "frozen"
-        or slot.status == "running"
         or (slot.actual_start is not None and slot.actual_end is None)
     )
 
@@ -58,7 +57,16 @@ def load_fixed_slots(
     slots = query.order_by(TimeSlot.instrument_id, TimeSlot.plan_start, TimeSlot.id).all()
     fixed_slots = [
         slot for slot in slots
-        if slot.status != "completed" or (slot.actual_start and slot.actual_end)
+        if (slot.status != "completed" or (slot.actual_start and slot.actual_end))
+        # A running status alone is not evidence of resource occupancy. This
+        # can occur on historical continuation slots created before execution
+        # state was normalized; only an actual start or an explicit frozen lock
+        # may reserve capacity during a replan.
+        and not (
+            slot.status == "running"
+            and slot.actual_start is None
+            and slot.tier != "frozen"
+        )
     ]
     if excluded_task_ids:
         fixed_slots = [

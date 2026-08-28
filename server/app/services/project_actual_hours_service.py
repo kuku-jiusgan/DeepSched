@@ -65,15 +65,17 @@ def _actual_ranges_by_task(task_ids, segments, slots) -> dict[int, list[Resource
     now = datetime.now()
     result = {task_id: [] for task_id in task_ids}
     slots_by_id = {slot.id: slot for slot in slots}
-    segmented_slot_ids = set()
+    segmented_task_ids = set()
     for segment in segments:
         instrument_id = segment.instrument_id
         if instrument_id is None and segment.slot_id in slots_by_id:
             instrument_id = slots_by_id[segment.slot_id].instrument_id
         result[segment.task_id].append((segment.started_at, segment.ended_at or now, instrument_id))
-        segmented_slot_ids.add(segment.slot_id)
+        segmented_task_ids.add(segment.task_id)
     for slot in slots:
-        if slot.id in segmented_slot_ids or slot.status not in {"completed", "running"} or not slot.actual_start:
+        # Execution segments are the authoritative source. Slot ranges are
+        # retained only for legacy tasks that have no execution history.
+        if slot.task_id in segmented_task_ids or slot.status not in {"completed", "running"} or not slot.actual_start:
             continue
         start = max(slot.actual_start, slot.plan_start)
         end = slot.actual_end or now

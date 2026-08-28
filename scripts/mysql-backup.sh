@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${DEEPSCHED_ENV_FILE:-$ROOT_DIR/server/.env}"
-BACKUP_DIR="${DEEPSCHED_BACKUP_DIR:-$ROOT_DIR/.runtime/backups/mysql}"
+BACKUP_DIR="${DEEPSCHED_BACKUP_DIR:-$ROOT_DIR/backup}"
 RETENTION_DAYS="${DEEPSCHED_BACKUP_RETENTION_DAYS:-30}"
 [[ -r "$ENV_FILE" ]] || { echo "错误：无法读取数据库配置 $ENV_FILE" >&2; exit 1; }
 command -v mysqldump >/dev/null || { echo "错误：未找到 mysqldump" >&2; exit 1; }

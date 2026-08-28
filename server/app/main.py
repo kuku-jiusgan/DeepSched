@@ -30,6 +30,10 @@ from app.services.instrument_utilization_snapshot_worker import (
     start_instrument_utilization_snapshot_worker,
     stop_instrument_utilization_snapshot_worker,
 )
+from app.services.task_slot_transition_worker import (
+    start_task_slot_transition_worker,
+    stop_task_slot_transition_worker,
+)
 from app.api import protected_router, users, wecom_auth
 from app.api.exception_handlers import register_domain_exception_handlers
 
@@ -65,6 +69,7 @@ def start_background_workers():
     start_dashboard_snapshot_worker()
     start_lab_status_snapshot_worker()
     start_instrument_utilization_snapshot_worker()
+    start_task_slot_transition_worker()
 
 
 @app.on_event("shutdown")
@@ -75,6 +80,7 @@ def stop_background_workers():
     stop_dashboard_snapshot_worker()
     stop_lab_status_snapshot_worker()
     stop_instrument_utilization_snapshot_worker()
+    stop_task_slot_transition_worker()
 
 app.add_middleware(
     CORSMiddleware,

@@ -13,7 +13,6 @@ from app.services.schedule_early_completion_replan_service import (
     replan_released_resource_queue,
 )
 from app.services.schedule_queue_replan_support import (
-    load_forward_shift_candidates as _load_forward_shift_candidates,
     load_working_options as _load_working_options,
 )
 from app.services.project_status_service import calculate_project_status
@@ -22,7 +21,6 @@ from app.services.schedule_delay_propagation_service import propagate_actual_del
 from app.services.schedule_delay_service import ScheduleDelayInvalidError
 from app.services.task_execution_service import TaskExecutionInvalidError, start_task_execution
 from app.services.task_progress_service import planned_task_minutes
-from app.schemas.schemas import RescheduleRequest
 
 def complete_task_and_shift(
     db: Session,
@@ -104,13 +102,12 @@ def complete_task_and_shift(
             "delayed_slots": delay_result["shifted_slots"],
             "delay_affected_tasks": delay_result["affected_tasks"],
         }
-    result = _replan_dependency_projects_after_completion(
-        db, completed_slot.instrument_id, end_time, task.assignee_id,
+    # Early completion is a released-resource event, not a project-wide replan.
+    # The resource closure preserves dependencies without pulling unrelated
+    # top-level branches (and their independent approval gates) into the solve.
+    result = _forward_shift_instrument_queue(
+        db, completed_slot.instrument_id, end_time, task.assignee_id, task.project_id,
     )
-    if result is None:
-        result = _forward_shift_instrument_queue(
-            db, completed_slot.instrument_id, end_time, task.assignee_id, task.project_id,
-        )
     moved_task_details = result.pop("moved_task_details", [])
     notify_advanced_task_assignees(db, task, end_time, planned_end, moved_task_details)
     db.flush()
@@ -124,52 +121,6 @@ def complete_task_and_shift(
     result["delayed_slots"] = delay_result["shifted_slots"]
     result["delay_affected_tasks"] = delay_result["affected_tasks"]
     return result
-
-
-def _replan_dependency_projects_after_completion(
-    db: Session,
-    instrument_id: int | None,
-    released_at: datetime,
-    assignee_id: int | None,
-) -> dict | None:
-    """Use the project solver when released-resource candidates have dependencies."""
-    candidates = _load_forward_shift_candidates(db, instrument_id, released_at, assignee_id)
-    dependency_projects = {
-        task.project_id
-        for task in candidates
-        if task.predecessors
-    }
-    if not dependency_projects:
-        return None
-
-    from app.services.schedule_reschedule_service import _project_reschedule
-
-    moved = 0
-    details: list[dict] = []
-    for project_id in sorted(dependency_projects):
-        task = next(item for item in candidates if item.project_id == project_id)
-        result = _project_reschedule(
-            db,
-            RescheduleRequest(
-                trigger_type="early_completion",
-                strategy="project",
-                affected_task_id=task.id,
-            ),
-        )
-        if result.get("status") != "ok":
-            return {
-                "status": "error",
-                "message": result.get("message") or "项目重排失败",
-                "moved_tasks": moved,
-                "moved_task_details": details,
-            }
-        moved += int(result.get("moved_tasks", 0) or 0)
-    return {
-        "status": "ok",
-        "message": f"任务已完成，已按项目依赖重排 {moved} 个任务",
-        "moved_tasks": moved,
-        "moved_task_details": details,
-    }
 
 
 def _resume_paused_source_task(

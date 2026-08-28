@@ -154,13 +154,14 @@ class ProjectPlanApplyTransactionTest(unittest.TestCase):
         ])
         db.rollback.assert_not_called()
 
+    @patch("app.services.project_plan_apply_service.plan_fingerprint", return_value="token")
     @patch("app.services.project_plan_apply_service._load_insert_movable_tasks")
     @patch("app.services.project_plan_apply_service._execute_replan")
     @patch("app.services.project_plan_apply_service._load_project_candidates")
     @patch("app.services.project_plan_apply_service.validate_required_task_instruments")
     @patch("app.services.project_plan_apply_service.validate_project_estimated_hours")
     @patch("app.services.project_plan_apply_service.recalculate_project_parent_hours")
-    def test_detection_schedule_applies_lower_priority_displacement_without_confirmation(
+    def test_detection_schedule_requires_confirmation_when_other_projects_move(
         self,
         _recalculate,
         _validate_hours,
@@ -168,6 +169,7 @@ class ProjectPlanApplyTransactionTest(unittest.TestCase):
         load_candidates,
         execute_replan,
         load_movable,
+        _fingerprint,
     ):
         db = MagicMock()
         db.query.return_value.filter.return_value.all.return_value = []
@@ -182,11 +184,11 @@ class ProjectPlanApplyTransactionTest(unittest.TestCase):
 
         result = apply_project_plan(db, 1)
 
-        self.assertEqual("applied", result.status)
-        self.assertEqual("priority-run", result.schedule_run_id)
-        self.assertEqual([True], [call.kwargs["commit"] for call in execute_replan.call_args_list])
+        # 检测插单顺延了其它项目时，必须先把影响交给用户确认，不再直接落地。
+        self.assertEqual("insert_confirmation_required", result.status)
+        self.assertIsNotNone(result.preview_token)
+        self.assertEqual([False], [call.kwargs["commit"] for call in execute_replan.call_args_list])
         self.assertEqual(movable, execute_replan.call_args_list[0].args[3])
-        db.rollback.assert_not_called()
 
     @patch("app.services.project_plan_apply_service._load_insert_movable_tasks", return_value=[])
     @patch("app.services.project_plan_apply_service._execute_replan")

@@ -15,7 +15,9 @@ class SchedulerMaintenanceIsolationTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
-        self.horizon_start = datetime(2026, 8, 3, 8, 30)
+        self.horizon_start = (datetime.now() + timedelta(days=1)).replace(
+            hour=8, minute=30, second=0, microsecond=0,
+        )
 
     def tearDown(self):
         self.db.close()
@@ -72,6 +74,7 @@ class SchedulerMaintenanceIsolationTest(unittest.TestCase):
         ):
             result = SchedulerService(self.db).generate(
                 project_ids=[project.id],
+                current_project_id=project.id,
                 commit=False,
             )
 
@@ -128,6 +131,7 @@ class SchedulerMaintenanceIsolationTest(unittest.TestCase):
         ):
             result = SchedulerService(self.db).generate(
                 project_ids=[project.id],
+                current_project_id=project.id,
                 commit=False,
             )
 
@@ -174,6 +178,7 @@ class SchedulerMaintenanceIsolationTest(unittest.TestCase):
         ):
             result = SchedulerService(self.db).generate(
                 project_ids=[project.id],
+                current_project_id=project.id,
                 commit=False,
             )
 

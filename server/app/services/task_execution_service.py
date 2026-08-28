@@ -47,12 +47,14 @@ def start_task_execution(
         mark_task_delayed(task)
     if task.project:
         task.project.status = "active"
-    for running_slot in _continuous_slots(db, slot):
-        running_slot.status = "running"
-        if running_slot.id == slot.id:
-            running_slot.actual_start = started_at
-            running_slot.actual_end = None
-            mark_instrument_running(db, running_slot.instrument_id)
+    # Only the slot actually started by the operator is running. Future
+    # continuation slots remain scheduled so pause/switch replans can replace
+    # them and preserve the task's remaining planned workload.
+    slot.status = "running"
+    slot.actual_start = started_at
+    slot.actual_end = None
+    mark_instrument_running(db, slot.instrument_id)
+    _normalize_future_continuations(task, slot)
     ensure_running_state_consistent(task, slot)
     ensure_running_continuation_consistent(task, slot)
     db.add(TaskExecutionSegment(
@@ -78,6 +80,17 @@ def ensure_running_continuation_consistent(task: Task, start_slot: TimeSlot) -> 
     ]
     if stale_slots:
         raise TaskExecutionInvalidError("任务恢复后仍存在未同步的后续时间槽")
+
+
+def _normalize_future_continuations(task: Task, start_slot: TimeSlot) -> None:
+    """Keep unstarted continuation slots schedulable after a resume."""
+    for continuation in task.time_slots:
+        if continuation.id == start_slot.id or continuation.lifecycle_status != "active":
+            continue
+        if continuation.actual_start is not None or continuation.plan_start < start_slot.plan_start:
+            continue
+        if continuation.status in {"paused", "blocked", "interrupted", "running"}:
+            continuation.status = "scheduled"
 
 
 def reconcile_task_status_from_slots(task: Task, requested_slot: TimeSlot) -> None:

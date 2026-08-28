@@ -10,6 +10,11 @@ from app.services.scheduler_helpers import (
 )
 
 
+# 单次工时推演最多跨越的自然日数，防止工作日历配置异常时无限循环。
+MAX_ADVANCE_DAYS = 730
+_CHUNK_DAYS = 90
+
+
 def working_hours_between(
     db,
     start: datetime,
@@ -43,3 +48,54 @@ def working_hours_between(
                 total_seconds += (overlap_end - overlap_start).total_seconds()
         current_date += timedelta(days=1)
     return total_seconds / 3600
+
+
+def advance_working_hours(
+    db,
+    start: datetime,
+    hours: float,
+    instrument_id: int | None = None,
+) -> datetime:
+    """从 start 起前推 hours 个有效工作小时，返回结束时刻。
+
+    是 working_hours_between 的逆运算，共用同一套工作日历与工作时段策略，
+    保证与排程口径一致。project_completion_projection_service._advance_working_minutes
+    是服务于另一套 options 入参的近似实现，两者互不依赖。
+    """
+    if hours <= 0:
+        return start
+
+    remaining_seconds = hours * 3600
+    cursor = start
+    walked_days = 0
+    while walked_days < MAX_ADVANCE_DAYS:
+        chunk_end = cursor + timedelta(days=_CHUNK_DAYS)
+        context = load_working_time_context(db, cursor, chunk_end)
+        policy = context.policy_for(instrument_id)
+        for _ in range(_CHUNK_DAYS):
+            window_start, window_end = _day_window(cursor, policy, context.calendar_days)
+            if window_end is not None:
+                available = (window_end - window_start).total_seconds()
+                if available >= remaining_seconds:
+                    return window_start + timedelta(seconds=remaining_seconds)
+                remaining_seconds -= available
+            cursor = datetime.combine(cursor.date(), time.min) + timedelta(days=1)
+            walked_days += 1
+    raise ValueError(f"工时推演超出 {MAX_ADVANCE_DAYS} 天上限，请检查工作日历配置")
+
+
+def _day_window(cursor, policy, calendar_days) -> tuple[datetime, datetime | None]:
+    """返回 cursor 当天剩余的可用工作时段；当天不可用时第二个元素为 None。"""
+    if not is_allowed_calendar_day(
+        cursor.date(),
+        calendar_days,
+        policy.include_weekends,
+        policy.include_holidays,
+    ):
+        return cursor, None
+    midnight = datetime.combine(cursor.date(), time.min)
+    window_start = max(cursor, midnight + timedelta(minutes=policy.day_start_minutes))
+    window_end = midnight + timedelta(minutes=policy.day_end_minutes)
+    if window_end <= window_start:
+        return cursor, None
+    return window_start, window_end

@@ -79,11 +79,14 @@ def load_diagnostic_resource_tasks(
         Task.requires_instrument.is_(True),
         Task.status.notin_(["done", "completed"]),
     ]
+    # 等待签批的下游任务（方法验证等）还没有时间槽，但签批通过后一定会占用
+    # 仪器。只按"有没有时间槽"来判定，会让占用分析里其他项目的预测工时恒为 0。
+    occupies_resource = or_(Task.time_slots.any(), Task.status == "waiting_external")
     if current_project_id is None:
-        conditions.append(Task.time_slots.any())
+        conditions.append(occupies_resource)
     else:
         # 保留其他项目已有的资源占用，并纳入当前项目等待签批的后续任务。
-        conditions.append(or_(Task.time_slots.any(), Task.project_id == current_project_id))
+        conditions.append(or_(occupies_resource, Task.project_id == current_project_id))
     query = db.query(Task).filter(*conditions).options(
         selectinload(Task.project),
         selectinload(Task.time_slots),
@@ -93,3 +96,25 @@ def load_diagnostic_resource_tasks(
     if excluded_task_ids:
         query = query.filter(~Task.id.in_(excluded_task_ids))
     return query.all()
+
+
+def load_bridge_candidate_tasks(db, project_ids: set[int]):
+    """加载可能"桥接"仪器的非仪器任务。
+
+    非仪器任务夹在两个"同仪器 + 同负责人"的任务之间时，期间仪器不会被释放。
+    这些任务不出现在仪器占用取数里，需要单独加载才能算出桥接占用。
+    """
+    if not project_ids:
+        return []
+    return db.query(Task).filter(
+        Task.project_id.in_(project_ids),
+        Task.requires_instrument.is_(False),
+        Task.requires_human.is_(True),
+        Task.assignee_id.isnot(None),
+        Task.is_external_gate.is_(False),
+        Task.status.notin_(["done", "completed"]),
+    ).options(
+        selectinload(Task.project),
+        selectinload(Task.time_slots),
+        selectinload(Task.predecessors),
+    ).all()

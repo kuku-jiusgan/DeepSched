@@ -4,6 +4,8 @@ from collections import defaultdict
 
 from ortools.sat.python import cp_model
 
+from app.services.scheduler_helpers import optional_time_domain
+
 
 def add_split_task_variables(
     model: cp_model.CpModel,
@@ -76,11 +78,11 @@ def add_split_task_variables(
 
         model.Add(sum(unit_choices) == duration_units * choice)
         inst_start = model.NewIntVarFromDomain(
-            _optional_time_domain(project_start_unit, task_start_max),
+            optional_time_domain(project_start_unit, task_start_max),
             f"start_t{task.id}_i{instrument.id}",
         )
         inst_end = model.NewIntVarFromDomain(
-            _optional_time_domain(task_end_min, project_end_unit),
+            optional_time_domain(task_end_min, project_end_unit),
             f"end_t{task.id}_i{instrument.id}",
         )
         inst_starts[key] = inst_start
@@ -97,12 +99,3 @@ def add_split_task_variables(
     model.AddMinEquality(task_start, start_candidates)
     model.AddMaxEquality(task_end, end_candidates)
     return True
-
-
-def _optional_time_domain(lower_bound: int, upper_bound: int) -> cp_model.Domain:
-    if lower_bound == 0:
-        return cp_model.Domain.FromIntervals([(0, upper_bound)])
-    return cp_model.Domain.FromIntervals([
-        (0, 0),
-        (lower_bound, upper_bound),
-    ])

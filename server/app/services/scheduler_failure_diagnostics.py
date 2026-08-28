@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.services.scheduler_helpers import TIME_UNIT_MINUTES, datetime_to_units, to_units, units_to_datetime
-from app.services.scheduler_instrument_bridging import bridged_instrument_hours
+from app.services.scheduler_instrument_bridging import (
+    bridged_instrument_hours,
+    bridged_instrument_task_ids,
+)
 from app.services.scheduler_failure_presentation import build_failure_presentation
 
 
@@ -135,6 +138,7 @@ def _instrument_failure_groups(
         details, occupied_hours = _occupied_project_details(
             current_project.id, tasks_by_project, compatibility, instrument_id,
             instrument_label, today_start, horizon_start, end_unit, segment_ends, capacities,
+            task_dependencies,
         )
         available = _working_units(
             instrument_prefix_sums[instrument_id], start_unit, end_unit,
@@ -142,8 +146,11 @@ def _instrument_failure_groups(
         required_hours = sum(
             _discrete_task_hours(task)
             for task in current_tasks
-            if instrument_id in {item.id for item in compatibility.get(task.id, [])}
-            or instrument_id in set(getattr(_top_level_task(task), "instrument_ids", None) or [])
+            if getattr(task, "requires_instrument", False)
+            and (
+                instrument_id in {item.id for item in compatibility.get(task.id, [])}
+                or instrument_id in set(getattr(_top_level_task(task), "instrument_ids", None) or [])
+            )
         )
         required_hours += bridged_instrument_hours(
             current_tasks, task_dependencies, compatibility, instrument_id, root_id,
@@ -167,7 +174,7 @@ def _instrument_failure_groups(
 
 def _occupied_project_details(
     current_project_id, tasks_by_project, compatibility, instrument_id, instrument_label,
-    today_start, horizon_start, end_unit, segment_ends, capacities,
+    today_start, horizon_start, end_unit, segment_ends, capacities, task_dependencies=(),
 ) -> tuple[list[dict], float]:
     details = []
     occupied_hours = 0.0
@@ -184,6 +191,7 @@ def _occupied_project_details(
             continue
         _intervals, breakdown = _project_instrument_intervals(
             project_tasks, instrument_id, compatibility, today_start, project_deadline,
+            task_dependencies,
         )
         resource_intervals = breakdown["resource_intervals"]
         if not resource_intervals:
@@ -191,10 +199,14 @@ def _occupied_project_details(
         scheduled_allocated = _allocate_scheduled_hours(
             resource_intervals, segment_starts, segment_ends, capacities, horizon_start, end_unit,
         )
+        bridged_allocated = _allocate_scheduled_hours(
+            resource_intervals, segment_starts, segment_ends, capacities, horizon_start, end_unit,
+            kind="bridge",
+        )
         forecast_allocated = _allocate_forecast_hours(
             resource_intervals, project_deadline, segment_ends, capacities, horizon_start, end_unit,
         )
-        allocated = scheduled_allocated + forecast_allocated
+        allocated = scheduled_allocated + bridged_allocated + forecast_allocated
         if allocated <= 0:
             continue
         occupied_hours += allocated
@@ -203,6 +215,7 @@ def _occupied_project_details(
             "project_label": _project_label(project_tasks[0].project),
             "instrument_label": instrument_label,
             "scheduled_hours": scheduled_allocated,
+            "bridged_hours": bridged_allocated,
             "forecast_hours": forecast_allocated,
             "waiting_hours": breakdown["waiting"],
             "total_hours": allocated,
@@ -210,15 +223,18 @@ def _occupied_project_details(
     return details, occupied_hours
 
 
-def _allocate_scheduled_hours(resource_intervals, starts, ends, capacities, horizon_start, current_end) -> float:
+def _allocate_scheduled_hours(
+    resource_intervals, starts, ends, capacities, horizon_start, current_end, kind="slot",
+) -> float:
+    """按时间段把已排占用摊进各段容量。kind="slot" 是仪器自身占用，"bridge" 是桥接的人工占用。"""
     allocated = 0.0
     for index, (segment_start, segment_end) in enumerate(zip(starts, ends)):
         start_time = units_to_datetime(segment_start, horizon_start)
         end_time = units_to_datetime(segment_end, horizon_start)
         hours = _interval_hours([
             (max(start, start_time), min(end, end_time))
-            for start, end, kind in resource_intervals
-            if kind == "slot" and end > start_time and start < end_time
+            for start, end, interval_kind in resource_intervals
+            if interval_kind == kind and end > start_time and start < end_time
         ])
         used = min(hours, capacities[index])
         capacities[index] -= used
@@ -288,10 +304,23 @@ def _remaining_task_hours(task) -> float:
     return max(0, planned - elapsed)
 
 
-def _project_instrument_intervals(project_tasks, instrument_id, compatibility, window_start, window_end):
+def _project_instrument_intervals(
+    project_tasks, instrument_id, compatibility, window_start, window_end,
+    task_dependencies=(),
+):
     intervals = []
+    # 夹在两个"同仪器 + 同负责人"任务之间的非仪器任务（方案撰写、报告撰写等）
+    # 期间仪器不会被释放，必须算进该仪器的占用，否则缺口分析会偏乐观。
+    bridge_task_ids = bridged_instrument_task_ids(
+        project_tasks, task_dependencies, compatibility, instrument_id,
+    )
     for task in project_tasks:
         if getattr(task, "status", None) in {"done", "completed"}:
+            continue
+        if task.id in bridge_task_ids:
+            intervals.extend(_bridge_intervals(task, window_start, window_end))
+            continue
+        if not getattr(task, "requires_instrument", False):
             continue
         root = _top_level_task(task)
         root_ids = set(getattr(root, "instrument_ids", None) or [])
@@ -328,10 +357,32 @@ def _project_instrument_intervals(project_tasks, instrument_id, compatibility, w
     )
     return [], {
         "slot": _interval_hours([(start, end) for start, end, _task, kind in intervals if kind == "slot"]),
+        "bridge": _interval_hours([(start, end) for start, end, _task, kind in intervals if kind == "bridge"]),
         "forecast": _interval_hours([(start, end) for start, end, _task, kind in intervals if kind == "forecast"]),
         "waiting": waiting_hours,
         "resource_intervals": resource_intervals,
     }
+
+
+def _bridge_intervals(task, window_start, window_end):
+    """桥接任务占住仪器的时间：已排就用它自己的时间槽，未排则按剩余工时倒排到截止日。"""
+    slots = [
+        slot for slot in (getattr(task, "time_slots", []) or [])
+        if slot.plan_start and slot.plan_end
+        and getattr(slot, "lifecycle_status", "active") == "active"
+        and slot.status in {"scheduled", "running", "blocked", "paused"}
+    ]
+    if slots:
+        spans = [
+            (max(window_start, slot.plan_start), min(window_end, slot.plan_end))
+            for slot in slots
+        ]
+        kind = "bridge"
+    else:
+        start = window_end - timedelta(hours=_remaining_task_hours(task))
+        spans = [(max(window_start, start), window_end)]
+        kind = "forecast"
+    return [(start, end, task, kind) for start, end in spans if end > start]
 
 
 def _top_level_task(task):

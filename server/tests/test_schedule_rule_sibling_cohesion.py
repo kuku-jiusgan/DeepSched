@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.database import Base
 from app.models import ScheduleRule
 from app.services.schedule_rule_service import get_solver_constraints
-from app.services.scheduler import _sibling_cohesion_weight
+from app.services.scheduler_soft_constraints import sibling_cohesion_weight
 
 
 class ScheduleRuleSiblingCohesionTest(unittest.TestCase):
@@ -24,7 +24,7 @@ class ScheduleRuleSiblingCohesionTest(unittest.TestCase):
         self.assertTrue(rule.is_enabled)
         self.assertFalse(rule.params["strict"])
         self.assertEqual(1.0, rule.params["weight"])
-        self.assertEqual(100, _sibling_cohesion_weight(rule))
+        self.assertEqual(100, sibling_cohesion_weight(rule))
 
     def test_disabled_rule_has_no_objective_weight(self):
         get_solver_constraints(self.db)
@@ -33,7 +33,7 @@ class ScheduleRuleSiblingCohesionTest(unittest.TestCase):
         ).one()
         rule.is_enabled = False
 
-        self.assertEqual(0, _sibling_cohesion_weight(rule))
+        self.assertEqual(0, sibling_cohesion_weight(rule))
 
 
 if __name__ == "__main__":

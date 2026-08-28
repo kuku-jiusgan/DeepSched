@@ -20,4 +20,4 @@ python3 -m venv "$VENV_DIR"
 (cd "$ROOT_DIR/web" && corepack pnpm install --frozen-lockfile)
 
 echo "Linux 开发依赖安装完成。"
-echo "运行 ./start-linux.sh 启动前后端。"
+echo "运行 ./start.sh 启动前后端。"

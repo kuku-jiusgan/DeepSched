@@ -1,6 +1,5 @@
 import unittest
 from datetime import datetime
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -21,7 +20,6 @@ from app.models import (
 from app.services.schedule_completion_service import (
     _forward_shift_instrument_queue,
     _mark_task_slots_completed,
-    _replan_dependency_projects_after_completion,
     _select_completed_slot,
     complete_task_and_shift,
 )
@@ -139,34 +137,38 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.assertEqual("completed", task.status)
         self.assertIn("原暂停任务【source】未恢复", result["message"])
 
-    def test_dependency_project_replan_includes_completion_trigger(self):
-        candidate = SimpleNamespace(
-            id=501,
-            project_id=31,
-            predecessors=[SimpleNamespace(id=1)],
+    def test_early_completion_uses_resource_queue_not_project_reschedule(self):
+        task = Task(
+            project_id=1, name="方法验证", task_type="test", status="running",
+            assignee_id=7, requires_instrument=True, requires_human=True,
         )
-        captured_requests = []
-
-        def fake_project_reschedule(_db, request):
-            captured_requests.append(request)
-            return {"status": "ok", "moved_tasks": 2}
+        self.db.add(task)
+        self.db.flush()
+        slot = TimeSlot(
+            task_id=task.id, instrument_id=1,
+            plan_start=datetime(2026, 7, 20, 8, 30),
+            plan_end=datetime(2026, 7, 20, 12, 30),
+            actual_start=datetime(2026, 7, 20, 8, 30), status="running",
+        )
+        self.db.add(slot)
+        self.db.commit()
 
         with patch(
-            "app.services.schedule_completion_service._load_forward_shift_candidates",
-            return_value=[candidate],
-        ), patch(
-            "app.services.schedule_reschedule_service._project_reschedule",
-            side_effect=fake_project_reschedule,
-        ):
-            result = _replan_dependency_projects_after_completion(
-                self.db, 9, datetime(2026, 7, 20, 8, 30), 7,
+            "app.services.schedule_completion_service._forward_shift_instrument_queue",
+            return_value={
+                "status": "ok", "message": "任务已完成，该仪器跨项目前移 1 个任务",
+                "moved_tasks": 1, "moved_task_details": [],
+            },
+        ) as replan_queue:
+            result = complete_task_and_shift(
+                self.db, task.id,
+                actual_end_time=datetime(2026, 7, 20, 10, 0),
             )
 
         self.assertEqual("ok", result["status"])
-        self.assertEqual(2, result["moved_tasks"])
-        self.assertEqual("early_completion", captured_requests[0].trigger_type)
-        self.assertEqual("project", captured_requests[0].strategy)
-        self.assertEqual(501, captured_requests[0].affected_task_id)
+        replan_queue.assert_called_once_with(
+            self.db, 1, datetime(2026, 7, 20, 10, 0), 7, 1,
+        )
 
     def test_complete_multi_day_task_preserves_plan_boundaries(self):
         task = Task(project_id=1, name="multi-day", task_type="test", status="running")

@@ -14,6 +14,7 @@ from app.services.scheduler_fixed_slots import (
     load_fixed_bridge_reservations,
     load_fixed_slots,
 )
+from app.services.scheduler_result_service import supersede_replaceable_slots
 
 
 class SchedulerFixedSlotsTest(unittest.TestCase):
@@ -140,7 +141,7 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
 
         self.assertEqual([frozen_slot.id], [slot.id for slot in load_fixed_slots(self.db)])
 
-    def test_future_segment_of_running_task_is_fixed(self):
+    def test_unstarted_running_continuation_is_not_fixed(self):
         future_slot = TimeSlot(
             task_id=1,
             instrument_id=1,
@@ -152,9 +153,26 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
         self.db.add(future_slot)
         self.db.commit()
 
-        self.assertEqual([future_slot.id], [
-            slot.id for slot in load_fixed_slots(self.db)
-        ])
+        self.assertEqual([], load_fixed_slots(self.db))
+
+    def test_replan_supersedes_unstarted_running_continuation(self):
+        continuation = TimeSlot(
+            task_id=1,
+            instrument_id=1,
+            plan_start=datetime(2026, 8, 27, 8, 30),
+            plan_end=datetime(2026, 8, 27, 20, 0),
+            status="running",
+            tier="confirmed",
+        )
+        self.db.add(continuation)
+        self.db.commit()
+
+        supersede_replaceable_slots(
+            self.db, {continuation.task_id}, "测试重排", continuation.plan_start,
+        )
+
+        self.assertEqual("superseded", continuation.lifecycle_status)
+        self.assertEqual("测试重排", continuation.superseded_reason)
 
     def test_only_slots_for_relevant_resources_are_loaded(self):
         project = Project(code="P1", name="测试项目", priority=3)

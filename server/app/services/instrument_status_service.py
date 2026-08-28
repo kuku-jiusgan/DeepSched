@@ -55,9 +55,10 @@ def delete_time_slots_and_refresh(db, query, synchronize_session=False) -> int:
     }
     deleted_count = 0
     for slot in slots:
-        if slot.actual_start is not None or slot.actual_end is not None:
+        if slot.actual_end is not None:
             continue
-        supersede_slot(db, slot, "排程重排")
+        if slot.actual_start is None:
+            supersede_slot(db, slot, "排程重排")
         slot.status = "cancelled"
         deleted_count += 1
     db.flush()

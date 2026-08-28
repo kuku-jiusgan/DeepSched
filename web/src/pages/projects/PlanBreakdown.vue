@@ -322,7 +322,7 @@ const { approvalGateEditOpen, approvalGateEditSubmitting, editingApprovalGate, o
 })
 const hasPendingPlanChanges = computed(() => allTasks.value.some(task =>
   !task.children?.length
-  && (task.schedule_dirty || ['pending', 'ready'].includes(task.status)),
+  && task.schedule_dirty,
 ))
 const parentTaskOptions = computed(() => allTasks.value.filter(t => !editingTask.value || t.id !== editingTask.value.id).map(t => ({ label: t.name, value: t.id })))
 const leafTaskOptions = computed(() => allTasks.value.filter(t => !t.children || t.children.length === 0).map(t => ({ label: t.name, value: t.id })))

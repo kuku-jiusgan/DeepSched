@@ -377,14 +377,22 @@ def _enrich_slot(
         if task and (task.delay_status == "delayed" or _should_include_delay_fields(slot))
         else _empty_delay_fields()
     )
+    task_segments = [item for item in (task.execution_segments if task else []) if item.started_at]
+    task_actual_start = min((item.started_at for item in task_segments), default=None)
+    task_actual_end = (
+        max((item.ended_at for item in task_segments if item.ended_at), default=None)
+        if task and task.status in {"done", "completed"}
+        else None
+    )
     actual_start, actual_end = _slot_actual_window(task, slot)
     return TimeSlotOut(
         id=slot.id, schedule_run_id=slot.schedule_run_id,
         task_id=slot.task_id, instrument_id=slot.instrument_id,
         plan_start=slot.plan_start, plan_end=slot.plan_end,
         actual_start=actual_start, actual_end=actual_end,
+        task_actual_start=task_actual_start, task_actual_end=task_actual_end,
         is_night_run=bool(slot.is_night_run),
-        tier=slot.tier, status=slot.status, execution_status=resolve_task_execution_status(task),
+        tier=slot.tier, status=slot.status, execution_status=_slot_execution_status(slot, task),
         task_name=task.name if task else None,
         task_type=task.task_type if task else None,
         task_status=task.status if task else None,
@@ -398,6 +406,16 @@ def _enrich_slot(
         project_id=task.project_id if task else None,
         **delay_fields,
     )
+
+
+def _slot_execution_status(slot: TimeSlot, task: Task | None) -> str:
+    if task and task.status == "running":
+        return "running"
+    if slot.status == "running" and slot.actual_start is not None and slot.actual_end is None:
+        return "running"
+    if slot.status == "scheduled":
+        return "scheduled"
+    return resolve_task_execution_status(task)
 
 
 def _slot_actual_window(task: Task | None, slot: TimeSlot):

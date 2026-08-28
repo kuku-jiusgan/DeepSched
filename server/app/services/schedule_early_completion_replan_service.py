@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from app.models import Task, TimeSlot
@@ -9,6 +10,9 @@ from app.services.schedule_queue_replan_support import (
     is_movable_task,
     load_forward_shift_candidates,
 )
+
+
+_logger = logging.getLogger(__name__)
 
 
 def replan_released_resource_queue(
@@ -25,8 +29,14 @@ def replan_released_resource_queue(
     candidates = []
     for candidate in all_candidates:
         if not is_movable_task(db, candidate, instrument_id, released_at, assignee_id):
+            # Only a contiguous movable queue prefix may advance. Skipping a
+            # fixed task would let later work jump ahead of its queue position.
             break
         candidates.append(candidate)
+    _logger.info(
+        "early_completion_replan_candidates instrument_id=%s released_at=%s assignee_id=%s candidate_task_ids=%s",
+        instrument_id, released_at, assignee_id, [task.id for task in candidates],
+    )
     if not candidates:
         return _empty_result(instrument_id)
     original_windows = _scheduled_windows(db, candidates)
@@ -57,6 +67,10 @@ def replan_released_resource_queue(
         additional_dependency_gaps=queue_gaps,
         emit_advance_notifications=False,
         commit=False,
+    )
+    _logger.info(
+        "early_completion_replan_result instrument_id=%s released_at=%s candidate_task_ids=%s status=%s message=%s",
+        instrument_id, released_at, [task.id for task in candidates], result.get("status"), result.get("message"),
     )
     if result.get("status") != "ok":
         return {**result, "moved_tasks": 0, "moved_task_details": []}

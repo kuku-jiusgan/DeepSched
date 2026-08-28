@@ -65,10 +65,10 @@ def persist_slots(
                 confirmed_boundary,
                 schedule_run_id,
                 force_forecast=task.id in forecast_task_ids,
-                status=task.status if is_preserved else "scheduled",
+                status=_persisted_task_status(task, is_preserved, task.id in forecast_task_ids),
             )
             if not is_preserved:
-                task.status = "scheduled"
+                task.status = "waiting_external" if task.id in forecast_task_ids else "scheduled"
             continue
 
         start_unit = solver.Value(task_starts[task.id])
@@ -104,7 +104,7 @@ def persist_slots(
                     confirmed_boundary,
                     schedule_run_id,
                     force_forecast=task.id in forecast_task_ids,
-                    status=task.status if is_preserved else "scheduled",
+                    status=_persisted_task_status(task, is_preserved, task.id in forecast_task_ids),
                 )
                 chunk_start = None
 
@@ -122,10 +122,10 @@ def persist_slots(
                 confirmed_boundary,
                 schedule_run_id,
                 force_forecast=task.id in forecast_task_ids,
-                status=task.status if is_preserved else "scheduled",
+                status=_persisted_task_status(task, is_preserved, task.id in forecast_task_ids),
             )
         if not is_preserved:
-            task.status = "scheduled"
+            task.status = "waiting_external" if task.id in forecast_task_ids else "scheduled"
 
     rebuild_instrument_bridge_reservations(db, schedule_run_id)
 
@@ -134,6 +134,12 @@ def persist_slots(
     else:
         db.flush()
     return created
+
+
+def _persisted_task_status(task, is_preserved: bool, force_forecast: bool) -> str:
+    if is_preserved and task.status != "running":
+        return task.status
+    return "waiting_external" if force_forecast else "scheduled"
 
 
 def _persist_split_task_slots(
@@ -229,6 +235,7 @@ def _create_slot(
         TimeSlot.plan_start == start,
         TimeSlot.plan_end == end,
         TimeSlot.status == status,
+        TimeSlot.lifecycle_status == "active",
     ).first()
     if duplicate:
         return 0

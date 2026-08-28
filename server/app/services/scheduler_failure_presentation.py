@@ -51,6 +51,7 @@ def _occupancy_rows(groups: list[dict]) -> list[dict]:
                 "project_id": detail["project_id"],
                 "project_label": detail["project_label"],
                 "scheduled_hours": detail["scheduled_hours"],
+                "bridged_hours": detail["bridged_hours"],
                 "forecast_hours": detail["forecast_hours"],
                 "total_hours": detail["total_hours"],
             }

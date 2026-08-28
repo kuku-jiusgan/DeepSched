@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.database import Base
 from app.models import Instrument, Project, Task, TimeSlot
 from app.services.project_plan_apply_service import _build_project_impacts, _project_impact_message
+from app.services.project_pending_workload_service import PendingWorkload
 from app.services.schedule_priority_dependency_service import build_schedule_priority_dependencies
 from app.services.schedule_insert_service import (
     _build_impacts,
@@ -208,6 +209,25 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         self.assertEqual(24, impacts[0].overdue_hours)
         self.assertIn("预计顺延 48 小时", message)
         self.assertIn("超过结题日期 24 小时", message)
+        self.assertEqual(0, impacts[0].pending_approval_hours)
+        self.assertNotIn("尚未排程", message)
+
+    def test_project_impact_reports_pending_approval_hours(self):
+        project, task = self._scheduled_project("C", 3, 1)
+        original = datetime(2026, 8, 30, 18, 0)
+        delayed = datetime(2026, 9, 1, 18, 0)
+
+        impacts = _build_project_impacts(
+            [task],
+            [],
+            {project.id: original},
+            {project.id: delayed},
+            {project.id: PendingWorkload(hours=20.0, source="tasks")},
+        )
+        message = _project_impact_message(impacts)
+
+        self.assertEqual(20, impacts[0].pending_approval_hours)
+        self.assertIn("另有签批后 20 小时工作尚未排程", message)
 
     def test_project_plan_impacts_include_inserted_and_shifted_roles(self):
         _, inserted_task = self._scheduled_project("A", 2, 1)

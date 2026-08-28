@@ -45,7 +45,11 @@ def workspace_segments(task: Task) -> list[TimeSlot]:
     return sorted(
         (
             slot for slot in task.time_slots
-            if slot.lifecycle_status == "active" and slot.status in WORKSPACE_SLOT_STATUSES
+            if slot.lifecycle_status == "active"
+            and slot.status in WORKSPACE_SLOT_STATUSES
+            and slot.plan_start
+            and slot.plan_end
+            and slot.plan_end > slot.plan_start
         ),
         key=lambda slot: (slot.plan_start, slot.id),
     )

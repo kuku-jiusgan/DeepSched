@@ -250,7 +250,8 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertEqual(300, self._total_minutes(target_slots))
         self.assertEqual(240, self._total_minutes(source_slots))
         self.assertLessEqual(target_slots[-1].plan_end, source_slots[0].plan_start)
-        self.assertTrue(all(slot.status == "running" for slot in target_slots))
+        self.assertEqual("running", target_slots[0].status)
+        self.assertTrue(all(slot.status == "scheduled" for slot in target_slots[1:]))
         self.assertTrue(all(slot.status == "paused" for slot in source_slots))
 
     def test_pause_and_switch_resumes_source_before_target_followup(self):
@@ -381,6 +382,71 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertEqual(120, self._total_minutes(intermediate_slots))
         self.assertLessEqual(target_slots[-1].plan_end, source_slots[0].plan_start)
         self.assertLessEqual(source_slots[-1].plan_end, intermediate_slots[0].plan_start)
+
+    def test_pause_switch_replans_target_assignee_noninstrument_task_when_source_is_nonhuman(self):
+        self.source_task.requires_human = False
+        self.source_task.assignee_id = None
+        self.source_task.est_duration_hours = 2
+        self.target_task.requires_human = True
+        self.target_task.assignee_id = self.operator.id
+        self.target_task.est_duration_hours = 2
+        switch_time = datetime(2026, 8, 25, 10, 0)
+        self.source_slot.plan_start = datetime(2026, 8, 25, 8, 30)
+        self.source_slot.plan_end = datetime(2026, 8, 25, 12, 0)
+        self.source_slot.actual_start = self.source_slot.plan_start
+        self.target_slot.plan_start = datetime(2026, 8, 25, 12, 0)
+        self.target_slot.plan_end = datetime(2026, 8, 25, 14, 0)
+        operator_task = Task(
+            project_id=self.project_b.id,
+            name="目标负责人非仪器任务",
+            task_type="QCFA_001",
+            requires_instrument=False,
+            requires_human=True,
+            assignee_id=self.operator.id,
+            status="scheduled",
+            est_duration_hours=1,
+        )
+        queue_tail = Task(
+            project_id=self.project_b.id,
+            name="后续仪器任务",
+            task_type="FFYZ_001",
+            requires_instrument=True,
+            requires_human=True,
+            assignee_id=self.operator.id,
+            status="scheduled",
+            est_duration_hours=1,
+        )
+        self.db.add_all([operator_task, queue_tail])
+        self.db.flush()
+        self.db.add_all([
+            TimeSlot(
+                task_id=operator_task.id, instrument_id=None,
+                plan_start=datetime(2026, 8, 25, 14, 0),
+                plan_end=datetime(2026, 8, 25, 15, 0), status="scheduled", tier="confirmed",
+            ),
+            TimeSlot(
+                task_id=queue_tail.id, instrument_id=self.instrument.id,
+                plan_start=datetime(2026, 8, 25, 15, 0),
+                plan_end=datetime(2026, 8, 25, 16, 0), status="scheduled", tier="confirmed",
+            ),
+        ])
+        self.db.commit()
+
+        with patch("app.services.task_pause_service.datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = switch_time
+            pause_and_switch_task(
+                self.db, self.source_slot.id, "切换任务", self.operator, self.target_slot.id,
+            )
+        self.db.commit()
+
+        target_slots = self._task_slots(self.target_task.id)
+        operator_slots = self._task_slots(operator_task.id)
+        self.assertTrue(operator_slots)
+        self.assertLessEqual(target_slots[-1].plan_end, operator_slots[0].plan_start)
+        self.assertTrue(all(
+            slot.status != "running" or slot.actual_start is not None
+            for slot in self._task_slots(self.target_task.id)
+        ))
 
     def test_pause_and_switch_reorders_future_task_after_target_queue(self):
         future_task = Task(
@@ -579,7 +645,7 @@ class TaskPauseServiceTest(unittest.TestCase):
 
         self.assertEqual("running", self.source_task.status)
         self.assertEqual("running", earlier_slot.status)
-        self.assertEqual("running", later_slot.status)
+        self.assertEqual("scheduled", later_slot.status)
         self.assertIsNotNone(earlier_slot.actual_start)
         self.assertIsNone(later_slot.actual_start)
 

@@ -26,12 +26,12 @@ class SchedulerFailurePresentationTest(unittest.TestCase):
         )
         detail = {
             "project_id": 2, "project_label": "测试项目B",
-            "scheduled_hours": 20, "forecast_hours": 14.5,
+            "scheduled_hours": 20, "bridged_hours": 0, "forecast_hours": 14.5,
             "waiting_hours": 0, "total_hours": 34.5,
         }
         second_detail = {
             "project_id": 3, "project_label": "测试项目A",
-            "scheduled_hours": 22.5, "forecast_hours": 0,
+            "scheduled_hours": 22.5, "bridged_hours": 0, "forecast_hours": 0,
             "waiting_hours": 0, "total_hours": 22.5,
         }
         groups = [
@@ -72,12 +72,12 @@ class SchedulerFailurePresentationTest(unittest.TestCase):
             "details": [
                 {
                     "project_id": 2, "project_label": "可延期项目",
-                    "scheduled_hours": 40, "forecast_hours": 0,
+                    "scheduled_hours": 40, "bridged_hours": 0, "forecast_hours": 0,
                     "waiting_hours": 0, "total_hours": 40,
                 },
                 {
                     "project_id": 3, "project_label": "不足项目",
-                    "scheduled_hours": 20, "forecast_hours": 0,
+                    "scheduled_hours": 20, "bridged_hours": 0, "forecast_hours": 0,
                     "waiting_hours": 0, "total_hours": 20,
                 },
             ],

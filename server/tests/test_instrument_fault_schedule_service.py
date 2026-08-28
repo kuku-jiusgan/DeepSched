@@ -15,7 +15,7 @@ from app.services.instrument_fault_schedule_service import (
 )
 from app.services.fault_replan_context_service import build_fault_replan_context
 from app.services.fault_replan_result_service import build_fault_impact_details
-from app.services.scheduler import _supersede_replaceable_slots
+from app.services.scheduler_result_service import supersede_replaceable_slots
 
 
 def working_options(_db, start: datetime) -> dict:
@@ -81,7 +81,7 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         self.db.add(slot)
         self.db.flush()
 
-        _supersede_replaceable_slots(
+        supersede_replaceable_slots(
             self.db, {task.id}, "CP-SAT局部重排", datetime(2026, 8, 10, 9, 0),
         )
 

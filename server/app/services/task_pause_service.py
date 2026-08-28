@@ -85,6 +85,7 @@ def pause_and_switch_task(
         _insert_target_into_source_schedule(db, source_slot, target_slot, paused_at)
         db.flush()
         start_task_execution(db, target_slot.id, operator.id, allow_queue_insert=True)
+        _promote_switched_instrument_slot(db, target_slot.task_id, paused_at)
 
     record_audit_log(
         db,
@@ -114,6 +115,27 @@ def _insert_target_into_source_schedule(
     started_at: datetime,
 ) -> None:
     replan_pause_switch(db, source_slot, target_slot, started_at)
+
+
+def _promote_switched_instrument_slot(db, task_id: int, started_at: datetime) -> None:
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task or not task.requires_instrument:
+        return
+    active_slots = (
+        db.query(TimeSlot)
+        .filter(TimeSlot.task_id == task_id, TimeSlot.lifecycle_status == "active")
+        .order_by(TimeSlot.plan_start, TimeSlot.id)
+        .all()
+    )
+    candidate = next(
+        (slot for slot in active_slots if slot.plan_end and slot.plan_end > started_at and slot.status == "scheduled"),
+        None,
+    )
+    if candidate is None:
+        return
+    candidate.status = "running"
+    candidate.actual_start = started_at
+    candidate.actual_end = None
 
 
 def _approval_ready_time(db, task: Task) -> datetime | None:

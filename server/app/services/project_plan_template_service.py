@@ -16,6 +16,9 @@ TEMPLATE_STEPS = [
     ("方法验证", "FFYZ_001", Decimal("0.20"), True),
     ("报告撰写", "ZXBG_001", Decimal("0.05"), False),
 ]
+# 方案签批之后才创建的任务。签批前它们不占排程，其工时由
+# project_pending_workload_service 折算进交付预测，避免延期风险被掩盖。
+POST_APPROVAL_STEPS = TEMPLATE_STEPS[2:]
 
 
 class ProjectPlanTemplateNotFoundError(Exception):
@@ -75,7 +78,7 @@ def import_standard_plan(db, project_id: int, user: User) -> StandardPlanImportO
 
     allocations = _allocate_hours(float(project.estimated_hours))
     created_tasks: list[Task] = []
-    for index, ((name, task_type, _, requires_instrument), hours) in enumerate(zip(TEMPLATE_STEPS, allocations)):
+    for index, ((name, task_type, _, requires_instrument), hours) in enumerate(zip(TEMPLATE_STEPS[:2], allocations[:2])):
         task = Task(
             project_id=project.id,
             name=name,
@@ -95,7 +98,7 @@ def import_standard_plan(db, project_id: int, user: User) -> StandardPlanImportO
         db.flush()
         created_tasks.append(task)
 
-    method_task, scheme_task, validation_task, report_task = created_tasks
+    method_task, scheme_task = created_tasks
     restriction = Task(
         project_id=project.id,
         name="方案签批",
@@ -114,16 +117,9 @@ def import_standard_plan(db, project_id: int, user: User) -> StandardPlanImportO
     )
     db.add(restriction)
     db.flush()
-    validation_task.status = "waiting_external"
-    validation_task.schedule_dirty = False
-    report_task.status = "waiting_external"
-    report_task.schedule_dirty = False
-
     db.add_all([
         create_continuous_successor(method_task, scheme_task),
         TaskDependency(task_id=restriction.id, predecessor_id=scheme_task.id),
-        TaskDependency(task_id=validation_task.id, predecessor_id=restriction.id),
-        create_continuous_successor(validation_task, report_task),
     ])
     validate_project_estimated_hours(db, project.id)
     db.add(AuditLog(
@@ -141,7 +137,7 @@ def import_standard_plan(db, project_id: int, user: User) -> StandardPlanImportO
     db.commit()
     return StandardPlanImportOut(
         status="ok",
-        message=f"已生成“{group.name}”及其 5 个子任务",
+        message=f"已生成“{group.name}”及签批前任务，签批后任务将在方案通过后创建",
         project_id=project.id,
         estimated_hours=float(project.estimated_hours),
         tasks=[
@@ -160,16 +156,6 @@ def import_standard_plan(db, project_id: int, user: User) -> StandardPlanImportO
                 task_type=restriction.task_type,
                 is_approval_restriction=True,
             ),
-            *[
-                StandardPlanTaskOut(
-                    id=task.id,
-                    name=task.name,
-                    task_type=task.task_type,
-                    percentage=float(TEMPLATE_STEPS[index][2] * 100),
-                    estimated_hours=float(task.est_duration_hours or 0),
-                )
-                for index, task in enumerate(created_tasks[2:], start=2)
-            ],
         ],
     )
 

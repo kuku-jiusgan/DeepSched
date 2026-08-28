@@ -72,6 +72,7 @@ def dashboard(
         db.query(Task.id)
         .join(TimeSlot, TimeSlot.task_id == Task.id)
         .filter(Task.status.notin_({"done", "completed"}))
+        .filter(or_(Task.delay_status == "delayed", TimeSlot.plan_end < datetime.now()))
         .group_by(Task.id)
         .having(func.max(TimeSlot.plan_end) < datetime.now())
         .all()

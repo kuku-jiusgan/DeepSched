@@ -65,6 +65,8 @@
 
 <script setup lang="ts">
 import { computed, h, ref, watch } from 'vue'
+import type { ProjectPlanApplyResult } from '@/types'
+import { scheduleFailureContent } from '@/pages/projects/planScheduleFailure'
 import dayjs from 'dayjs'
 import { Empty, message, Modal } from 'ant-design-vue'
 import { getTaskSwitchCandidates, pauseTask } from '@/services/api'
@@ -132,9 +134,14 @@ async function submit() {
   } catch (error: unknown) {
     const candidate = error as { response?: { data?: { detail?: string } } }
     const detail = candidate.response?.data?.detail || '暂停任务失败'
+    const structured = typeof detail === 'object' && detail !== null
+      ? detail as ProjectPlanApplyResult
+      : null
     Modal.error({
       title: '暂停并切换失败',
-      content: h('div', { style: { whiteSpace: 'pre-line' } }, detail),
+      content: structured?.schedule_failure
+        ? scheduleFailureContent(structured)
+        : h('div', { style: { whiteSpace: 'pre-line' } }, String(detail)),
       okText: '确认',
     })
   } finally {

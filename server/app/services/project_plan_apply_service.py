@@ -25,6 +25,9 @@ from app.services.project_plan_impact_service import (
     project_completions as _project_completions,
     project_impact_message as _project_impact_message,
 )
+from app.services.project_pending_workload_service import (
+    pending_approval_workload as _pending_approval_workload,
+)
 from app.services.project_instrument_validation_service import (
     RequiredInstrumentError,
     validate_required_task_instruments,
@@ -89,11 +92,6 @@ def apply_project_plan(
         return _execute_replan(
             db, project, selected_tasks, [], commit=not preserve_existing,
             approval_context=approval_context, use_savepoint=preserve_existing,
-        )
-    if project.project_kind == "detection" and approval_context is None:
-        return _execute_replan(
-            db, project, selected_tasks, movable_tasks,
-            commit=not preserve_existing, use_savepoint=preserve_existing,
         )
     return _preview_plan_insert(
         db, project, selected_tasks, movable_tasks, approval_context, preserve_existing,
@@ -210,7 +208,10 @@ def _execute_replan(
     selected_task_ids = {task.id for task in selected_tasks}
     old_windows = _task_windows(db, replan_task_ids)
     moved_project_ids = {task.project_id for task in movable_tasks}
-    old_project_completions = _project_completions(db, moved_project_ids)
+    # 签批后未排的工时在重排前后都不变，但它会把被顺延项目的真实完工时间
+    # 推到结题日之后，必须一并计入 exceeds_end_date 的判定。
+    moved_workloads = _pending_approval_workload(db, moved_project_ids)
+    old_project_completions = _project_completions(db, moved_project_ids, moved_workloads)
 
     _delete_movable_slots(db, replan_task_ids)
     for task in replan_tasks:
@@ -267,12 +268,13 @@ def _execute_replan(
         new_windows,
         impact_roles,
     )
-    new_project_completions = _project_completions(db, moved_project_ids)
+    new_project_completions = _project_completions(db, moved_project_ids, moved_workloads)
     project_impacts = _build_project_impacts(
         movable_tasks,
         impacts,
         old_project_completions,
         new_project_completions,
+        moved_workloads,
     )
     for task in db.query(Task).filter(Task.project_id == project.id).all():
         task.schedule_dirty = False

@@ -64,15 +64,24 @@
       class="mobile-navigation-drawer"
       title="资源智能调度协同平台"
     >
-      <a-menu
-        theme="dark"
-        mode="inline"
-        :selected-keys="[route.path]"
-        :default-open-keys="openKeys"
-        :items="menuItems"
-        class="app-menu mobile-app-menu"
-        @click="navigate"
-      />
+      <a-spin v-if="mobileMenuLoading" class="mobile-menu-loading" />
+      <nav v-else-if="mobileVisibleMenuItems.length" class="mobile-nav-list" aria-label="主菜单">
+        <template v-for="item in mobileVisibleMenuItems" :key="item.key">
+          <div v-if="item.children?.length" class="mobile-nav-group">{{ item.mobileLabel ?? item.label }}</div>
+          <button
+            v-for="entry in (item.children?.length ? item.children : [item])"
+            :key="entry.key"
+            type="button"
+            class="mobile-nav-entry"
+            :class="{ 'mobile-nav-entry-selected': route.path === entry.key }"
+            @click="navigate({ key: entry.key })"
+          >
+            <component :is="entry.icon" />
+            <span>{{ entry.label }}</span>
+          </button>
+        </template>
+      </nav>
+      <a-empty v-else description="暂无可访问菜单" :image="Empty.PRESENTED_IMAGE_SIMPLE" class="mobile-menu-empty" />
       <template #footer>
         <a-button type="text" block class="logout-button" @click="handleLogout">
           <template #icon><LogoutOutlined /></template>退出登录
@@ -85,7 +94,7 @@
         :class="{ 'app-content-cockpit': route.path === '/operations/cockpit' }"
       >
         <div v-if="route.path !== '/operations/cockpit' || isMobile" class="page-top-actions">
-          <a-button v-if="isMobile" class="mobile-menu-button" aria-label="打开菜单" @click="mobileMenuOpen = true">
+          <a-button v-if="isMobile" class="mobile-menu-button" aria-label="打开菜单" :loading="mobileMenuLoading" @click="openMobileMenu">
             <template #icon><MenuOutlined /></template>
           </a-button>
           <a-dropdown trigger="click">
@@ -177,7 +186,7 @@ import { isMobileViewport, useMobileViewport } from '@/composables/useMobileView
 import { useRouter, useRoute } from 'vue-router'
 import { Empty, message } from 'ant-design-vue'
 import dayjs from 'dayjs'
-import { canViewPage, clearPermissions, permissionState } from '@/services/permissions'
+import { canViewPage, clearPermissions, loadMyPermissions, permissionState } from '@/services/permissions'
 import {
   FundOutlined, AppstoreOutlined, CheckSquareOutlined,
   ProjectOutlined, ScheduleOutlined, SettingOutlined,
@@ -208,6 +217,8 @@ const mobileSiderMedia = typeof window !== 'undefined' && typeof window.matchMed
   : null
 const { isMobile } = useMobileViewport()
 const mobileMenuOpen = ref(false)
+const mobileMenuLoading = ref(false)
+const mobileMenuKey = computed(() => menuItems.value.map(item => item.key).join('|'))
 const isSiderCollapsed = ref(
   isMobileViewport() || localStorage.getItem('siderCollapsed') === 'true',
 )
@@ -253,27 +264,27 @@ function icon(name: string) {
 }
 
 const baseMenuItems = [
-  { key: '/operations/cockpit', icon: icon('HomeOutlined'), label: '首页' },
+  { key: '/operations/cockpit', icon: icon('HomeOutlined'), label: '首页', mobile: false },
   { key: '/operations', icon: icon('FundOutlined'), label: '运营数据中台', hidden: true, children: [
     { key: '/operations/lab-status', icon: icon('DesktopOutlined'), label: '实验室状态大屏' },
   ]},
-  { key: '/kanban', icon: icon('AppstoreOutlined'), label: '资源看板', children: [
+  { key: '/kanban', icon: icon('AppstoreOutlined'), label: '资源看板', mobile: false, children: [
     { key: '/kanban/instrument-gantt', icon: icon('BarChartOutlined'), label: '仪器甘特图' },
   ]},
-  { key: '/tasks', icon: icon('CheckSquareOutlined'), label: '任务管理', children: [
-    { key: '/tasks/workspace', icon: icon('UserOutlined'), label: '个人工作台' },
-    { key: '/tasks/agenda', icon: icon('CalendarOutlined'), label: '我的安排' },
-    { key: '/tasks/faults', icon: icon('ToolOutlined'), label: '故障提报' },
+  { key: '/tasks', icon: icon('CheckSquareOutlined'), label: '任务管理', mobile: true, mobileLabel: '工作', children: [
+    { key: '/tasks/workspace', icon: icon('UserOutlined'), label: '个人工作台', mobile: true },
+    { key: '/tasks/agenda', icon: icon('CalendarOutlined'), label: '我的安排', mobile: true },
+    { key: '/tasks/faults', icon: icon('ToolOutlined'), label: '故障提报', mobile: true },
   ]},
-  { key: '/projects', icon: icon('ProjectOutlined'), label: '项目管理', children: [
-    { key: '/projects/detection-tasks', icon: icon('CheckSquareOutlined'), label: '检测任务管理' },
-    { key: '/projects/ledger', icon: icon('DatabaseOutlined'), label: '项目台账管理' },
+  { key: '/projects', icon: icon('ProjectOutlined'), label: '项目管理', mobile: true, mobileLabel: '管理查看', children: [
+    { key: '/projects/detection-tasks', icon: icon('CheckSquareOutlined'), label: '检测任务管理', mobile: true },
+    { key: '/projects/ledger', icon: icon('DatabaseOutlined'), label: '项目台账管理', mobile: true },
     { key: '/projects/plan-breakdown', icon: icon('PartitionOutlined'), label: '项目计划拆解' },
     { key: '/projects/process-dag', icon: icon('ApartmentOutlined'), label: '标准工序依赖配置' },
     { key: '/projects/resource-ledger', icon: icon('TableOutlined'), label: '仪器基础信息' },
   ]},
-  { key: '/reports', icon: icon('BarChartOutlined'), label: '报表中心', children: [
-    { key: '/operations/reports', icon: icon('FileTextOutlined'), label: '项目工时统计报表' },
+  { key: '/reports', icon: icon('BarChartOutlined'), label: '报表中心', mobile: true, mobileLabel: '管理查看', children: [
+    { key: '/operations/reports', icon: icon('FileTextOutlined'), label: '项目工时统计报表', mobile: true },
   ]},
   { key: '/schedule', icon: icon('ScheduleOutlined'), label: '排程管理', children: [
     { key: '/schedule/rules', icon: icon('ToolOutlined'), label: '排程规则配置' },
@@ -294,6 +305,13 @@ const menuItems = computed(() => {
   permissionState.permissions
   return filterMenuItems(baseMenuItems)
 })
+
+const mobileVisibleMenuItems = computed(() => (
+  baseMenuItems
+    .filter(item => item.mobile)
+    .map(item => ({ ...item, children: item.children?.filter(child => (child as { mobile?: boolean }).mobile) }))
+    .filter(item => item.children?.length || !item.children)
+))
 
 function filterMenuItems(items: typeof baseMenuItems) {
   return items
@@ -583,6 +601,7 @@ function notificationTypeColor(type: string) {
 }
 
 onMounted(() => {
+  void ensureLayoutPermissions()
   mobileSiderMedia?.addEventListener('change', syncSiderWithViewport)
   markActivity()
   ACTIVITY_EVENTS.forEach(eventName => window.addEventListener(eventName, markActivity, { passive: true }))
@@ -591,6 +610,28 @@ onMounted(() => {
   notificationTimer = window.setInterval(fetchNotifications, 15000)
   sessionKeepAliveTimer = window.setInterval(keepActiveSessionAlive, SESSION_KEEP_ALIVE_MS)
 })
+
+async function ensureLayoutPermissions() {
+  if (!localStorage.getItem('token') || permissionState.isLoaded) return
+  try {
+    await loadMyPermissions()
+  } catch {
+    // The router handles session expiration; keep the layout mounted while it redirects.
+  }
+}
+
+async function openMobileMenu() {
+  if (mobileMenuLoading.value) return
+  mobileMenuLoading.value = true
+  try {
+    if (localStorage.getItem('token')) await loadMyPermissions(true)
+    mobileMenuOpen.value = true
+  } catch (error: unknown) {
+    message.error(getErrorDetail(error, '菜单加载失败，请稍后重试'))
+  } finally {
+    mobileMenuLoading.value = false
+  }
+}
 
 onBeforeUnmount(() => {
   mobileSiderMedia?.removeEventListener('change', syncSiderWithViewport)

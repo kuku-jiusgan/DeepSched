@@ -38,6 +38,7 @@ class SchedulerInfeasibilityDiagnosticsTest(unittest.TestCase):
         occupied_slot = SimpleNamespace(
             instrument_id=101, plan_start=horizon_start.replace(hour=9),
             plan_end=horizon_start.replace(hour=11), status="scheduled",
+            lifecycle_status="active",
         )
         other_task = SimpleNamespace(
             id=31, project_id=2, project=other_project, parent=None,
@@ -208,15 +209,17 @@ class SchedulerInfeasibilityDiagnosticsTest(unittest.TestCase):
         self.assertEqual(0, result["schedule_failure"]["groups"][0]["occupied_hours"])
 
     def test_counts_scheduled_slot_by_actual_date_before_current_deadline(self):
-        horizon_start = datetime(2026, 8, 20, 8, 0)
-        current_deadline = datetime(2026, 8, 31, 23, 59)
+        horizon_start = (datetime.now() + timedelta(days=1)).replace(
+            hour=8, minute=0, second=0, microsecond=0,
+        )
+        current_deadline = horizon_start + timedelta(days=11, hours=15, minutes=59)
         current_project = SimpleNamespace(
             id=1, code="XM-001", name="当前项目", start_date=horizon_start,
             end_date=current_deadline, tasks=[],
         )
         later_project = SimpleNamespace(
             id=2, code="XM-002", name="晚截止项目", start_date=horizon_start,
-            end_date=datetime(2026, 9, 16, 23, 59), tasks=[],
+            end_date=current_deadline + timedelta(days=16), tasks=[],
         )
         root = SimpleNamespace(id=10, name="方法验证", parent=None, instrument_ids=[101])
         current_task = SimpleNamespace(
@@ -225,8 +228,9 @@ class SchedulerInfeasibilityDiagnosticsTest(unittest.TestCase):
             switchover_hours=0, time_slots=[], status="pending",
         )
         occupied_slot = SimpleNamespace(
-            instrument_id=101, plan_start=datetime(2026, 8, 24, 8, 30),
-            plan_end=datetime(2026, 8, 25, 17, 30), status="scheduled",
+            instrument_id=101, plan_start=horizon_start + timedelta(days=4, minutes=30),
+            plan_end=horizon_start + timedelta(days=5, hours=9, minutes=30), status="scheduled",
+            lifecycle_status="active",
         )
         occupied_task = SimpleNamespace(
             id=21, project_id=2, project=later_project, parent=None,

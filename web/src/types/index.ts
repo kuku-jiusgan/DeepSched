@@ -32,6 +32,7 @@ export interface DetectionTask {
   schedule_status?: string | null;
   schedule_message?: string | null;
   preview_token?: string | null;
+  project_impacts: ProjectScheduleImpact[];
 }
 
 export interface ProjectHoursTask {
@@ -259,6 +260,8 @@ export interface TimeSlot {
   plan_end: string;
   actual_start?: string;
   actual_end?: string;
+  task_actual_start?: string | null;
+  task_actual_end?: string | null;
   tier: string;
   status: string;
   execution_status?: string;
@@ -358,6 +361,7 @@ export interface ProjectScheduleImpact {
   delay_hours: number;
   exceeds_end_date: boolean;
   overdue_hours: number;
+  pending_approval_hours: number;
 }
 
 export type ProjectPlanApplyStatus = 'applied' | 'no_changes' | 'insert_confirmation_required' | 'error';
@@ -448,6 +452,7 @@ export interface ScheduleFailureOccupancy {
   project_id: number;
   project_label: string;
   scheduled_hours: number;
+  bridged_hours: number;
   forecast_hours: number;
   total_hours: number;
 }

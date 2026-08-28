@@ -246,7 +246,11 @@ const taskDelayRangesMap = computed(() => {
 })
 
 const displaySlots = computed<GanttSlot[]>(() =>
-  mergeContinuousSlots(splitSlotsAroundExecutedOccupancy(toDisplaySlots([...slots.value, ...faultDisplaySlots.value, ...bridgeDisplaySlots.value]))),
+  mergeContinuousSlots(splitSlotsAroundExecutedOccupancy(toDisplaySlots([...slots.value, ...faultDisplaySlots.value, ...bridgeDisplaySlots.value])))
+    .filter(slot =>
+      dayjs(slot.plan_end).isAfter(dayjs(slot.plan_start))
+      || (slot.status === 'running' && slot.actual_start && !slot.actual_end),
+    ),
 )
 
 const slotsByInstrument = computed(() => {
@@ -381,7 +385,12 @@ function getSlotsForQuarter(instId: number, quarter: number) {
 }
 
 function getSlotsForInstrument(instId: number) {
-  return slotsByInstrument.value.get(instId) || []
+  return (slotsByInstrument.value.get(instId) || []).filter(slot => {
+    // Zero-length execution anchors are retained by the API for audit/history,
+    // but must not render as a second bar in the instrument gantt.
+    return dayjs(slot.plan_end).isAfter(dayjs(slot.plan_start))
+      || (slot.status === 'running' && slot.actual_start && !slot.actual_end)
+  })
 }
 
 function quarterSlotKey(instId: number, quarter: number) {

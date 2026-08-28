@@ -107,7 +107,7 @@ def update_detection_task(db, detection_id: int, data, user) -> tuple[Project, d
     if data.end_date < data.start_date:
         raise DetectionTaskInvalidError("计划完成时间不能早于计划开始时间")
     if lock_status != "none":
-        return _update_locked_detection_task(db, project, task, data, code, name)
+        return _update_locked_detection_task(db, project, task, data, code, name, user)
     try:
         validate_task_references(
             db, project.id, parent_id=None, milestone_id=None, predecessor_ids=[],
@@ -138,7 +138,7 @@ def update_detection_task(db, detection_id: int, data, user) -> tuple[Project, d
     return project, result
 
 
-def _update_locked_detection_task(db, project: Project, task: Task, data, code: str, name: str) -> tuple[Project, dict]:
+def _update_locked_detection_task(db, project: Project, task: Task, data, code: str, name: str, user) -> tuple[Project, dict]:
     _ensure_locked_update_only_changes_safe_fields(project, task, data, code)
     latest_slot_end = max((slot.plan_end for slot in task.time_slots), default=None)
     normalized_end = normalize_project_end(data.end_date)

@@ -51,28 +51,26 @@ class ProjectPlanTemplateServiceTest(unittest.TestCase):
         }
         work_tasks = [task for task in tasks if not task.is_external_gate]
 
-        self.assertEqual(6, len(tasks))
+        self.assertEqual(4, len(tasks))
         group = by_name["标准计划1"]
         self.assertEqual("group", group.task_type)
         self.assertTrue(all(task.parent_id == group.id for task in tasks if task.id != group.id))
-        self.assertAlmostEqual(123.45, sum(task.est_duration_hours or 0 for task in work_tasks))
+        self.assertAlmostEqual(92.59, sum(task.est_duration_hours or 0 for task in work_tasks))
         self.assertEqual(
-            ["方法开发", "方案撰写", "方案签批", "方法验证", "报告撰写"],
+            ["方法开发", "方案撰写", "方案签批"],
             [task.name for task in result.tasks],
         )
-        self.assertEqual([70.0, 5.0, 20.0, 5.0], [
+        self.assertEqual([70.0, 5.0], [
             task.percentage for task in result.tasks if not task.is_approval_restriction
         ])
         self.assertIsNone(by_name["方案签批"].est_duration_hours)
         self.assertEqual(self.project.manager_id, by_name["方案签批"].assignee_id)
-        self.assertEqual("waiting_external", by_name["方法验证"].status)
-        self.assertEqual("waiting_external", by_name["报告撰写"].status)
+        self.assertNotIn("方法验证", by_name)
+        self.assertNotIn("报告撰写", by_name)
         self.assertIn((by_name["方法开发"].id, by_name["方案撰写"].id), dependencies)
         self.assertIn((by_name["方案撰写"].id, by_name["方案签批"].id), dependencies)
-        self.assertIn((by_name["方案签批"].id, by_name["方法验证"].id), dependencies)
-        self.assertIn((by_name["方法验证"].id, by_name["报告撰写"].id), dependencies)
         self.assertEqual(
-            ["方法开发", "方案撰写", "方案签批", "方法验证", "报告撰写"],
+            ["方法开发", "方案撰写", "方案签批"],
             [task.name for task in sorted(
                 (task for task in tasks if task.parent_id == group.id),
                 key=lambda task: task.plan_order,
@@ -86,7 +84,7 @@ class ProjectPlanTemplateServiceTest(unittest.TestCase):
         groups = self.db.query(Task).filter(Task.task_type == "group").order_by(Task.id).all()
         self.assertEqual(["标准计划1", "标准计划2"], [task.name for task in groups])
         for group in groups:
-            self.assertEqual(5, self.db.query(Task).filter(Task.parent_id == group.id).count())
+            self.assertEqual(3, self.db.query(Task).filter(Task.parent_id == group.id).count())
 
     def test_non_manager_cannot_import_template(self):
         with self.assertRaises(ProjectPlanTemplatePermissionError):

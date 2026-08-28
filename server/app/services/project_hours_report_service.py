@@ -61,7 +61,7 @@ def export_project_hours_report(report: ProjectHoursReportOut) -> BytesIO:
             item.project_code, item.project_name, item.client_name or "", item.manager_name or "",
             item.start_date, item.end_date, _project_status_label(item.project_status), item.task_count, item.planned_hours, item.actual_hours, item.variance_hours,
         ])
-    detail = workbook.create_sheet("任务工时明细")
+    detail = workbook.create_sheet("任务明细")
     _append_header(detail, ["项目编号", "项目名称", "任务名称", "层级", "负责人", "仪器编号", "计划开始", "计划结束", "实际开始", "实际完成", "任务状态", "预计工时(h)", "实际工时(h)", "系统判定", "延期小时数", "暂停次数", "延期/暂停原因"])
     for item in report.items:
         for task in item.tasks:

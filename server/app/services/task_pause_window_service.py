@@ -111,14 +111,15 @@ def remaining_minutes(
 
 
 def _assignee_slots(db, source_slot, target_slot, switch_time, queue_end) -> list[TimeSlot]:
-    if not source_slot.task.requires_human or source_slot.task.assignee_id is None:
+    assignee_ids = _switch_assignee_ids(source_slot, target_slot)
+    if not assignee_ids:
         return []
     return (
         db.query(TimeSlot)
         .join(Task, Task.id == TimeSlot.task_id)
         .filter(
             Task.requires_human.is_(True),
-            Task.assignee_id == source_slot.task.assignee_id,
+            Task.assignee_id.in_(assignee_ids),
             TimeSlot.task_id.notin_([source_slot.task_id, target_slot.task_id]),
             TimeSlot.status.in_(CANDIDATE_SLOT_STATUSES),
             TimeSlot.actual_start.is_(None),
@@ -129,6 +130,14 @@ def _assignee_slots(db, source_slot, target_slot, switch_time, queue_end) -> lis
         .order_by(TimeSlot.plan_start, TimeSlot.id)
         .all()
     )
+
+
+def _switch_assignee_ids(source_slot: TimeSlot, target_slot: TimeSlot) -> set[int]:
+    return {
+        task.assignee_id
+        for task in (source_slot.task, target_slot.task)
+        if task.requires_human and task.assignee_id is not None
+    }
 
 
 def _remaining_slot_minutes(slots: list[TimeSlot], from_time: datetime, active_slot: TimeSlot) -> int:

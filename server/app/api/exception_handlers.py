@@ -19,4 +19,4 @@ def _validation_error(_request: Request, exc: DomainValidationError) -> JSONResp
 
 
 def _conflict(_request: Request, exc: DomainConflictError) -> JSONResponse:
-    return JSONResponse(status_code=409, content={"detail": str(exc)})
+    return JSONResponse(status_code=409, content={"detail": exc.detail or str(exc)})

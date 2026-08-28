@@ -44,13 +44,14 @@ function occupancyTable(rows: ScheduleFailureOccupancy[]) {
       : h('div', { class: 'schedule-failure-table-scroll' }, [
           h('table', { class: 'schedule-failure-table' }, [
             h('thead', [h('tr', [
-              h('th', '占用项目'), h('th', '仪器'), h('th', '已排工时'),
-              h('th', '预测工时'), h('th', '合计'),
+              h('th', '占用项目'), h('th', '仪器'), h('th', '仪器占用'),
+              h('th', '人工占用'), h('th', '预测工时'), h('th', '合计'),
             ])]),
             h('tbody', rows.map(row => h('tr', { key: `${row.instrument_id}-${row.project_id}` }, [
               cell(row.project_label, 'schedule-failure-name'),
               cell(row.instrument_label),
               cell(formatHours(row.scheduled_hours)),
+              cell(formatHours(row.bridged_hours)),
               cell(formatHours(row.forecast_hours)),
               cell(formatHours(row.total_hours)),
             ]))),

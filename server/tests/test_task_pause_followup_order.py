@@ -95,6 +95,76 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
         self.assertEqual(set(context.remaining_duration_minutes), context.task_ids)
         self.assertEqual(source_parent.id, source_followup.parent_id)
 
+    def test_manual_followup_does_not_block_different_assignee_instrument_task(self):
+        _, target, target_followup = self._task_group(self.project_b, "B")
+        source_parent, source, _ = self._task_group(self.project_a, "A")
+        other_operator = User(username="other-tech", display_name="其他技术员", role="技术员")
+        self.db.add(other_operator)
+        self.db.flush()
+        source.assignee_id = other_operator.id
+        now = datetime.now().replace(second=0, microsecond=0)
+        source_slot = self._slot(source, now - timedelta(hours=1), now + timedelta(hours=2))
+        target_slot = self._slot(target, now + timedelta(hours=2), now + timedelta(hours=5))
+        self._slot(target_followup, now + timedelta(hours=5), now + timedelta(hours=6), False)
+        self.db.add(TaskDependency(
+            task_id=target_followup.id,
+            predecessor_id=target.id,
+            dependency_type="continuous_successor",
+        ))
+        self.db.commit()
+
+        context = build_pause_switch_context(self.db, source_slot, target_slot, now)
+
+        self.assertEqual(
+            [(target_followup.id, target.id), (source.id, target.id)],
+            context.queue_dependencies,
+        )
+        self.assertEqual(source_parent.id, source.parent_id)
+
+    def test_switch_context_includes_target_assignee_slots_when_source_is_nonhuman(self):
+        source = Task(
+            project_id=self.project_a.id,
+            name="无需人员的检测",
+            task_type="CHECK_001",
+            requires_instrument=True,
+            requires_human=False,
+            status="scheduled",
+            est_duration_hours=2,
+        )
+        _, target, _ = self._task_group(self.project_b, "B")
+        operator_task = Task(
+            project_id=self.project_b.id,
+            name="切入任务负责人的非仪器任务",
+            task_type="DOC_001",
+            requires_instrument=False,
+            requires_human=True,
+            assignee_id=self.operator.id,
+            status="scheduled",
+            est_duration_hours=1,
+        )
+        queue_tail = Task(
+            project_id=self.project_b.id,
+            name="仪器队列末尾任务",
+            task_type="CHECK_002",
+            requires_instrument=True,
+            requires_human=True,
+            assignee_id=self.operator.id,
+            status="scheduled",
+            est_duration_hours=1,
+        )
+        self.db.add_all([source, operator_task, queue_tail])
+        self.db.flush()
+        now = datetime.now().replace(second=0, microsecond=0)
+        source_slot = self._slot(source, now - timedelta(hours=1), now + timedelta(hours=1))
+        target_slot = self._slot(target, now + timedelta(hours=1), now + timedelta(hours=3))
+        self._slot(operator_task, now + timedelta(hours=3), now + timedelta(hours=4), False)
+        self._slot(queue_tail, now + timedelta(hours=4), now + timedelta(hours=5))
+        self.db.commit()
+
+        context = build_pause_switch_context(self.db, source_slot, target_slot, now)
+
+        self.assertIn(operator_task.id, context.task_ids)
+
     def test_switch_context_excludes_cross_parent_continuous_successor(self):
         _, target, _ = self._task_group(self.project_b, "B")
         other_parent = Task(project_id=self.project_b.id, name="另一个标准计划", task_type="ROOT")
@@ -164,6 +234,20 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
         self.db.commit()
 
         self.assertEqual([], find_instrument_conflicts(self.db))
+
+    def test_start_marks_only_requested_slot_running(self):
+        _, task, _ = self._task_group(self.project_a, "A")
+        now = datetime.now().replace(second=0, microsecond=0)
+        current = self._slot(task, now, now + timedelta(hours=1))
+        future = self._slot(task, now + timedelta(hours=2), now + timedelta(hours=3))
+        self.db.commit()
+
+        start_task_execution(self.db, current.id, self.operator.id)
+
+        self.assertEqual("running", current.status)
+        self.assertIsNotNone(current.actual_start)
+        self.assertEqual("scheduled", future.status)
+        self.assertIsNone(future.actual_start)
 
     def _task_group(self, project: Project, suffix: str) -> tuple[Task, Task, Task]:
         parent = Task(project_id=project.id, name=f"标准计划{suffix}", task_type="ROOT")

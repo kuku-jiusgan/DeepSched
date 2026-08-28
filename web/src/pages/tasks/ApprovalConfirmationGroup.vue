@@ -150,10 +150,10 @@ async function saveExpectedApproval() {
       approval_note: gate.approval_note,
     })
     expectedModalOpen.value = false
-    if (result.schedule_status === 'forecast') {
-      message.success('预计签批时间已保存，预测排程已更新')
+    if (result.schedule_status === 'pending_approval') {
+      message.success(result.schedule_message || '预计签批时间已保存，签批通过后生成后续排程')
     } else {
-      message.warning(result.schedule_message || '预计签批时间已保存，请确认预测排程影响')
+      message.warning(result.schedule_message || '预计签批时间已保存，请确认排程影响')
     }
     emit('refreshed')
   } catch (error: unknown) {
