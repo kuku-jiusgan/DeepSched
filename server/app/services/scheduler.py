@@ -55,8 +55,21 @@ _logger = logging.getLogger(__name__)
 
 
 class SchedulerService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, reuse_prepared_context: bool = False):
         self.db = db
+        # 交期建议搜索会为几十上百个候选结题日各调一次 generate()。候选日期
+        # 只改 project.end_date，不影响工作日历和固定时间槽，但这两步占了单次
+        # 调用的大半时间（实测日历前缀和 0.4 秒、固定时间槽 0.13 秒，求解本身
+        # 只有 0.06 秒），逐次重建纯属浪费。开启后在同一个实例内复用。
+        # 常规请求每次新建实例、不开缓存，读到的始终是最新数据。
+        self._prepared: dict | None = {} if reuse_prepared_context else None
+
+    def _prepare(self, key, build):
+        if self._prepared is None:
+            return build()
+        if key not in self._prepared:
+            self._prepared[key] = build()
+        return self._prepared[key]
 
     def generate(
         self,
@@ -89,6 +102,7 @@ class SchedulerService:
         allow_unassigned_human_task_ids: set[int] | None = None,
         additional_dependency_gaps: dict[tuple[int, int], int] | None = None,
         released_slot_intervals: dict[int, list[tuple]] | None = None,
+        feasibility_only: bool = False,
     ) -> dict:
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -169,14 +183,21 @@ class SchedulerService:
             if maintenance_rule.is_enabled
             else []
         )
-        working_calendar = build_working_calendar(
-            self.db,
-            instruments=instruments,
-            constraints=constraints,
-            horizon_start=horizon_start,
-            horizon_end=horizon_end,
-            total_units=total_units,
-            maint_windows=maint_windows,
+        working_calendar = self._prepare(
+            (
+                "working_calendar", horizon_start, horizon_end, total_units,
+                tuple(sorted(instrument.id for instrument in instruments)),
+                len(maint_windows),
+            ),
+            lambda: build_working_calendar(
+                self.db,
+                instruments=instruments,
+                constraints=constraints,
+                horizon_start=horizon_start,
+                horizon_end=horizon_end,
+                total_units=total_units,
+                maint_windows=maint_windows,
+            ),
         )
         working_context = working_calendar.context
         working_params = working_calendar.params
@@ -194,11 +215,17 @@ class SchedulerService:
             for task in tasks
             if task.requires_human and task.assignee_id is not None
         }
-        fixed_slots = load_fixed_slots(
-            self.db,
-            {task.id for task in tasks},
-            relevant_instrument_ids,
-            relevant_assignee_ids,
+        fixed_slots = self._prepare(
+            (
+                "fixed_slots", frozenset(task.id for task in tasks),
+                frozenset(relevant_instrument_ids), frozenset(relevant_assignee_ids),
+            ),
+            lambda: load_fixed_slots(
+                self.db,
+                {task.id for task in tasks},
+                relevant_instrument_ids,
+                relevant_assignee_ids,
+            ),
         )
         # A preserved running slot remains the execution anchor. It must not
         # be loaded again as a fixed interval while the same task is being
@@ -353,6 +380,10 @@ class SchedulerService:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = solver_time_limit
         solver.parameters.num_search_workers = 4
+        if feasibility_only:
+            # 只问排不排得下，找到任意可行解即可返回，不必继续优化目标函数。
+            # 不影响结论：可行就是可行；判定不可行仍然要走完整证明。
+            solver.parameters.stop_after_first_solution = True
         solver.parameters.log_search_progress = True
         solver.parameters.log_to_stdout = False
         solver_trace = SolverTrace(
@@ -406,6 +437,11 @@ class SchedulerService:
                     "rollback_on_conflict": False,
                 },
             )
+
+        if feasibility_only:
+            # 交期建议只需要知道这个结题日排不排得下。落地时间槽、重建桥接
+            # 预留、做重排校验都会被调用方回滚掉，实测占单次探测四成时间。
+            return {"status": "ok", "solver_status": solver.StatusName(status)}
 
         return persist_schedule_result(
             self.db,

@@ -195,7 +195,7 @@ def _calculate_job(db, job) -> dict | None:
         for project_id, value in payload.get("project_labels", {}).items()
     }
     return enumerate_verified_date_adjustments(
-        db, SchedulerService(db), project_ids, deadlines,
+        db, SchedulerService(db, reuse_prepared_context=True), project_ids, deadlines,
         datetime.fromisoformat(payload["horizon_end"]), generate_kwargs, labels,
     )
 

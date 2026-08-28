@@ -97,6 +97,7 @@ def _validate_deadlines(db, scheduler, deadlines: dict[int, datetime], generate_
         return scheduler.generate(
             **generate_kwargs, commit=False, emit_advance_notifications=False,
             include_failure_diagnostics=False, solver_time_limit=5.0,
+            feasibility_only=True,
         ).get("status") == "ok"
     finally:
         savepoint.rollback()
