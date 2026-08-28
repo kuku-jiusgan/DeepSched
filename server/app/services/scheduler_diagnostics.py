@@ -55,7 +55,12 @@ def log_solver_failure_snapshot(
         {
             "slot_id": slot.id,
             "task_id": slot.task_id,
+            "project_code": slot.task.project.code if slot.task and slot.task.project else None,
+            "top_level_task": _top_level_task_name(slot.task),
+            "task_name": slot.task.name if slot.task else None,
+            "assignee_name": slot.task.assignee.display_name if slot.task and slot.task.assignee else None,
             "instrument_id": slot.instrument_id,
+            "instrument_name": slot.instrument.name if slot.instrument else None,
             "status": slot.status,
             "tier": slot.tier,
             "plan_start": _format_datetime(slot.plan_start),
@@ -64,10 +69,11 @@ def log_solver_failure_snapshot(
         }
         for slot in fixed_slots
     ]
+    conflicts = _fixed_slot_conflicts(fixed_slots)
     _logger.error(
         "scheduler_infeasible_snapshot status=%s horizon=(%s,%s) total_units=%s "
         "tasks=%s dependencies=%s missing_predecessor_ends=%s fixed_slots=%s "
-        "instrument_prefix_lengths=%s",
+        "instrument_prefix_lengths=%s fixed_slot_conflicts=%s",
         solver_status,
         _format_datetime(horizon_start),
         _format_datetime(horizon_start + timedelta(minutes=total_units * TIME_UNIT_MINUTES)),
@@ -77,7 +83,52 @@ def log_solver_failure_snapshot(
         missing_predecessor_ends,
         fixed_snapshot,
         {instrument_id: len(prefix) for instrument_id, prefix in instrument_prefix_sums.items()},
+        conflicts,
     )
+
+
+def _top_level_task_name(task) -> str | None:
+    seen = set()
+    while task and task.parent and task.id not in seen:
+        seen.add(task.id)
+        task = task.parent
+    return task.name if task else None
+
+
+def _fixed_slot_conflicts(fixed_slots: list[TimeSlot]) -> list[dict]:
+    conflicts = []
+    by_instrument = {}
+    for slot in fixed_slots:
+        if slot.instrument_id is None:
+            continue
+        start = slot.actual_start if slot.status == "completed" else (slot.actual_start or slot.plan_start)
+        end = slot.actual_end if slot.status == "completed" else (slot.actual_end or slot.plan_end)
+        if not start or not end:
+            continue
+        by_instrument.setdefault(slot.instrument_id, []).append((slot, start, end))
+    for instrument_id, items in by_instrument.items():
+        ordered = sorted(items, key=lambda item: item[1])
+        for index, (left, left_start, left_end) in enumerate(ordered):
+            for right, right_start, right_end in ordered[index + 1:]:
+                if right_start >= left_end:
+                    break
+                conflicts.append({
+                    "instrument_id": instrument_id,
+                    "instrument_name": left.instrument.name if left.instrument else None,
+                    "left": _slot_label(left, left_start, left_end),
+                    "right": _slot_label(right, right_start, right_end),
+                })
+    return conflicts
+
+
+def _slot_label(slot: TimeSlot, start: datetime, end: datetime) -> dict:
+    return {
+        "project_code": slot.task.project.code if slot.task and slot.task.project else None,
+        "top_level_task": _top_level_task_name(slot.task),
+        "task_name": slot.task.name if slot.task else None,
+        "start": _format_datetime(start),
+        "end": _format_datetime(end),
+    }
 
 
 def unavailable_instrument_message(db, tasks, compatibility: dict[int, list[Instrument]]) -> str | None:
