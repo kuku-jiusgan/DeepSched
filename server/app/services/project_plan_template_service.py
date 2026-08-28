@@ -16,8 +16,9 @@ TEMPLATE_STEPS = [
     ("方法验证", "FFYZ_001", Decimal("0.20"), True),
     ("报告撰写", "ZXBG_001", Decimal("0.05"), False),
 ]
-# 方案签批之后才创建的任务。签批前它们不占排程，其工时由
-# project_pending_workload_service 折算进交付预测，避免延期风险被掩盖。
+# 方案签批之后才落地排程的任务。签批前它们不生成时间槽，但必须作为占用
+# 任务参与求解（见 scheduler_data._load_unapproved_downstream_tasks），
+# 否则这段工时在签批前不可见，项目完工时间与延期判断都会偏乐观。
 POST_APPROVAL_STEPS = TEMPLATE_STEPS[2:]
 
 

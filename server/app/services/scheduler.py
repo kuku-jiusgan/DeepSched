@@ -97,13 +97,16 @@ class SchedulerService:
             task_ids,
             excluded_task_ids,
             replaceable_task_ids,
+            occupancy_project_ids={
+                current_project_id, *(project_ids or ()),
+            },
         )
-        # 未签批方案的下游任务暂不生成正式排程；它们会在签批后重新加载。
-        _, deferred_task_ids = unapproved_gate_context(self.db, tasks)
-        if deferred_task_ids:
-            tasks = [task for task in tasks if task.id not in deferred_task_ids]
+        # 未签批方案的下游任务必须参与求解，否则它们的工时在签批前不可见，
+        # 项目完工时间与延期判断都会系统性偏乐观。签批节点本身仍被排除在
+        # 求解器之外（0 耗时），依赖由 _effective_predecessor_ids 桥接到它的
+        # 前置任务。求解结果不为这些任务落地时间槽，详见 scheduler_persistence。
         if not tasks:
-            return {"status": "ok", "message": "没有可排程任务（未签批方案的下游任务已跳过）", "timeslots_created": 0}
+            return {"status": "ok", "message": "没有可排程任务", "timeslots_created": 0}
         # Resource release is a first-class priority: once hard constraints
         # allow a task to start, avoid unexplained idle gaps before it.
         early_start_task_ids = early_start_task_ids or {task.id for task in tasks}

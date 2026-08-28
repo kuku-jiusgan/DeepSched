@@ -44,6 +44,11 @@ def persist_slots(
     forecast_task_ids = forecast_task_ids or set()
     preserved_status_task_ids = preserved_status_task_ids or set()
     for task in tasks:
+        # 未签批方案的下游任务只参与求解以占用产能，不落地时间槽：签批之前
+        # 不应该出现后续任务的排程结果。它们的求解位置仅用于判断项目能否
+        # 按期完成，签批通过后会作为正常任务重新排程并落库。
+        if task.id in forecast_task_ids:
+            continue
         # Active execution slots are managed by task execution services; a new
         # schedule run must not replace their state with scheduled slots.
         is_preserved = task.id in preserved_status_task_ids
@@ -64,11 +69,10 @@ def persist_slots(
                 frozen_boundary,
                 confirmed_boundary,
                 schedule_run_id,
-                force_forecast=task.id in forecast_task_ids,
-                status=_persisted_task_status(task, is_preserved, task.id in forecast_task_ids),
+                status=_persisted_task_status(task, is_preserved),
             )
             if not is_preserved:
-                task.status = "waiting_external" if task.id in forecast_task_ids else "scheduled"
+                task.status = "scheduled"
             continue
 
         start_unit = solver.Value(task_starts[task.id])
@@ -103,8 +107,7 @@ def persist_slots(
                     frozen_boundary,
                     confirmed_boundary,
                     schedule_run_id,
-                    force_forecast=task.id in forecast_task_ids,
-                    status=_persisted_task_status(task, is_preserved, task.id in forecast_task_ids),
+                    status=_persisted_task_status(task, is_preserved),
                 )
                 chunk_start = None
 
@@ -121,11 +124,10 @@ def persist_slots(
                 frozen_boundary,
                 confirmed_boundary,
                 schedule_run_id,
-                force_forecast=task.id in forecast_task_ids,
-                status=_persisted_task_status(task, is_preserved, task.id in forecast_task_ids),
+                status=_persisted_task_status(task, is_preserved),
             )
         if not is_preserved:
-            task.status = "waiting_external" if task.id in forecast_task_ids else "scheduled"
+            task.status = "scheduled"
 
     rebuild_instrument_bridge_reservations(db, schedule_run_id)
 
@@ -136,10 +138,10 @@ def persist_slots(
     return created
 
 
-def _persisted_task_status(task, is_preserved: bool, force_forecast: bool) -> str:
+def _persisted_task_status(task, is_preserved: bool) -> str:
     if is_preserved and task.status != "running":
         return task.status
-    return "waiting_external" if force_forecast else "scheduled"
+    return "scheduled"
 
 
 def _persist_split_task_slots(
@@ -152,7 +154,6 @@ def _persist_split_task_slots(
     frozen_boundary,
     confirmed_boundary,
     schedule_run_id,
-    force_forecast: bool = False,
     status: str = "scheduled",
 ) -> int:
     selected_units = sorted(
@@ -180,7 +181,7 @@ def _persist_split_task_slots(
             frozen_boundary,
             confirmed_boundary,
             schedule_run_id,
-            force_forecast=force_forecast, status=status,
+            status=status,
         )
         chunk_start = unit
         previous_unit = unit
@@ -194,7 +195,7 @@ def _persist_split_task_slots(
         frozen_boundary,
         confirmed_boundary,
         schedule_run_id,
-        force_forecast=force_forecast, status=status,
+        status=status,
     )
     return created
 
@@ -218,12 +219,9 @@ def _create_slot(
     frozen_boundary,
     confirmed_boundary,
     schedule_run_id,
-    force_forecast: bool = False,
     status: str = "scheduled",
 ) -> int:
-    if force_forecast:
-        tier = "forecast"
-    elif start <= frozen_boundary:
+    if start <= frozen_boundary:
         tier = "frozen"
     elif start <= confirmed_boundary:
         tier = "confirmed"
