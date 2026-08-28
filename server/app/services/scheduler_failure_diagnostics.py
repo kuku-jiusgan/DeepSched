@@ -202,7 +202,12 @@ def _occupied_project_details(
         resource_intervals = breakdown["resource_intervals"]
         if not resource_intervals:
             continue
-        scheduled_allocated = _allocate_scheduled_hours(
+        # 已生成时间槽的项目占用应反映实际排程时间，不能被其他项目
+        # 统计时修改过的剩余容量截断。容量仍需扣减，供后续预测工时使用。
+        scheduled_allocated = _scheduled_slot_hours(
+            resource_intervals, segment_starts, segment_ends, horizon_start, end_unit,
+        )
+        _allocate_scheduled_hours(
             resource_intervals, segment_starts, segment_ends, capacities, horizon_start, end_unit,
         )
         bridged_allocated = _allocate_scheduled_hours(
@@ -227,6 +232,26 @@ def _occupied_project_details(
             "total_hours": allocated,
         })
     return details, occupied_hours
+
+
+def _scheduled_slot_hours(
+    resource_intervals, starts, ends, horizon_start, current_end,
+) -> float:
+    """汇总已排仪器时间槽的实际时长，不受其他项目剩余容量影响。"""
+    total = 0.0
+    for segment_start, segment_end in zip(starts, ends):
+        start_time = units_to_datetime(segment_start, horizon_start)
+        end_time = units_to_datetime(segment_end, horizon_start)
+        if segment_end > current_end:
+            continue
+        total += _interval_hours([
+            (max(start, start_time), min(end, end_time))
+            for start, end, interval_kind in resource_intervals
+            if interval_kind == "slot"
+            and end > start_time
+            and start < end_time
+        ])
+    return total
 
 
 def _allocate_scheduled_hours(
