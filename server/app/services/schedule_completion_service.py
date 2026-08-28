@@ -81,6 +81,15 @@ def complete_task_and_shift(
             db, completed_slot.instrument_id, resumed_end, resumed_task.assignee_id,
             resumed_task.project_id,
         )
+        replan_warning = None
+        if result.get("status") != "ok":
+            replan_warning = result.get("message") or "后续任务未能自动前移，已保留原排程"
+            result = {
+                "status": "ok",
+                "message": "任务已完成，后续任务未自动前移",
+                "moved_tasks": 0,
+                "moved_task_details": [],
+            }
         moved_task_details = result.pop("moved_task_details", [])
         notify_advanced_task_assignees(db, task, end_time, planned_end, moved_task_details)
         delay_warning = delay_result.get("warning")
@@ -92,6 +101,7 @@ def complete_task_and_shift(
             "status": "ok",
             "message": "；".join(filter(None, [
                 delayed_message,
+                replan_warning,
                 f"任务已完成，已恢复原暂停任务【{resumed_task.name}】",
                 result["message"],
             ])),
@@ -108,6 +118,15 @@ def complete_task_and_shift(
     result = _forward_shift_instrument_queue(
         db, completed_slot.instrument_id, end_time, task.assignee_id, task.project_id,
     )
+    replan_warning = None
+    if result.get("status") != "ok":
+        replan_warning = result.get("message") or "后续任务未能自动前移，已保留原排程"
+        result = {
+            "status": "ok",
+            "message": "任务已完成，后续任务未自动前移",
+            "moved_tasks": 0,
+            "moved_task_details": [],
+        }
     moved_task_details = result.pop("moved_task_details", [])
     notify_advanced_task_assignees(db, task, end_time, planned_end, moved_task_details)
     db.flush()
@@ -115,6 +134,7 @@ def complete_task_and_shift(
     result["message"] = "；".join(filter(None, [
         delay_warning,
         resume_warning,
+        replan_warning,
         result["message"],
     ]))
     result["released_instrument"] = True
