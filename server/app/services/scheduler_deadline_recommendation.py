@@ -5,7 +5,7 @@ from heapq import heappop, heappush
 from itertools import combinations
 from time import monotonic
 
-from app.models import Project
+from app.models import Project, Task
 
 MAX_RECOMMENDATIONS = 20
 SEARCH_TIME_LIMIT_SECONDS = 120
@@ -87,12 +87,29 @@ def _load_project_priorities(db, project_ids: list[int]) -> dict[int, int]:
     }
 
 
+def _release_replan_tasks(db, task_ids) -> None:
+    """把待重排任务恢复成"待排"，与真实重排的前置处理保持一致。
+
+    _execute_replan 在求解前会把这些任务置为 pending 再释放时间槽。验证若不做
+    这一步，任务仍挂着 scheduled，求解器当它们已经定死不能动——于是"延期另一个
+    项目给本项目腾时间"这类方案会被系统性误判为不可行，无论延多久都排不下，
+    用户因此拿不到本来可选的方案，搜索也要把候选日期全部白跑一遍。
+    """
+    if not task_ids:
+        return
+    db.query(Task).filter(
+        Task.id.in_(list(task_ids)),
+        Task.status.in_(["scheduled", "blocked", "interrupted"]),
+    ).update({"status": "pending"}, synchronize_session=False)
+
+
 def _validate_deadlines(db, scheduler, deadlines: dict[int, datetime], generate_kwargs: dict) -> bool:
     savepoint = db.begin_nested()
     try:
         for project_id, deadline in deadlines.items():
             project = db.query(Project).filter(Project.id == project_id).one()
             project.end_date = deadline
+        _release_replan_tasks(db, generate_kwargs.get("task_ids"))
         db.flush()
         return scheduler.generate(
             **generate_kwargs, commit=False, emit_advance_notifications=False,
