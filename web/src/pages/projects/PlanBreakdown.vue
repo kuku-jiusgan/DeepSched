@@ -213,7 +213,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
 import { PlusOutlined, EditOutlined, LeftOutlined, PlayCircleOutlined, FileTextOutlined, ImportOutlined, HolderOutlined, SaveOutlined } from '@ant-design/icons-vue'
-import { commitProjectPlanDrafts, saveAndScheduleProjectPlan, createApprovalGate, reorderProjectTasks, getProject, getProjectDAG, updateTask, deleteTask, getUserDirectory, getTaskTypes, getInstruments, applyProjectPlan, confirmProjectPlanInsert, type ApprovalGateCreatePayload, type Project, type Task, type DAGData, type TaskTypeConfig } from '@/services/api'
+import { commitProjectPlanDrafts, saveAndScheduleProjectPlan, createApprovalGate, reorderProjectTasks, getProject, getProjectDAG, updateTask, deleteTask, applyProjectPlan, confirmProjectPlanInsert, type ApprovalGateCreatePayload, type Project, type Task, type DAGData } from '@/services/api'
 import type { ProjectPlanApplyResult } from '@/types'
 import PlanInsertPreviewModal from './components/PlanInsertPreviewModal.vue'
 import ApprovalGateModal from './components/ApprovalGateModal.vue'
@@ -231,6 +231,7 @@ import { buildStandardPlanDrafts } from './standardPlanDrafts'
 import { buildLocalTask, type LocalTaskPayload } from './planLocalTaskFactory'
 import { persistCommittedDraftOrders, siblingOrderGroups, toDraftPayload } from './planDraftPersistence'
 import { useApprovalGateEditor } from './useApprovalGateEditor'
+import { usePlanReferenceData } from './usePlanReferenceData'
 import './planBreakdown.css'
 const router = useRouter()
 const route = useRoute()
@@ -262,35 +263,20 @@ const approvalGateSubmitting = ref(false)
 const draggingTaskId = ref<number | null>(null)
 const parentTaskId = ref<number | null>(null)
 let nextDraftId = -1
-const taskTypeOptions = ref<{ label: string; value: string; resource_type: string }[]>([])
-const taskTypeMap = ref<Record<string, TaskTypeConfig>>({})
 const REQUIRED_INSTRUMENT_TASK_TYPES = new Set(['FFKF_001', 'FFYZ_001'])
-const userOptions = ref<{ label: string; value: number }[]>([])
-const instrumentOptions = ref<{ label: string; value: number }[]>([])
-const instrumentCodeMap = computed(() => {
-  const map: Record<number, string> = {}
-  instrumentOptions.value.forEach(instrument => { map[instrument.value] = instrument.label })
-  return map
-})
+const {
+  taskTypeOptions, taskTypeMap, userOptions, instrumentOptions,
+  getTaskTypeName, getAssigneeName, getInstrumentCode,
+  loadInstruments, loadUsers, loadTaskTypes,
+} = usePlanReferenceData()
 const tf = reactive({ name: '', task_type: '', est_duration_hours: 8, switchover_hours: 0.5, predecessor_ids: [] as number[], instrument_id: null as number | null, assignee_id: null as number | null, parent_id: null as number | null })
 const statusLabels: Record<string, string> = { active: '进行中', completed: '已完成', pending: '待启动', suspended: '已暂停', cancelled: '已取消', draft: '草稿' }
 function goBack() { router.push('/projects/ledger') }
-function getTaskTypeName(code: string) {
-  if (code === 'approval_gate') return '方案签批'
-  return taskTypeMap.value[code]?.name || code
-}
 function canDeleteTask(task: Task) { return isSystemAdministrator.value || !taskTreeHasCompletedTask(task) }
 function deleteDisabledReason(task: Task) { return canDeleteTask(task) ? '' : '已完成任务不允许删除' }
 function getTaskNameById(id: number) {
   const t = allTasks.value.find(t => t.id === id)
   return t ? (t.name.length > 8 ? t.name.slice(0, 8) + '...' : t.name) : '#' + id
-}
-function getAssigneeName(id: number | null | undefined) {
-  if (!id) return null
-  return userOptions.value.find(u => u.value === id)?.label || null
-}
-function getInstrumentCode(id: number) {
-  return instrumentCodeMap.value[id] || `ID ${id}`
 }
 function getTaskInstrumentIds(task: Task): number[] {
   return taskInstrumentIds(task)
@@ -479,26 +465,6 @@ function openTemplateImport() {
   allTasks.value.push(...draft.tasks)
   expandTask(draft.group.id)
   message.success(`已追加“${draft.group.name}”及其 5 个子任务，点击保存前不会写入数据库`)
-}
-async function loadInstruments() {
-  try {
-    const insts = await getInstruments({ include_unavailable: true })
-    instrumentOptions.value = insts.map(instrument => ({
-      label: [instrument.code, instrument.name, instrument.model].filter(Boolean).join(' · '),
-      value: instrument.id,
-    }))
-  } catch (e) { console.error("loadInstruments failed:", e) }
-}
-async function loadUsers() {
-  try { const users = await getUserDirectory(); userOptions.value = users.filter(u => u.is_active).map(u => ({ label: u.display_name, value: u.id })) }
-  catch { console.error('loadUsers failed') }
-}
-async function loadTaskTypes() {
-  try {
-    const types = await getTaskTypes(); const active = types.filter(t => t.is_active && t.code !== 'approval_gate')
-    taskTypeOptions.value = active.map(t => ({ label: t.name, value: t.code, resource_type: t.resource_type }))
-    taskTypeMap.value = {}; active.forEach(t => { taskTypeMap.value[t.code] = t })
-  } catch { console.error('loadTaskTypes failed') }
 }
 const scheduling = ref(false)
 const savingPlan = ref(false)
