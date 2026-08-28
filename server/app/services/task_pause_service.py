@@ -7,6 +7,7 @@ from app.models import Task, TaskExecutionSegment, TimeSlot
 from app.services.audit_log_service import record_audit_log
 from app.services.instrument_status_service import refresh_instrument_status
 from app.services.task_execution_service import ensure_running_state_consistent, predecessors_completed, start_task_execution
+from app.services.schedule_working_time_service import working_hours_between
 from app.services.task_progress_service import planned_task_minutes
 from app.services.task_pause_solver_service import replan_pause_switch
 from app.services.task_pause_window_service import (
@@ -71,7 +72,8 @@ def pause_and_switch_task(
     source_slot.actual_end = paused_at
     source_task.executed_minutes = min(
         planned_task_minutes(source_task),
-        int(source_task.executed_minutes or 0) + _elapsed_execution_minutes(source_task, paused_at),
+        int(source_task.executed_minutes or 0)
+        + _elapsed_execution_minutes(db, source_task, paused_at),
     )
     source_task.status = "paused"
     _close_execution_segment(db, source_slot, paused_at, clean_reason, operator.id)
@@ -234,14 +236,24 @@ def _close_execution_segment(
     ))
 
 
-def _elapsed_execution_minutes(task: Task, ended_at: datetime) -> int:
+def _elapsed_execution_minutes(db, task: Task, ended_at: datetime) -> int:
+    """本次执行累计的有效工时（分钟）。
+
+    executed_minutes 会被 planned_task_minutes 减去，用来决定求解器重排时
+    还要排多久，也用来判断任务是否可以标记完成。两者都是工作量口径，所以
+    这里必须按工作日历统计：按墙钟差值算的话，周五 18:00 开始、周一 10:00
+    暂停会被记成 64 小时，任务看起来已经做完，重排时却只排 30 分钟。
+    """
     segment = next(
         (item for item in reversed(task.execution_segments) if item.ended_at is None),
         None,
     )
     if not segment:
         return 0
-    return max(0, int((ended_at - segment.started_at).total_seconds() // 60))
+    hours = working_hours_between(
+        db, segment.started_at, ended_at, segment.instrument_id,
+    )
+    return max(0, int(hours * 60))
 
 
 def _candidate_out(slot: TimeSlot, task: Task) -> dict:

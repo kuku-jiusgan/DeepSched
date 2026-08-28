@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.services.scheduler_helpers import datetime_to_units, to_units
+from app.services.scheduler_helpers import datetime_to_units, switchover_units, to_units
 
 
 def remaining_duration_units(
@@ -28,8 +28,13 @@ def remaining_duration_units(
     planned_minutes = planned_task_minutes(task)
     executed_minutes = int(getattr(task, "executed_minutes", 0) or 0)
     if hasattr(task, "executed_minutes"):
+        # planned_task_minutes 是工作量口径（计划工时 + 延期追加），不含切换
+        # 准备时间。真实任务恒有 executed_minutes 字段，所以这个分支覆盖了
+        # 全部任务；若直接返回工作量单元数，调用方传进来的切换时间就被丢掉，
+        # 求解器会比缺口分析少排一段准备时间。
         remaining_minutes = max(0, planned_minutes - executed_minutes)
-        return max(1, to_units(remaining_minutes / 60))
+        remaining_units = to_units(remaining_minutes / 60) if remaining_minutes > 0 else 0
+        return max(1, remaining_units + switchover_units(task))
     segments = list(getattr(task, "execution_segments", []) or [])
     fixed_units = executed_duration_units(
         segments,

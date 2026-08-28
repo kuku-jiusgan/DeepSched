@@ -60,9 +60,18 @@ def task_duration_units(task) -> int:
     会低估需求，出现"第一层判定工时够用、第二层排不下"。
     """
     duration_units = to_units(getattr(task, "est_duration_hours", None) or 4)
+    return duration_units + switchover_units(task)
+
+
+def switchover_units(task) -> int:
+    """任务自身的切换准备时间占用的单元数。
+
+    与跨项目切换（cross_project_setup 规则）是两回事：那条规则管的是同一台
+    仪器上相邻的不同项目任务之间要留多久，这里是任务自己带的准备时间。
+    """
     switch_hours = float(getattr(task, "switchover_hours", None) or 0)
     # 零切换时间不能被 to_units 的最小 1 单位规则放大成 30 分钟。
-    return duration_units + (to_units(switch_hours) if switch_hours > 0 else 0)
+    return to_units(switch_hours) if switch_hours > 0 else 0
 
 
 def task_duration_hours(task) -> float:
