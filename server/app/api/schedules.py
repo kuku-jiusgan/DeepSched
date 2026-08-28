@@ -14,7 +14,10 @@ from app.schemas.schemas import (
     ScheduleDiagnosticOut,
 )
 from app.services.scheduler import SchedulerService
-from app.services.instrument_bridge_sync_service import valid_bridge_reservations
+from app.services.instrument_bridge_sync_service import (
+    historical_bridge_reservations,
+    valid_bridge_reservations,
+)
 from app.services.schedule_delay_service import (
     report_task_delay,
 )
@@ -123,7 +126,11 @@ def list_instrument_bridge_reservations(
     reservations = valid_bridge_reservations(
         db, q.order_by(InstrumentBridgeReservation.plan_start),
     )
-    return [_enrich_bridge_reservation(item) for item in reservations]
+    historical = historical_bridge_reservations(db, start_date, end_date)
+    return [
+        *(_enrich_bridge_reservation(item) for item in reservations),
+        *(_enrich_bridge_history(item) for item in historical),
+    ]
 
 
 def _enrich_bridge_reservation(item: InstrumentBridgeReservation) -> InstrumentBridgeReservationOut:
@@ -135,6 +142,20 @@ def _enrich_bridge_reservation(item: InstrumentBridgeReservation) -> InstrumentB
         following_task_id=item.following_task_id, plan_start=item.plan_start, plan_end=item.plan_end,
         task_name=task.name, task_type=task.task_type, project_id=task.project_id,
         project_code=project.code, project_name=project.name, assignee_id=task.assignee_id,
+        assignee_name=task.assignee.display_name if task.assignee else None,
+    )
+
+
+def _enrich_bridge_history(item: dict) -> InstrumentBridgeReservationOut:
+    task = item["task"]
+    project = task.project
+    return InstrumentBridgeReservationOut(
+        id=item["id"], kind=item["kind"], schedule_run_id=item["schedule_run_id"],
+        task_id=item["task_id"], instrument_id=item["instrument_id"],
+        previous_task_id=item["previous_task_id"], following_task_id=item["following_task_id"],
+        plan_start=item["plan_start"], plan_end=item["plan_end"], task_name=task.name,
+        task_type=task.task_type, project_id=task.project_id, project_code=project.code,
+        project_name=project.name, assignee_id=task.assignee_id,
         assignee_name=task.assignee.display_name if task.assignee else None,
     )
 

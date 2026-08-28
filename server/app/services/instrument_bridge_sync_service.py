@@ -8,6 +8,10 @@ BRIDGE_SLOT_STATUSES = {
 }
 
 
+def _comparable_datetime(value):
+    return value.replace(tzinfo=None) if value is not None and value.tzinfo else value
+
+
 def rebuild_instrument_bridge_reservations(db, schedule_run_id: str | None = None) -> int:
     """Rebuild all derived bridge reservations from current active slots."""
     db.flush()
@@ -19,6 +23,7 @@ def rebuild_instrument_bridge_reservations(db, schedule_run_id: str | None = Non
         Task.requires_instrument.is_(False),
         Task.requires_human.is_(True),
         Task.assignee_id.isnot(None),
+        Task.status.notin_(["completed", "done"]),
     ).order_by(TimeSlot.plan_start, TimeSlot.id).all()
     created = 0
     for slot in manual_slots:
@@ -42,6 +47,46 @@ def rebuild_instrument_bridge_reservations(db, schedule_run_id: str | None = Non
 
 def valid_bridge_reservations(db, query) -> list[InstrumentBridgeReservation]:
     return [reservation for reservation in query.all() if _is_current(db, reservation)]
+
+
+def historical_bridge_reservations(db, start_date=None, end_date=None) -> list[dict]:
+    """Build read-only bridge intervals from completed manual task execution windows."""
+    slots = db.query(TimeSlot).join(Task).filter(
+        TimeSlot.instrument_id.is_(None),
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.status.in_(["completed", "done"]),
+        Task.requires_instrument.is_(False),
+        Task.requires_human.is_(True),
+        Task.assignee_id.isnot(None),
+        Task.status.in_(["completed", "done"]),
+        TimeSlot.actual_start.isnot(None),
+        TimeSlot.actual_end.isnot(None),
+    ).order_by(TimeSlot.actual_start, TimeSlot.id).all()
+    result = []
+    for slot in slots:
+        bridge = _bridge_for_manual_task(db, slot)
+        if bridge is None:
+            continue
+        actual_start = min(item.actual_start for item in slot.task.time_slots if item.actual_start)
+        actual_end = max(item.actual_end for item in slot.task.time_slots if item.actual_end)
+        if start_date and _comparable_datetime(actual_end) <= _comparable_datetime(start_date):
+            continue
+        if end_date and _comparable_datetime(actual_start) >= _comparable_datetime(end_date):
+            continue
+        previous, following = bridge
+        result.append({
+            "id": -slot.id,
+            "schedule_run_id": slot.schedule_run_id,
+            "task_id": slot.task_id,
+            "instrument_id": previous.instrument_id,
+            "previous_task_id": previous.task_id,
+            "following_task_id": following.task_id,
+            "plan_start": actual_start,
+            "plan_end": actual_end,
+            "task": slot.task,
+            "kind": "historical_human_bridge",
+        })
+    return result
 
 
 def stale_bridge_reservation_ids(

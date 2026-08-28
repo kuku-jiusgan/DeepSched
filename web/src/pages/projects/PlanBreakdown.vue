@@ -585,9 +585,12 @@ async function handleConfirmInsert() {
     message.error(errorDetail(error, '插单确认失败，请重新计算影响'))
   } finally { confirmingInsert.value = false }
 }
-function handleCancelInsert() {
+async function handleCancelInsert() {
   insertPreviewOpen.value = false
   insertPreview.value = null
+  // The draft was committed before the impact preview was shown. Reload so
+  // the persisted tasks replace the local negative-id drafts before retry.
+  await fetchProject()
 }
 function errorDetail(error: unknown, fallback: string) {
   if (isAxiosError<{ detail?: string }>(error)) return error.response?.data?.detail || fallback

@@ -6,13 +6,10 @@ import uuid
 from datetime import datetime
 
 from app.core.database import SessionLocal
-from app.models import Project, ScheduleDeadlineRecommendationJob, Task, TimeSlot
+from app.models import Project, ScheduleDeadlineRecommendationJob, Task
 from app.repositories.worker_lease_repository import acquire_worker_lease
 from app.services.project_plan_apply_helpers import plan_fingerprint
-from app.services.scheduler_deadline_recommendation import (
-    _capacity_lower_date,
-    verified_current_project_deadline_from_lower_date,
-)
+from app.services.scheduler_deadline_recommendation import enumerate_verified_date_adjustments
 
 
 JOB_POLL_SECONDS = 1
@@ -29,13 +26,18 @@ def enqueue_deadline_recommendation(
     db, project, tasks, original_deadline, horizon_start, horizon_end,
     instrument_prefix_sums, failure, generate_kwargs,
 ) -> dict | None:
-    lower_date = _capacity_lower_date(
-        original_deadline, horizon_start, horizon_end,
-        instrument_prefix_sums, failure.get("instruments", []),
-    )
-    if lower_date is None:
-        return None
     fingerprint = plan_fingerprint(db, project, tasks)
+    conflict_ids = sorted({
+        int(row["project_id"])
+        for row in failure.get("occupancy", [])
+        if row.get("project_id") and int(row["project_id"]) != project.id
+    })
+    scheduled_project_ids = {
+        int(project_id) for project_id in (generate_kwargs.get("project_ids") or [])
+        if int(project_id) != project.id
+    }
+    candidate_ids = sorted({project.id, *conflict_ids, *scheduled_project_ids})
+    project_rows = db.query(Project).filter(Project.id.in_(candidate_ids)).all()
     job = ScheduleDeadlineRecommendationJob(
         id=str(uuid.uuid4()),
         project_id=project.id,
@@ -43,8 +45,14 @@ def enqueue_deadline_recommendation(
         payload={
             "task_ids": [task.id for task in tasks],
             "original_deadline": original_deadline.isoformat(),
-            "lower_date": lower_date.isoformat(),
             "horizon_end": horizon_end.isoformat(),
+            "project_ids": candidate_ids,
+            "original_deadlines": {
+                str(row.id): row.end_date.isoformat() for row in project_rows if row.end_date
+            },
+            "project_labels": {
+                str(row.id): _project_label(row) for row in project_rows
+            },
             "generate_kwargs": _serialize_generate_kwargs(generate_kwargs),
         },
     )
@@ -78,7 +86,7 @@ def create_deadline_recommendation_job(
         return job
     except Exception:
         db.rollback()
-        _logger.exception("创建方案C后台任务失败 project_id=%s", project_id)
+        _logger.exception("创建排程调整方案后台任务失败 project_id=%s", project_id)
         return None
     finally:
         db.close()
@@ -91,10 +99,24 @@ def get_deadline_recommendation_job(db, project_id: int, job_id: str) -> dict | 
     ).first()
     if not job:
         return None
-    response = {"id": job.id, "status": job.status, "recommendation": job.result}
+    recommendations = job.result if isinstance(job.result, list) else ([] if not job.result else [job.result])
+    response = {
+        "id": job.id,
+        "status": job.status,
+        "recommendations": recommendations,
+        "recommendation": recommendations[0] if recommendations else None,
+        "elapsed_seconds": _elapsed_seconds(job),
+    }
     if job.status == "failed":
-        response["message"] = "方案C暂未生成，请调整计划后重新排程。"
+        response["message"] = "调整方案暂未生成，请调整计划后重新排程。"
     return response
+
+
+def _elapsed_seconds(job) -> int | None:
+    if not job.started_at:
+        return None
+    end = job.completed_at or datetime.now()
+    return max(0, round((end - job.started_at).total_seconds()))
 
 
 def start_deadline_recommendation_worker() -> None:
@@ -125,7 +147,7 @@ def _worker_loop() -> None:
                 _process_next_job(db)
         except Exception:
             db.rollback()
-            _logger.exception("方案C后台计算失败")
+            _logger.exception("排程调整方案后台计算失败")
         finally:
             db.close()
 
@@ -145,7 +167,7 @@ def _process_next_job(db) -> None:
             job.status = "completed"
             job.result = recommendation
     except Exception:
-        _logger.exception("方案C验证求解失败 job_id=%s", job.id)
+        _logger.exception("排程调整方案验证求解失败 job_id=%s", job.id)
         job.status = "failed"
         job.error_message = "验证求解失败"
     job.completed_at = datetime.now()
@@ -162,13 +184,24 @@ def _calculate_job(db, job) -> dict | None:
     from app.services.scheduler import SchedulerService
 
     generate_kwargs = _deserialize_generate_kwargs(payload["generate_kwargs"])
-    return verified_current_project_deadline_from_lower_date(
-        db, SchedulerService(db), project.id,
-        datetime.fromisoformat(payload["original_deadline"]),
-        datetime.fromisoformat(payload["lower_date"]).date(),
-        datetime.fromisoformat(payload["horizon_end"]),
-        generate_kwargs,
+    generate_kwargs["current_project_id"] = project.id
+    project_ids = [int(item) for item in payload.get("project_ids", [project.id])]
+    deadlines = {
+        int(project_id): datetime.fromisoformat(value)
+        for project_id, value in payload.get("original_deadlines", {}).items()
+    }
+    labels = {
+        int(project_id): value
+        for project_id, value in payload.get("project_labels", {}).items()
+    }
+    return enumerate_verified_date_adjustments(
+        db, SchedulerService(db), project_ids, deadlines,
+        datetime.fromisoformat(payload["horizon_end"]), generate_kwargs, labels,
     )
+
+
+def _project_label(project) -> str:
+    return f"{project.code} · {project.name}" if project.code and project.code != project.name else project.name
 
 
 def _serialize_generate_kwargs(values: dict) -> dict:

@@ -79,6 +79,29 @@ class ScheduleConflictServiceTest(unittest.TestCase):
             task_slots_from_run_only=True,
         )
 
+    def test_dependency_completion_equal_to_successor_start_is_valid(self):
+        self._create_task(1, None, requires_human=False)
+        self._create_task(2, None, requires_human=False)
+        self.db.add_all([
+            TimeSlot(
+                task_id=1,
+                plan_start=datetime(2026, 8, 28, 10, 30),
+                plan_end=datetime(2026, 8, 28, 12, 30),
+                actual_start=datetime(2026, 8, 28, 10, 30),
+                actual_end=datetime(2026, 8, 28, 12, 30),
+                status="completed",
+            ),
+            TimeSlot(
+                task_id=2,
+                plan_start=datetime(2026, 8, 28, 12, 30),
+                plan_end=datetime(2026, 8, 28, 13, 30),
+                status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        ensure_no_dependency_conflicts(self.db, [(2, 1)])
+
     def setUp(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)

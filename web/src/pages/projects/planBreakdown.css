@@ -22,13 +22,10 @@
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 14px;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  color: #991b1b;
+  padding: 0;
+  color: #334155;
 }
-.schedule-failure-header strong { color: #7f1d1d; }
+.schedule-failure-header strong { color: #0f172a; }
 .schedule-failure-header span { font-variant-numeric: tabular-nums; }
 .schedule-failure-plain { white-space: pre-line; }
 .schedule-failure-section { margin-top: 18px; }

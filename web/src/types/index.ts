@@ -289,7 +289,7 @@ export interface TimeSlot {
 
 export interface InstrumentBridgeReservation {
   id: number;
-  kind: 'human_bridge_reservation';
+  kind: 'human_bridge_reservation' | 'historical_human_bridge';
   schedule_run_id: string;
   task_id: number;
   instrument_id: number;
@@ -385,6 +385,8 @@ export interface ScheduleRecommendationJob {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'stale';
   poll_after_ms?: number;
   recommendation?: ScheduleFailureRecommendation | null;
+  recommendations?: ScheduleFailureRecommendation[];
+  elapsed_seconds?: number | null;
   message?: string;
 }
 
@@ -467,7 +469,16 @@ export interface ScheduleFailureRecommendation {
   hours?: number;
   verified: boolean;
   verification: string;
-  projects?: Array<{ project_id: number; project_label: string; hours: number }>;
+  projects?: number[];
+  changes?: ScheduleFailureDeadlineChange[];
+}
+
+export interface ScheduleFailureDeadlineChange {
+  project_id: number;
+  project_label: string;
+  original_deadline: string;
+  suggested_deadline: string;
+  delay_days: number;
 }
 
 export interface InsertCost {

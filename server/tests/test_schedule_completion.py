@@ -75,6 +75,43 @@ class ScheduleCompletionTest(unittest.TestCase):
         result = _forward_shift_instrument_queue(self.db, None, datetime(2026, 7, 20, 8, 30), 7)
         self.assertEqual(1, result["moved_tasks"])
 
+    def test_non_instrument_completion_advances_other_project_instrument_task(self):
+        self._add_projects(1, 2)
+        bridge = Task(
+            project_id=1, name="方案撰写", task_type="manual", status="scheduled",
+            assignee_id=7, requires_human=True, requires_instrument=False,
+        )
+        successor = Task(
+            project_id=2, name="方法开发", task_type="test", status="scheduled",
+            assignee_id=7, requires_human=True, requires_instrument=True,
+        )
+        self.db.add_all([bridge, successor])
+        self.db.flush()
+        self.db.add_all([
+            TimeSlot(
+                task_id=bridge.id, instrument_id=None,
+                plan_start=datetime(2026, 7, 20, 10, 30),
+                plan_end=datetime(2026, 7, 20, 12, 30), status="scheduled",
+            ),
+            TimeSlot(
+                task_id=successor.id, instrument_id=1,
+                plan_start=datetime(2026, 7, 20, 15, 30),
+                plan_end=datetime(2026, 7, 20, 17, 30), status="scheduled",
+            ),
+        ])
+        self.db.commit()
+
+        result = _forward_shift_instrument_queue(
+            self.db, None, datetime(2026, 7, 20, 12, 30), 7, bridge.project_id,
+        )
+
+        moved_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == successor.id,
+            TimeSlot.lifecycle_status == "active",
+        ).one()
+        self.assertEqual(1, result["moved_tasks"])
+        self.assertLess(moved_slot.plan_start, datetime(2026, 7, 20, 15, 30))
+
     def test_forward_shift_includes_blocked_successor_with_scheduled_slot(self):
         current = Task(
             project_id=1, name="current", task_type="test", status="completed",

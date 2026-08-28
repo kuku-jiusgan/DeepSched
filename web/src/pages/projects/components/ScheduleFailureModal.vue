@@ -2,10 +2,10 @@
   <div>
     <component :is="failureContent" />
     <div v-if="jobStatus === 'pending' || jobStatus === 'running'" class="schedule-failure-job-status">
-      正在通过完整排程约束计算方案C，请稍候，结果会自动更新。
+      正在通过完整排程约束计算可行调整方案，通常需要 1–2 分钟，结果会更新到上方“调整方案”区域。
     </div>
     <div v-else-if="jobStatus === 'failed' || jobStatus === 'stale'" class="schedule-failure-job-status is-error">
-      方案C暂未生成，请调整计划后重新排程。
+      调整方案暂未生成，请调整计划后重新排程。
     </div>
   </div>
 </template>
@@ -36,10 +36,14 @@ async function pollRecommendation() {
   try {
     const job = await getDeadlineRecommendation(props.projectId, jobId)
     jobStatus.value = job.status
-    if (job.status === 'completed' && job.recommendation && diagnostic.value) {
+    if (job.status === 'completed' && diagnostic.value) {
       diagnostic.value = {
         ...diagnostic.value,
-        recommendations: [...(diagnostic.value.recommendations || []), job.recommendation],
+        recommendations: job.recommendations || (job.recommendation ? [job.recommendation] : []),
+        recommendation_job: {
+          ...(diagnostic.value.recommendation_job || { id: jobId }),
+          status: 'completed',
+        },
       }
     }
   } catch {

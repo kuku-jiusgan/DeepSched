@@ -112,17 +112,7 @@ def build_failure_response(
                 horizon_end,
                 instrument_prefix_sums,
                 diagnostic["schedule_failure"],
-                {
-                    "project_ids": project_ids,
-                    "mode": mode,
-                    "task_ids": task_ids,
-                    "excluded_task_ids": excluded_task_ids,
-                    "additional_dependencies": additional_dependencies,
-                    "earliest_start_bounds": earliest_start_bounds,
-                    "relaxed_project_end_task_ids": relaxed_project_end_task_ids,
-                    "early_start_task_ids": early_start_task_ids,
-                    "rollback_on_conflict": False,
-                },
+                replan_request,
             )
             if job:
                 diagnostic["schedule_failure"]["recommendation_job"] = job

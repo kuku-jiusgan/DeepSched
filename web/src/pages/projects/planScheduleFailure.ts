@@ -62,16 +62,19 @@ function occupancyTable(rows: ScheduleFailureOccupancy[]) {
 
 function recommendations(diagnostic: ScheduleFailureDiagnostic) {
   const rows = diagnostic.recommendations ?? []
+  const isSearching = ['pending', 'running'].includes(diagnostic.recommendation_job?.status || '')
   return h('section', { class: 'schedule-failure-section schedule-failure-recommendations' }, [
     h('h3', '调整方案'),
     ...(rows.length
-      ? rows.map(row => h('div', { class: 'schedule-failure-recommendation', key: `${row.code}-${row.instrument_id ?? ''}-${row.project_id ?? ''}` }, [
-          h('strong', `方案${row.code} · ${row.title}`),
+      ? rows.map((row, index) => h('div', { class: 'schedule-failure-recommendation', key: `${index}-${row.title}` }, [
+          h('strong', `方案 ${index + 1} · ${row.title}`),
           h('p', row.description),
           h('span', { class: row.verified ? 'is-verified' : 'is-unverified' },
             row.verified ? '求解器已验证' : '容量下限'),
         ]))
-      : [h('div', { class: 'schedule-failure-empty' }, '当前约束下暂未找到可验证的自动调整方案。')]),
+      : [h('div', { class: 'schedule-failure-empty' }, isSearching
+          ? '正在验证候选日期调整，完成后将在此处显示可行方案。'
+          : '当前搜索范围内没有能使排程成功的日期调整方案。')]),
   ])
 }
 

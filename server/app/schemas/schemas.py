@@ -427,6 +427,8 @@ class ScheduleDeadlineRecommendationJobResponse(BaseModel):
     id: str
     status: Literal["pending", "running", "completed", "failed", "stale"]
     recommendation: Optional[dict] = None
+    recommendations: List[dict] = []
+    elapsed_seconds: Optional[int] = None
     message: Optional[str] = None
 
 class InsertOrderImpact(BaseModel):

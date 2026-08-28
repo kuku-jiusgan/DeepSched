@@ -60,7 +60,7 @@ class SchedulerFailurePresentationTest(unittest.TestCase):
         self.assertEqual(2, len(result["occupancy"]))
         self.assertEqual([], result["recommendations"])
 
-    def test_recommends_only_project_that_can_cover_full_deficit(self):
+    def test_does_not_present_unverified_capacity_recommendation(self):
         project = SimpleNamespace(
             id=1, code="XM-001", name="当前项目",
             end_date=datetime.now() + timedelta(days=11),
@@ -85,11 +85,7 @@ class SchedulerFailurePresentationTest(unittest.TestCase):
 
         result = build_failure_presentation(project, groups)
 
-        self.assertEqual(1, len(result["recommendations"]))
-        recommendation = result["recommendations"][0]
-        self.assertEqual("B", recommendation["code"])
-        self.assertEqual(2, recommendation["project_id"])
-        self.assertIn("能够覆盖当前仪器缺口", recommendation["description"])
+        self.assertEqual([], result["recommendations"])
 
 
 if __name__ == "__main__":

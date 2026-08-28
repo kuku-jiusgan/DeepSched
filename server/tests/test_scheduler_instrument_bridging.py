@@ -1,5 +1,9 @@
 import unittest
 from types import SimpleNamespace
+from datetime import datetime
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from ortools.sat.python import cp_model
 
@@ -8,6 +12,9 @@ from app.services.scheduler_instrument_bridging import (
     bridged_instrument_hours,
     instrument_bridge_candidates,
 )
+from app.core.database import Base
+from app.models import Project, Task, TimeSlot
+from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 
 
 def _task(task_id, assignee_id, requires_instrument, hours=2):
@@ -108,6 +115,25 @@ class SchedulerInstrumentBridgingTest(unittest.TestCase):
         self.assertEqual(1, len(bridges))
         self.assertEqual(self.manual.id, bridges[0]["task_id"])
         self.assertEqual(self.instrument.id, bridges[0]["instrument_id"])
+
+    def test_completed_manual_task_does_not_create_bridge_reservation(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        project = Project(id=1, code="P1", name="项目")
+        previous = Task(id=1, project_id=1, name="前序", task_type="test", status="completed", requires_instrument=True, requires_human=True, assignee_id=7)
+        manual = Task(id=2, project_id=1, name="方案", task_type="test", status="completed", requires_instrument=False, requires_human=True, assignee_id=7)
+        following = Task(id=3, project_id=1, name="后续", task_type="test", status="scheduled", requires_instrument=True, requires_human=True, assignee_id=7)
+        db.add_all([project, previous, manual, following])
+        db.add_all([
+            TimeSlot(task_id=1, instrument_id=101, plan_start=datetime(2026, 8, 28, 8), plan_end=datetime(2026, 8, 28, 10), status="completed", actual_start=datetime(2026, 8, 28, 8), actual_end=datetime(2026, 8, 28, 10)),
+            TimeSlot(task_id=2, instrument_id=None, plan_start=datetime(2026, 8, 28, 10), plan_end=datetime(2026, 8, 28, 12), status="completed"),
+            TimeSlot(task_id=3, instrument_id=101, plan_start=datetime(2026, 8, 28, 12), plan_end=datetime(2026, 8, 28, 14), status="scheduled"),
+        ])
+        db.commit()
+        self.assertEqual(0, rebuild_instrument_bridge_reservations(db))
+        self.assertEqual(0, db.query(TimeSlot).filter(TimeSlot.task_id == 2).count() - 1)
+        db.close()
 
 
 if __name__ == "__main__":
