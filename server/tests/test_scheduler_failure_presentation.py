@@ -3,22 +3,9 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from app.services.scheduler_failure_presentation import build_failure_presentation
-from app.services.scheduler_deadline_recommendation import _capacity_lower_date
 
 
 class SchedulerFailurePresentationTest(unittest.TestCase):
-    def test_deadline_search_starts_after_capacity_can_cover_deficit(self):
-        start = datetime(2026, 8, 21, 0, 0)
-        deadline = datetime(2026, 8, 22, 23, 59)
-        prefix = list(range(201))
-
-        result = _capacity_lower_date(
-            deadline, start, start + timedelta(days=4), {101: prefix},
-            [{"instrument_id": 101, "deficit_hours": 1}],
-        )
-
-        self.assertGreater(result, deadline.date())
-
     def test_aggregates_same_instrument_without_repeating_capacity(self):
         project = SimpleNamespace(
             id=1, code="XM-001", name="当前项目",

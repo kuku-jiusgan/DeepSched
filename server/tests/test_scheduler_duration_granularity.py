@@ -97,3 +97,37 @@ class RemainingTaskHoursTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskHoursInputRoundingTest(unittest.TestCase):
+    """工时在写入时就取整到排程颗粒度，入口值与求解器建模值才对得上。"""
+
+    def test_rounds_up_to_half_hour(self):
+        from app.services.task_hours_service import round_up_to_time_unit
+
+        self.assertEqual(2.0, round_up_to_time_unit(1.7))
+        self.assertEqual(1.5, round_up_to_time_unit(1.2))
+        self.assertEqual(8.0, round_up_to_time_unit(8))
+
+    def test_none_and_non_positive(self):
+        from app.services.task_hours_service import round_up_to_time_unit
+
+        self.assertIsNone(round_up_to_time_unit(None))
+        self.assertEqual(0.0, round_up_to_time_unit(0))
+
+    def test_matches_the_solver_time_unit(self):
+        from app.services.scheduler_helpers import TIME_UNIT_MINUTES
+        from app.services.task_hours_service import TIME_UNIT_HOURS
+
+        self.assertEqual(TIME_UNIT_MINUTES / 60, TIME_UNIT_HOURS)
+
+    def test_rounded_input_removes_the_double_rounding_inflation(self):
+        from app.services.scheduler_helpers import task_duration_units
+        from app.services.task_hours_service import round_up_to_time_unit
+
+        task = _task(1, 7, True,
+                     hours=round_up_to_time_unit(1.2),
+                     switchover=round_up_to_time_unit(0.2))
+
+        # 1.5h + 0.5h = 2.0h，两次取整与合并取整结果一致。
+        self.assertEqual(4, task_duration_units(task))

@@ -1,8 +1,18 @@
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from typing import Literal, Optional, List
 from datetime import datetime, time
 
 # ---- Project ----
+_ROUNDED_HOUR_FIELDS = ("est_duration_hours", "switchover_hours")
+
+
+def _round_hours(value):
+    """工时统一取整到排程颗粒度，避免入口值与求解器建模值对不上。"""
+    from app.services.task_hours_service import round_up_to_time_unit
+
+    return round_up_to_time_unit(value)
+
+
 class MilestoneCreate(BaseModel):
     name: str
     due_date: datetime
@@ -45,6 +55,12 @@ class TaskCreate(BaseModel):
     assignee_id: Optional[int] = None
     parent_id: Optional[int] = None
 
+    @field_validator(*_ROUNDED_HOUR_FIELDS)
+    @classmethod
+    def _round_hour_fields(cls, value):
+        return _round_hours(value)
+
+
 class TaskUpdate(BaseModel):
     name: Optional[str] = None
     task_type: Optional[str] = None
@@ -59,6 +75,12 @@ class TaskUpdate(BaseModel):
     predecessor_ids: Optional[List[int]] = None
     instrument_ids: Optional[List[int]] = None
     assignee_id: Optional[int] = None
+
+    @field_validator(*_ROUNDED_HOUR_FIELDS)
+    @classmethod
+    def _round_hour_fields(cls, value):
+        return _round_hours(value)
+
     parent_id: Optional[int] = None
 
 class TaskReorder(BaseModel):
@@ -176,6 +198,12 @@ class DetectionTaskCreate(BaseModel):
     allow_transfer: bool = False
     instrument_ids: List[int] = []
     assignee_id: int = Field(gt=0)
+
+    @field_validator(*_ROUNDED_HOUR_FIELDS)
+    @classmethod
+    def _round_hour_fields(cls, value):
+        return _round_hours(value)
+
 
 class DetectionTaskOut(BaseModel):
     id: int

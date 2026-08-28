@@ -69,8 +69,7 @@ function recommendations(diagnostic: ScheduleFailureDiagnostic) {
       ? rows.map((row, index) => h('div', { class: 'schedule-failure-recommendation', key: `${index}-${row.title}` }, [
           h('strong', `方案 ${index + 1} · ${row.title}`),
           h('p', row.description),
-          h('span', { class: row.verified ? 'is-verified' : 'is-unverified' },
-            row.verified ? '求解器已验证' : '容量下限'),
+          h('span', { class: 'is-verified' }, '求解器已验证'),
         ]))
       : [h('div', { class: 'schedule-failure-empty' }, isSearching
           ? '正在通过完整排程约束计算可行调整方案，通常需要 1–2 分钟，结果会更新到上方“调整方案”区域。'

@@ -93,7 +93,6 @@
   font-size: 12px;
 }
 .schedule-failure-recommendation .is-verified { color: #15803d; }
-.schedule-failure-recommendation .is-unverified { color: #a16207; }
 .schedule-failure-empty { padding: 10px 12px; color: #64748b; background: #f8fafc; border-radius: 6px; }
 .schedule-failure-action {
   color: #475569;
