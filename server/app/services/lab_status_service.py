@@ -36,7 +36,6 @@ def _instrument_status(instrument: Instrument, now: datetime, current_slot: Time
         "group": instrument.instrument_group,
         "location": instrument.location,
         "status": status,
-        "buffer_rate": instrument.buffer_rate,
         "label_x": instrument.label_x or 0,
         "label_y": instrument.label_y or 0,
         "current_task": current["task_name"],

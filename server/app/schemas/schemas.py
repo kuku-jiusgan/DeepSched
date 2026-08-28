@@ -274,7 +274,6 @@ class InstrumentCreate(BaseModel):
     model: Optional[str] = None
     location: Optional[str] = None
     availability_status: str = "available"
-    buffer_rate: float = 1.1
     switchover_base_hours: float = 0.5
     effective_work_start: str = "08:30"
     effective_work_end: str = "20:00"
@@ -300,7 +299,6 @@ class InstrumentOut(BaseModel):
     location: Optional[str]
     availability_status: str = "available"
     status: str
-    buffer_rate: float
     switchover_base_hours: float
     effective_work_start: str
     effective_work_end: str

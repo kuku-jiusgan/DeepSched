@@ -38,3 +38,6 @@ server/logs/
 backup/
 solver_logs/*.log
 temp_patch1.txt
+
+# 前端类型检查的增量构建产物
+web/tsconfig.tsbuildinfo

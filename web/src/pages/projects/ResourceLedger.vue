@@ -66,7 +66,6 @@
         <a-space style="width: 100%" :size="16">
           <a-form-item label="物理位置" style="width: 160px"><a-input v-model:value="form.location" placeholder="如：A201" /></a-form-item>
           <a-form-item label="可用状态" required style="width: 140px"><a-select v-model:value="form.availability_status" :options="availabilityOptions" /></a-form-item>
-          <a-form-item label="缓冲率系数" style="width: 140px"><a-input-number v-model:value="form.buffer_rate" :min="1" :max="2" :step="0.05" style="width: 100%" /></a-form-item>
         </a-space>
         <a-space style="width: 100%" :size="16">
           <a-form-item label="切换基准耗时(h)" style="width: 160px"><a-input-number v-model:value="form.switchover_base_hours" :min="0" :max="24" :step="0.5" style="width: 100%" /></a-form-item>
@@ -114,7 +113,6 @@ interface InstrumentForm {
   model: string
   location: string
   availability_status: AvailabilityStatus
-  buffer_rate: number
   switchover_base_hours: number
   effective_work_start: string
   effective_work_end: string
@@ -135,7 +133,6 @@ const form = reactive<InstrumentForm>({
   model: '',
   location: '',
   availability_status: 'available',
-  buffer_rate: 1.1,
   switchover_base_hours: 0.5,
   effective_work_start: '08:30',
   effective_work_end: '20:00',
@@ -175,7 +172,6 @@ const columns = [
   { title: '可用状态', dataIndex: 'availability_status', key: 'availability', width: 80 },
   { title: '运行状态', dataIndex: 'status', key: 'status', width: 80 },
   { title: '有效工作时段', key: 'working_hours', width: 115 },
-  { title: '缓冲率', dataIndex: 'buffer_rate', key: 'buffer', width: 60, responsive: ['xl'] },
   { title: '能力标签', dataIndex: 'capabilities', key: 'caps', width: 140, responsive: ['xl'] },
   { title: '操作', key: 'actions', width: 120 },
 ]
@@ -192,8 +188,7 @@ async function resetForm() {
     model: '',
     location: '',
     availability_status: 'available',
-    buffer_rate: 1.1,
-    switchover_base_hours: 0.5,
+      switchover_base_hours: 0.5,
     effective_work_start: normalizeClock(params?.day_start, '08:30'),
     effective_work_end: normalizeClock(params?.day_end, '20:00'),
     capabilities: [],
@@ -214,7 +209,6 @@ function openEdit(r: Instrument) {
     model: r.model || '',
     location: r.location || '',
     availability_status: r.availability_status || 'available',
-    buffer_rate: r.buffer_rate,
     switchover_base_hours: r.switchover_base_hours,
     effective_work_start: normalizeClock(r.effective_work_start, ''),
     effective_work_end: normalizeClock(r.effective_work_end, ''),
@@ -231,7 +225,6 @@ function buildPayload(): InstrumentPayload {
     model: form.model || undefined,
     location: form.location || undefined,
     availability_status: form.availability_status,
-    buffer_rate: form.buffer_rate,
     switchover_base_hours: form.switchover_base_hours,
     effective_work_start: form.effective_work_start,
     effective_work_end: form.effective_work_end,

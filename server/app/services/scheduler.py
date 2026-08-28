@@ -384,16 +384,23 @@ class SchedulerService:
             # 只问排不排得下，找到任意可行解即可返回，不必继续优化目标函数。
             # 不影响结论：可行就是可行；判定不可行仍然要走完整证明。
             solver.parameters.stop_after_first_solution = True
-        solver.parameters.log_search_progress = True
+        # 交期建议一次搜索要探测上百个候选日期，逐次落一份求解日志会在几分钟内
+        # 生成上千个文件（实测一天 3267 个），而这些探测只关心可行与否，日志
+        # 没有排查价值。真实排程仍然完整留痕。
+        solver.parameters.log_search_progress = not feasibility_only
         solver.parameters.log_to_stdout = False
-        solver_trace = SolverTrace(
+        solver_trace = None if feasibility_only else SolverTrace(
             current_project_id, len(tasks), mode, solver_time_limit,
         )
-        solver_trace.write_model(model)
-        solver_trace.write_fixed_slot_registry(fixed_slots)
-        solver.log_callback = solver_trace.write
+        if solver_trace:
+            solver_trace.write_model(model)
+            solver_trace.write_fixed_slot_registry(fixed_slots)
+            solver.log_callback = solver_trace.write
         status = solver.Solve(model)
-        elapsed_ms = solver_trace.finish(solver, solver.StatusName(status))
+        elapsed_ms = (
+            solver_trace.finish(solver, solver.StatusName(status))
+            if solver_trace else round(solver.WallTime() * 1000)
+        )
         _logger.info(
             "scheduler_solve project_id=%s tasks=%s mode=%s status=%s elapsed_ms=%s trace=%s",
             current_project_id,
@@ -401,7 +408,7 @@ class SchedulerService:
             mode,
             solver.StatusName(status),
             elapsed_ms,
-            solver_trace.path,
+            solver_trace.path if solver_trace else "-",
         )
 
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):

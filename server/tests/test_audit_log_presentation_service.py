@@ -32,7 +32,8 @@ class AuditLogPresentationServiceTest(unittest.TestCase):
         })
 
         self.assertEqual("task", record["category"])
-        self.assertEqual("删除项目任务 · 成功", record["summary"])
+        # 8975ecb 给标签表补了 task_deleted，旧文案「删除项目任务」随之变化。
+        self.assertEqual("删除任务【系统操作】 · 成功", record["summary"])
 
 
 if __name__ == "__main__":

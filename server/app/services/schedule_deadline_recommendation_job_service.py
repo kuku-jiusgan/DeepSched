@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.core.database import SessionLocal
 from app.models import Project, ScheduleDeadlineRecommendationJob, Task
@@ -13,6 +13,9 @@ from app.services.scheduler_deadline_recommendation import enumerate_verified_da
 
 
 JOB_POLL_SECONDS = 1
+# 一次完整搜索约一两分钟。超过这个时限还挂在 running 的，只可能是进程被重启
+# 或崩溃时留下的：worker 只捡 pending，它们不会再被处理，也不会自己清理。
+STALE_JOB_MINUTES = 15
 JOB_LEASE_NAME = "schedule-deadline-recommendation"
 JOB_LEASE_SECONDS = 35
 _wake_event = threading.Event()
@@ -144,12 +147,35 @@ def _worker_loop() -> None:
         db = SessionLocal()
         try:
             if acquire_worker_lease(db, JOB_LEASE_NAME, _worker_owner_id, JOB_LEASE_SECONDS):
+                _reclaim_stale_jobs(db)
                 _process_next_job(db)
         except Exception:
             db.rollback()
             _logger.exception("排程调整方案后台计算失败")
         finally:
             db.close()
+
+
+def _reclaim_stale_jobs(db) -> None:
+    """把被进程重启掐断、永远卡在 running 的作业标记为失败。
+
+    不退回 pending：作业若是因为自身原因崩的，退回会让它反复重跑。标记失败后
+    前端至少能提示"暂未生成，请重试"，而不是一直显示计算中。
+    """
+    cutoff = datetime.now() - timedelta(minutes=STALE_JOB_MINUTES)
+    stale = db.query(ScheduleDeadlineRecommendationJob).filter(
+        ScheduleDeadlineRecommendationJob.status == "running",
+        ScheduleDeadlineRecommendationJob.completed_at.is_(None),
+        ScheduleDeadlineRecommendationJob.started_at < cutoff,
+    ).all()
+    if not stale:
+        return
+    for job in stale:
+        job.status = "failed"
+        job.error_message = "计算被中断"
+        job.completed_at = datetime.now()
+    db.commit()
+    _logger.warning("回收被中断的排程调整方案作业 count=%s", len(stale))
 
 
 def _process_next_job(db) -> None:

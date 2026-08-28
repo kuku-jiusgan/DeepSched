@@ -13,6 +13,21 @@ from app.services.task_execution_service import start_task_execution
 from app.services.task_pause_service import _approval_ready_time, list_switch_candidates, pause_and_switch_task
 
 
+def _next_working_day() -> datetime:
+    """明天起的第一个工作日（零点）。
+
+    用例里的时间槽必须落在工作日的 8:30-20:00 之内。写死日期会随着时间推移
+    变成过去，排程不会往回排；直接用"明天"则在周五、周六运行时落到休息日，
+    排程被推到下周一，断言随之失败。
+    """
+    day = (datetime.now() + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day
+
+
 class TaskPauseServiceTest(unittest.TestCase):
     def setUp(self):
         engine = create_engine("sqlite:///:memory:")
@@ -24,7 +39,8 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.project_b = Project(code="B", name="项目B")
         self.db.add_all([self.operator, self.instrument, self.project_a, self.project_b])
         self.db.flush()
-        now = datetime.now()
+        self.base_day = _next_working_day()
+        now = self.base_day.replace(hour=10)
         self.source_task = Task(
             project_id=self.project_a.id,
             name="方法开发A",
@@ -255,16 +271,16 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertTrue(all(slot.status == "paused" for slot in source_slots))
 
     def test_pause_and_switch_resumes_source_before_target_followup(self):
-        switch_time = datetime(2026, 8, 25, 10, 0)
+        switch_time = self.base_day.replace(hour=10, minute=0)
         self.source_task.est_duration_hours = 4
         self.source_task.assignee_id = self.operator.id
         self.target_task.est_duration_hours = 3
         self.target_task.assignee_id = self.operator.id
-        self.source_slot.plan_start = datetime(2026, 8, 25, 8, 30)
-        self.source_slot.plan_end = datetime(2026, 8, 25, 11, 30)
+        self.source_slot.plan_start = self.base_day.replace(hour=8, minute=30)
+        self.source_slot.plan_end = self.base_day.replace(hour=11, minute=30)
         self.source_slot.actual_start = self.source_slot.plan_start
         self.target_slot.plan_start = self.source_slot.plan_end
-        self.target_slot.plan_end = datetime(2026, 8, 25, 14, 30)
+        self.target_slot.plan_end = self.base_day.replace(hour=14, minute=30)
         followup_task = Task(
             project_id=self.project_b.id,
             name="方案撰写",
@@ -331,7 +347,7 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertTrue(all(slot.plan_end.weekday() < 5 for slot in future_slots))
 
     def test_pause_and_switch_shifts_all_slots_of_intermediate_tasks(self):
-        now = datetime.now()
+        now = _next_working_day().replace(hour=10)
         self.source_task.assignee_id = self.operator.id
         self.source_task.requires_human = True
         self.target_slot.plan_start = now + timedelta(hours=5)
@@ -390,12 +406,12 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.target_task.requires_human = True
         self.target_task.assignee_id = self.operator.id
         self.target_task.est_duration_hours = 2
-        switch_time = datetime(2026, 8, 25, 10, 0)
-        self.source_slot.plan_start = datetime(2026, 8, 25, 8, 30)
-        self.source_slot.plan_end = datetime(2026, 8, 25, 12, 0)
+        switch_time = self.base_day.replace(hour=10, minute=0)
+        self.source_slot.plan_start = self.base_day.replace(hour=8, minute=30)
+        self.source_slot.plan_end = self.base_day.replace(hour=12, minute=0)
         self.source_slot.actual_start = self.source_slot.plan_start
-        self.target_slot.plan_start = datetime(2026, 8, 25, 12, 0)
-        self.target_slot.plan_end = datetime(2026, 8, 25, 14, 0)
+        self.target_slot.plan_start = self.base_day.replace(hour=12, minute=0)
+        self.target_slot.plan_end = self.base_day.replace(hour=14, minute=0)
         operator_task = Task(
             project_id=self.project_b.id,
             name="目标负责人非仪器任务",
@@ -421,13 +437,13 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.db.add_all([
             TimeSlot(
                 task_id=operator_task.id, instrument_id=None,
-                plan_start=datetime(2026, 8, 25, 14, 0),
-                plan_end=datetime(2026, 8, 25, 15, 0), status="scheduled", tier="confirmed",
+                plan_start=self.base_day.replace(hour=14, minute=0),
+                plan_end=self.base_day.replace(hour=15, minute=0), status="scheduled", tier="confirmed",
             ),
             TimeSlot(
                 task_id=queue_tail.id, instrument_id=self.instrument.id,
-                plan_start=datetime(2026, 8, 25, 15, 0),
-                plan_end=datetime(2026, 8, 25, 16, 0), status="scheduled", tier="confirmed",
+                plan_start=self.base_day.replace(hour=15, minute=0),
+                plan_end=self.base_day.replace(hour=16, minute=0), status="scheduled", tier="confirmed",
             ),
         ])
         self.db.commit()

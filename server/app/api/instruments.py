@@ -36,7 +36,6 @@ def create_instrument(
         code=data.code, name=data.name, instrument_group=data.instrument_group,
         brand=data.brand, model=data.model,
         location=data.location, availability_status=data.availability_status,
-        buffer_rate=data.buffer_rate,
         switchover_base_hours=data.switchover_base_hours,
         effective_work_start=data.effective_work_start,
         effective_work_end=data.effective_work_end,
@@ -95,7 +94,6 @@ def update_instrument(
     inst.model = data.model
     inst.location = data.location
     inst.availability_status = data.availability_status
-    inst.buffer_rate = data.buffer_rate
     inst.switchover_base_hours = data.switchover_base_hours
     inst.effective_work_start = data.effective_work_start
     inst.effective_work_end = data.effective_work_end

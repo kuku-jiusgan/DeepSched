@@ -250,7 +250,6 @@ export interface InstrumentPayload {
   model?: string
   location?: string
   availability_status: 'available' | 'unavailable'
-  buffer_rate: number
   switchover_base_hours: number
   effective_work_start: string
   effective_work_end: string
@@ -546,7 +545,6 @@ export interface LabStatusInstrument {
   group: string
   location: string | null
   status: string
-  buffer_rate: number
   label_x: number
   label_y: number
   current_task: string | null

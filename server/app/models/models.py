@@ -157,7 +157,6 @@ class Instrument(Base):
     location = Column(String(50))
     availability_status = Column(String(20), default="available")
     status = Column(String(20), default="idle")
-    buffer_rate = Column(Float, default=1.1)
     switchover_base_hours = Column(Float, default=0.5)
     effective_work_start = Column(String(5), nullable=False, default="08:30")
     effective_work_end = Column(String(5), nullable=False, default="20:00")

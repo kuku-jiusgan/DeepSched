@@ -213,7 +213,6 @@ export interface Instrument {
   location?: string;
   availability_status: 'available' | 'unavailable';
   status: string;
-  buffer_rate: number;
   switchover_base_hours: number;
   effective_work_start: string;
   effective_work_end: string;

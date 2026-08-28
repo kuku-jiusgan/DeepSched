@@ -15,9 +15,14 @@ class SchedulerMaintenanceIsolationTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
-        self.horizon_start = (datetime.now() + timedelta(days=1)).replace(
+        # 排程只落在工作日内。基准日必须跳过周末，否则周五、周六运行时
+        # "明天"落在休息日，排程会被推到下周一，断言随之失败。
+        start = (datetime.now() + timedelta(days=1)).replace(
             hour=8, minute=30, second=0, microsecond=0,
         )
+        while start.weekday() >= 5:
+            start += timedelta(days=1)
+        self.horizon_start = start
 
     def tearDown(self):
         self.db.close()
