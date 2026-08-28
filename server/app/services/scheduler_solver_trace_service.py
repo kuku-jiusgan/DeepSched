@@ -32,6 +32,29 @@ class SolverTrace:
         self._write(model.ModelStats())
         self._write("\n=== SEARCH PROGRESS ===\n")
 
+    def write_fixed_slot_registry(self, slots) -> None:
+        self._write("\n=== FIXED SLOT REGISTRY ===\n")
+        for slot in slots:
+            task = getattr(slot, "task", None)
+            project = getattr(task, "project", None) if task else None
+            instrument = getattr(slot, "instrument", None)
+            self._write(
+                f"fixed_slot_{slot.id}: project={getattr(project, 'code', None)} "
+                f"top_task={self._top_task_name(task)} task={getattr(task, 'name', None)} "
+                f"assignee={getattr(getattr(task, 'assignee', None), 'display_name', None)} "
+                f"instrument={getattr(instrument, 'name', None)} "
+                f"plan=({slot.plan_start},{slot.plan_end}) "
+                f"actual=({slot.actual_start},{slot.actual_end}) status={slot.status} tier={slot.tier}"
+            )
+
+    @staticmethod
+    def _top_task_name(task):
+        seen = set()
+        while task and task.parent and task.id not in seen:
+            seen.add(task.id)
+            task = task.parent
+        return getattr(task, "name", None)
+
     def finish(self, solver, status_name: str) -> int:
         elapsed_ms = round((perf_counter() - self._started_at) * 1000)
         self._write("\n=== FINAL RESPONSE ===\n")

@@ -358,6 +358,7 @@ class SchedulerService:
             current_project_id, len(tasks), mode, solver_time_limit,
         )
         solver_trace.write_model(model)
+        solver_trace.write_fixed_slot_registry(fixed_slots)
         solver.log_callback = solver_trace.write
         status = solver.Solve(model)
         elapsed_ms = solver_trace.finish(solver, solver.StatusName(status))
