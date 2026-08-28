@@ -213,6 +213,10 @@ def _execute_replan(
     moved_workloads = _pending_approval_workload(db, moved_project_ids)
     old_project_completions = _project_completions(db, moved_project_ids, moved_workloads)
 
+    # 时间槽必须在求解前删除，否则求解器会把它们当成不可移动的占用。但排程
+    # 失败后的占用明细还要按原计划位置统计这些工时，删掉就只剩"没有时间槽"
+    # 的任务，工时会被记进预测工时列，仪器占用凭空变成 0。先留一份快照。
+    released_slots = _released_slot_intervals(db, replan_task_ids)
     _delete_movable_slots(db, replan_task_ids)
     for task in replan_tasks:
         task.status = "pending"
@@ -241,6 +245,7 @@ def _execute_replan(
         ),
         current_project_id=project.id,
         rollback_on_conflict=rollback_on_failure and not use_savepoint,
+        released_slot_intervals=released_slots,
     )
     if solver_result.get("status") != "ok":
         if savepoint:
@@ -496,13 +501,34 @@ def _selected_tasks_start_today(
     ).first() is not None
 
 
-def _delete_movable_slots(db, task_ids: set[int]) -> None:
-    delete_time_slots_and_refresh(db, db.query(TimeSlot).filter(
+def _released_slot_intervals(db, task_ids: set[int]) -> dict[int, list[tuple]]:
+    """即将被删除的时间槽快照：任务 → [(计划开始, 计划结束, 仪器)]。
+
+    筛选条件与 _delete_movable_slots 保持一致，两者必须同进同出。
+    """
+    intervals: dict[int, list[tuple]] = {}
+    for slot in _movable_slots_query(db, task_ids).all():
+        if not slot.plan_start or not slot.plan_end:
+            continue
+        intervals.setdefault(slot.task_id, []).append(
+            (slot.plan_start, slot.plan_end, slot.instrument_id),
+        )
+    return intervals
+
+
+def _movable_slots_query(db, task_ids: set[int]):
+    return db.query(TimeSlot).filter(
         TimeSlot.task_id.in_(task_ids),
         TimeSlot.tier.in_(MOVABLE_TIERS),
         TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
         TimeSlot.actual_start.is_(None),
-    ), synchronize_session=False)
+    )
+
+
+def _delete_movable_slots(db, task_ids: set[int]) -> None:
+    delete_time_slots_and_refresh(
+        db, _movable_slots_query(db, task_ids), synchronize_session=False,
+    )
 
 
 def _downstream_ids(db, seed_ids: set[int], project_task_ids: set[int]) -> set[int]:

@@ -42,6 +42,7 @@ def build_failure_response(
     relaxed_project_end_task_ids,
     include_failure_diagnostics,
     replan_request,
+    released_slot_intervals=None,
 ) -> dict:
     """把一次失败的求解翻译成带诊断信息的错误响应。"""
     if not include_failure_diagnostics:
@@ -96,6 +97,7 @@ def build_failure_response(
             total_units,
             current_project_id=current_project_id,
             excluded_task_ids=relaxed_project_end_task_ids,
+            released_slot_intervals=released_slot_intervals,
         )
         diagnostic_message = diagnostic["message"]
         current_deadline = next(

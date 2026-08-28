@@ -88,6 +88,7 @@ class SchedulerService:
         fixed_instrument_ids: dict[int, int] | None = None,
         allow_unassigned_human_task_ids: set[int] | None = None,
         additional_dependency_gaps: dict[tuple[int, int], int] | None = None,
+        released_slot_intervals: dict[int, list[tuple]] | None = None,
     ) -> dict:
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -392,6 +393,7 @@ class SchedulerService:
                 current_project_id=current_project_id,
                 relaxed_project_end_task_ids=relaxed_project_end_task_ids,
                 include_failure_diagnostics=include_failure_diagnostics,
+                released_slot_intervals=released_slot_intervals,
                 replan_request={
                     "project_ids": project_ids,
                     "mode": mode,

@@ -20,6 +20,7 @@ def build_project_failure_diagnostic(
     tasks, compatibility, instrument_prefix_sums, horizon_start, total_units,
     current_project_id: int | None, excluded_task_ids: set[int] | None,
     task_dependencies: list[tuple[int, int]],
+    released_slot_intervals: dict[int, list[tuple]] | None = None,
 ) -> dict:
     if current_project_id is None:
         raise ValueError("排程诊断缺少当前项目ID")
@@ -34,6 +35,7 @@ def build_project_failure_diagnostic(
     groups = _instrument_failure_groups(
         current_project, tasks_by_project, compatibility,
         instrument_prefix_sums, horizon_start, total_units, task_dependencies,
+        released_slot_intervals or {},
     )
     has_capacity_deficit = any(
         group["remaining_hours"] < group["required_hours"]
@@ -100,7 +102,7 @@ def _tasks_by_project(tasks, excluded_task_ids: set[int] | None) -> dict:
 
 def _instrument_failure_groups(
     current_project, tasks_by_project, compatibility, instrument_prefix_sums,
-    horizon_start, total_units, task_dependencies,
+    horizon_start, total_units, task_dependencies, released_slot_intervals=None,
 ) -> list[dict]:
     current_tasks = tasks_by_project.get(current_project.id, [])
     instruments = {}
@@ -144,7 +146,7 @@ def _instrument_failure_groups(
         details, occupied_hours = _occupied_project_details(
             current_project.id, tasks_by_project, compatibility, instrument_id,
             instrument_label, today_start, horizon_start, end_unit, segment_ends, capacities,
-            task_dependencies,
+            task_dependencies, released_slot_intervals or {},
         )
         available = _working_units(
             instrument_prefix_sums[instrument_id], start_unit, end_unit,
@@ -181,6 +183,7 @@ def _instrument_failure_groups(
 def _occupied_project_details(
     current_project_id, tasks_by_project, compatibility, instrument_id, instrument_label,
     today_start, horizon_start, end_unit, segment_ends, capacities, task_dependencies=(),
+    released_slot_intervals=None,
 ) -> tuple[list[dict], float]:
     details = []
     occupied_hours = 0.0
@@ -197,7 +200,7 @@ def _occupied_project_details(
             continue
         _intervals, breakdown = _project_instrument_intervals(
             project_tasks, instrument_id, compatibility, today_start, project_deadline,
-            task_dependencies,
+            task_dependencies, released_slot_intervals or {},
         )
         resource_intervals = breakdown["resource_intervals"]
         if not resource_intervals:
@@ -334,7 +337,7 @@ def _remaining_task_hours(task) -> float:
 
 def _project_instrument_intervals(
     project_tasks, instrument_id, compatibility, window_start, window_end,
-    task_dependencies=(),
+    task_dependencies=(), released_slot_intervals=None,
 ):
     intervals = []
     # 夹在两个"同仪器 + 同负责人"任务之间的非仪器任务（方案撰写、报告撰写等）
@@ -346,7 +349,10 @@ def _project_instrument_intervals(
         if getattr(task, "status", None) in {"done", "completed"}:
             continue
         if task.id in bridge_task_ids:
-            intervals.extend(_bridge_intervals(task, window_start, window_end))
+            intervals.extend(_bridge_intervals(
+                task, window_start, window_end,
+                _released_task_spans(released_slot_intervals, task.id, None),
+            ))
             continue
         if not getattr(task, "requires_instrument", False):
             continue
@@ -366,6 +372,16 @@ def _project_instrument_intervals(
         ]
         if slots:
             intervals.extend((max(window_start, slot.plan_start), min(window_end, slot.plan_end), task, "slot") for slot in slots)
+            continue
+        # 重排会在求解前删掉待重排任务的时间槽。它们仍然是"已有计划、正在被
+        # 重排"的占用，必须按原计划位置继续计入仪器占用，否则这段工时会掉进
+        # 下面的预测分支，明细里仪器占用凭空变成 0。
+        released = _released_task_spans(released_slot_intervals, task.id, instrument_id)
+        if released:
+            intervals.extend(
+                (max(window_start, start), min(window_end, end), task, "slot")
+                for start, end in released
+            )
             continue
         deadline = min(filter(None, (getattr(task, "latest_due", None), project_tasks[0].project.end_date)), default=None)
         if deadline:
@@ -392,13 +408,27 @@ def _project_instrument_intervals(
     }
 
 
-def _bridge_intervals(task, window_start, window_end):
+def _released_task_spans(released_slot_intervals, task_id, instrument_id) -> list[tuple]:
+    """求解前被删除的时间槽，按仪器筛出该任务的原计划区间并合并。
+
+    instrument_id 为 None 时不筛仪器，供桥接任务（不占仪器）使用。
+    """
+    spans = [
+        (start, end)
+        for start, end, slot_instrument_id in (released_slot_intervals or {}).get(task_id, [])
+        if start and end and (instrument_id is None or slot_instrument_id == instrument_id)
+    ]
+    return _merge_spans(spans) if spans else []
+
+
+def _bridge_intervals(task, window_start, window_end, released_spans=()):
     """桥接任务占住仪器的时间。
 
     已排就用它自己的时间槽。重排会把原时间槽置为 superseded，此时任务仍然
     是"已有计划、正在被重排"，占用性质不变，继续按原计划位置计入人工占用；
-    否则占用明细里的人工占用会凭空变成 0，工时被记进预测工时列。只有从未
-    排过的任务才按剩余工时倒排到截止日，计入预测工时。
+    否则占用明细里的人工占用会凭空变成 0，工时被记进预测工时列。项目重排
+    还会在求解前直接删除时间槽，此时改用 released_spans 里的原计划位置。
+    只有从未排过的任务才按剩余工时倒排到截止日，计入预测工时。
     """
     planned = [
         slot for slot in (getattr(task, "time_slots", []) or [])
@@ -410,6 +440,12 @@ def _bridge_intervals(task, window_start, window_end):
         and slot.status in {"scheduled", "running", "blocked", "paused"}
     ]
     slots = active or planned
+    if not slots and released_spans:
+        return [
+            (max(window_start, start), min(window_end, end), task, "bridge")
+            for start, end in released_spans
+            if min(window_end, end) > max(window_start, start)
+        ]
     if slots:
         # 同一任务被反复重排会留下多份时间范围相同的作废时间槽，必须先合并，
         # 否则同一段占用会被重复累加。
