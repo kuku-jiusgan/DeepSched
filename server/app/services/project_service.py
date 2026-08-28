@@ -1,5 +1,9 @@
 from app.models import Project
 from app.schemas.schemas import ProjectCreate
+from app.services.project_hours_validation_service import (
+    ProjectWindowCapacityError,
+    validate_project_window_capacity,
+)
 from app.services.project_date_service import (
     normalize_project_end,
     normalize_project_start,
@@ -25,6 +29,12 @@ def create_project(db, data: ProjectCreate) -> Project:
     try:
         validate_project_window(start_date, end_date)
     except ValueError as exc:
+        raise ProjectInvalidError(str(exc)) from exc
+    try:
+        validate_project_window_capacity(
+            db, start_date, end_date, data.estimated_hours,
+        )
+    except ProjectWindowCapacityError as exc:
         raise ProjectInvalidError(str(exc)) from exc
 
     project = Project(

@@ -16,7 +16,10 @@ from app.schemas.schemas import ProjectCreate, TaskUpdate
 from app.services.project_hours_validation_service import (
     ProjectHoursExceededError,
     project_top_level_task_hours,
+    ProjectWindowCapacityError,
+    project_window_capacity_deficit,
     validate_project_estimated_hours,
+    validate_project_window_capacity,
 )
 from app.services.project_task_rollup_service import recalculate_project_parent_hours
 from app.services.instrument_status_service import delete_time_slots_and_refresh
@@ -191,6 +194,20 @@ def update_project_plan(db, project_id: int, data: ProjectCreate) -> Project:
     try:
         validate_project_window(start_date, end_date)
     except ValueError as exc:
+        raise PlanChangeInvalidError(str(exc)) from exc
+    # 任务合计工时不在这个接口里改，新旧两边取同一个值；预计工时和起止日期
+    # 会变，所以缺口要分别按改前和改后各算一次。
+    task_hours = project_top_level_task_hours(db, project_id)
+    planned_hours = max(float(data.estimated_hours or 0), task_hours)
+    previous_hours = max(float(project.estimated_hours or 0), task_hours)
+    try:
+        validate_project_window_capacity(
+            db, start_date, end_date, planned_hours,
+            previous_deficit=project_window_capacity_deficit(
+                db, project.start_date, project.end_date, previous_hours,
+            ),
+        )
+    except ProjectWindowCapacityError as exc:
         raise PlanChangeInvalidError(str(exc)) from exc
 
     project_code = data.code.strip()
