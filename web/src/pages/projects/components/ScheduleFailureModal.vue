@@ -1,10 +1,8 @@
 <template>
   <div>
     <component :is="failureContent" />
-    <div v-if="jobStatus === 'pending' || jobStatus === 'running'" class="schedule-failure-job-status">
-      正在通过完整排程约束计算可行调整方案，通常需要 1–2 分钟，结果会更新到上方“调整方案”区域。
-    </div>
-    <div v-else-if="jobStatus === 'failed' || jobStatus === 'stale'" class="schedule-failure-job-status is-error">
+    <!-- 计算中的提示由「调整方案」区域自己显示，这里不再重复一遍。 -->
+    <div v-if="jobStatus === 'failed' || jobStatus === 'stale'" class="schedule-failure-job-status is-error">
       调整方案暂未生成，请调整计划后重新排程。
     </div>
   </div>

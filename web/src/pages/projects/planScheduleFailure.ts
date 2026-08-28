@@ -72,7 +72,7 @@ function recommendations(diagnostic: ScheduleFailureDiagnostic) {
           h('span', { class: 'is-verified' }, '求解器已验证'),
         ]))
       : [h('div', { class: 'schedule-failure-empty' }, isSearching
-          ? '正在通过完整排程约束计算可行调整方案，通常需要 1–2 分钟，结果会更新到上方“调整方案”区域。'
+          ? '正在通过完整排程约束计算可行调整方案，通常需要 1–2 分钟，完成后显示在这里。'
           : '当前搜索范围内没有能使排程成功的日期调整方案。')]),
   ])
 }
