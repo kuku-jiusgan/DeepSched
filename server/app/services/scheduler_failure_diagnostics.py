@@ -365,24 +365,46 @@ def _project_instrument_intervals(
 
 
 def _bridge_intervals(task, window_start, window_end):
-    """桥接任务占住仪器的时间：已排就用它自己的时间槽，未排则按剩余工时倒排到截止日。"""
-    slots = [
+    """桥接任务占住仪器的时间。
+
+    已排就用它自己的时间槽。重排会把原时间槽置为 superseded，此时任务仍然
+    是"已有计划、正在被重排"，占用性质不变，继续按原计划位置计入人工占用；
+    否则占用明细里的人工占用会凭空变成 0，工时被记进预测工时列。只有从未
+    排过的任务才按剩余工时倒排到截止日，计入预测工时。
+    """
+    planned = [
         slot for slot in (getattr(task, "time_slots", []) or [])
         if slot.plan_start and slot.plan_end
-        and getattr(slot, "lifecycle_status", "active") == "active"
+    ]
+    active = [
+        slot for slot in planned
+        if getattr(slot, "lifecycle_status", "active") == "active"
         and slot.status in {"scheduled", "running", "blocked", "paused"}
     ]
+    slots = active or planned
     if slots:
-        spans = [
+        # 同一任务被反复重排会留下多份时间范围相同的作废时间槽，必须先合并，
+        # 否则同一段占用会被重复累加。
+        spans = _merge_spans([
             (max(window_start, slot.plan_start), min(window_end, slot.plan_end))
             for slot in slots
-        ]
+        ])
         kind = "bridge"
     else:
         start = window_end - timedelta(hours=_remaining_task_hours(task))
         spans = [(max(window_start, start), window_end)]
         kind = "forecast"
     return [(start, end, task, kind) for start, end in spans if end > start]
+
+
+def _merge_spans(spans):
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            continue
+        merged.append((start, end))
+    return merged
 
 
 def _top_level_task(task):
