@@ -81,7 +81,7 @@ class ProjectServiceTest(unittest.TestCase):
         self.assertEqual(40, updated.estimated_hours)
         self.assertIsNone(updated.start_date.tzinfo)
         self.assertEqual(datetime(2026, 7, 14, 0, 0), updated.start_date)
-        self.assertEqual(datetime(2026, 7, 20, 23, 59, 59, 999999), updated.end_date)
+        self.assertEqual(datetime(2026, 7, 20, 23, 59, 59), updated.end_date)
 
     def test_update_project_rejects_estimated_hours_below_current_tasks(self):
         project = Project(name="项目", code="PRJ-005", priority=1, estimated_hours=80)
@@ -113,7 +113,7 @@ class ProjectServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(datetime(2026, 7, 20, 0, 0), project.start_date)
-        self.assertEqual(datetime(2026, 7, 20, 23, 59, 59, 999999), project.end_date)
+        self.assertEqual(datetime(2026, 7, 20, 23, 59, 59), project.end_date)
 
     def test_create_project_rejects_end_before_start(self):
         with self.assertRaisesRegex(ProjectInvalidError, "结题日期不能早于开始日期"):

@@ -245,7 +245,7 @@ class DetectionTaskServiceTest(unittest.TestCase):
 
         self.assertEqual("调整后的检测", project.name)
         self.assertEqual("调整后的检测", project.tasks[0].name)
-        self.assertEqual(datetime(2026, 8, 8, 23, 59, 59, 999999), project.end_date)
+        self.assertEqual(datetime(2026, 8, 8, 23, 59, 59), project.end_date)
         self.assertEqual("ok", result["status"])
         apply_plan.assert_not_called()
 
