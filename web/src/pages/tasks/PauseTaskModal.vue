@@ -66,7 +66,8 @@
 <script setup lang="ts">
 import { computed, h, ref, watch } from 'vue'
 import type { ProjectPlanApplyResult } from '@/types'
-import { scheduleFailureContent } from '@/pages/projects/planScheduleFailure'
+import ScheduleFailureModal from '@/pages/projects/components/ScheduleFailureModal.vue'
+import '@/pages/projects/scheduleFailure.css'
 import dayjs from 'dayjs'
 import { Empty, message, Modal } from 'ant-design-vue'
 import { getTaskSwitchCandidates, pauseTask } from '@/services/api'
@@ -137,13 +138,24 @@ async function submit() {
     const structured = typeof detail === 'object' && detail !== null
       ? detail as ProjectPlanApplyResult
       : null
-    Modal.error({
-      title: '暂停并切换失败',
-      content: structured?.schedule_failure
-        ? scheduleFailureContent(structured)
-        : h('div', { style: { whiteSpace: 'pre-line' } }, String(detail)),
-      okText: '确认',
-    })
+    // 排程失败诊断带表格，必须和计划排程用同一套宽度与容器样式，否则挤在
+    // 默认的 416px 弹窗里会错行。
+    Modal.error(structured?.schedule_failure
+      ? {
+          title: '暂停并切换失败',
+          width: 900,
+          wrapClassName: 'schedule-failure-modal',
+          content: h(ScheduleFailureModal, {
+            projectId: structured.schedule_failure.project_id ?? 0,
+            result: structured,
+          }),
+          okText: '确认',
+        }
+      : {
+          title: '暂停并切换失败',
+          content: h('div', { style: { whiteSpace: 'pre-line' } }, String(detail)),
+          okText: '确认',
+        })
   } finally {
     isSubmitting.value = false
   }

@@ -233,6 +233,7 @@ import { persistCommittedDraftOrders, siblingOrderGroups, toDraftPayload } from 
 import { useApprovalGateEditor } from './useApprovalGateEditor'
 import { usePlanReferenceData } from './usePlanReferenceData'
 import './planBreakdown.css'
+import './scheduleFailure.css'
 const router = useRouter()
 const route = useRoute()
 const canOperate = computed(() => {
