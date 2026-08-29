@@ -15,10 +15,11 @@ def load_scheduler_data(
     occupancy_project_ids: set[int] | None = None,
 ):
     child_parent_ids = select(Task.parent_id).where(Task.parent_id.isnot(None))
-    # 等待方案签批的下游任务也必须进入预测排程，否则签批完成后才会
-    # 首次占用资源，导致已排任务被突然挤压。外部签批节点本身仍排除，
-    # 它不占用仪器/人员资源；下游任务会由 approval gate context 施加
-    # 预计签批时间边界，并在持久化时标记为 forecast。
+    # 状态为 waiting_external 且有前置的任务也要载入：它们等的是外部事件，
+    # 但活是真实要做的。其中"等方案签批"的那一类会在 scheduler.generate 里被
+    # 剔出求解——签批哪天通过没有依据，不给它们钉具体位置，改为收窄所在项目的
+    # 完工上界（见 scheduler_pending_approval）。等其他外部事件的任务不受影响，
+    # 照常参与求解。外部签批节点本身始终排除，它不占用仪器与人员。
     schedulable_status = or_(
         Task.status.in_(["pending", "ready"]),
         and_(
@@ -78,15 +79,19 @@ def _load_unapproved_downstream_tasks(
     loaded_task_ids: set[int],
     excluded_task_ids: set[int] | None = None,
 ):
-    """载入本次排程所涉项目中未签批的下游任务，用于占用仪器与人员产能。
+    """按 task_ids 求解时，补齐本次所涉项目中状态为 waiting_external 的任务。
 
-    这些任务签批前不落地时间槽，若不参与求解，它们的工时在签批前完全不可见，
-    项目完工时间与延期判断都会系统性偏乐观。
+    主查询按 task_ids 收窄后会漏掉同项目里其他等待外部事件的任务，它们同样要
+    占用仪器与人员，漏掉会让产能看起来比实际宽松。
+
+    注意其中"等方案签批"的那一类随后会在 scheduler.generate 里被剔出求解：
+    签批哪天通过没有依据，不给它们钉具体位置，工时改为收窄所在项目的完工上界。
+    所以在当前数据下本函数载入的任务大多会被过滤掉；等其他外部事件的任务才是
+    真正留在求解里的部分。
 
     范围是"本次求解实际涉及的项目"，而不是全厂：与本次排程无关的项目若也
-    放不下自己的签批后工时，会把整个模型压成不可解，让任何项目都排不了程。
-    那部分跨项目占用改由 load_diagnostic_resource_tasks 在失败诊断中呈现，
-    不作为硬约束。
+    放不下自己的工时，会把整个模型压成不可解，让任何项目都排不了程。那部分
+    跨项目占用由 load_diagnostic_resource_tasks 在失败诊断中呈现，不作硬约束。
     """
     if not occupancy_project_ids:
         return []
