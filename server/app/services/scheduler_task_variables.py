@@ -53,6 +53,7 @@ def build_task_variables(
     instrument_prefix_sums,
     fixed_slots,
     remaining_duration_minutes,
+    project_end_bounds=None,
 ) -> tuple[TaskVariables, dict | None]:
     """建好全部任务变量；某个任务放不下时返回错误响应。"""
     variables = TaskVariables()
@@ -82,6 +83,11 @@ def build_task_variables(
             if t.project.end_date:
                 p_end_u = datetime_to_units(t.project.end_date, horizon_start)
                 p_end_unit = min(total_units, p_end_u)
+                # 未签批方案下游的工时不占具体时段，但结题前一定要做完，
+                # 所以把可用窗口按工作日历往前收窄相应工时。
+                p_end_unit = min(
+                    p_end_unit, (project_end_bounds or {}).get(t.project_id, p_end_unit),
+                )
         approval_bound = approval_bounds.get(t.id)
         if approval_bound:
             p_start_unit = max(

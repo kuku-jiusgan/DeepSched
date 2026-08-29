@@ -33,6 +33,7 @@ from app.services.scheduler_cross_project_setup import (
     cross_project_setup_units,
 )
 from app.services.scheduler_failure_response import build_failure_response
+from app.services.scheduler_pending_approval import pending_approval_end_bounds
 from app.services.scheduler_preflight import (
     narrow_compat_to_fixed_instruments,
     validate_schedulable_input,
@@ -116,10 +117,8 @@ class SchedulerService:
                 current_project_id, *(project_ids or ()),
             },
         )
-        # 未签批方案的下游任务必须参与求解，否则它们的工时在签批前不可见，
-        # 项目完工时间与延期判断都会系统性偏乐观。签批节点本身仍被排除在
-        # 求解器之外（0 耗时），依赖由 _effective_predecessor_ids 桥接到它的
-        # 前置任务。求解结果不为这些任务落地时间槽，详见 scheduler_persistence。
+        # 未签批方案的下游任务不进入求解，改为收窄所在项目的完工上界，
+        # 详见 scheduler_pending_approval。
         if not tasks:
             return {"status": "ok", "message": "没有可排程任务", "timeslots_created": 0}
         # Resource release is a first-class priority: once hard constraints
@@ -147,6 +146,15 @@ class SchedulerService:
         )
         ensure_calendar_range(self.db, horizon_start.date(), horizon_end.date())
         approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
+        forecast_tasks = [task for task in tasks if task.id in forecast_task_ids]
+        if forecast_tasks:
+            tasks = [task for task in tasks if task.id not in forecast_task_ids]
+            if not tasks:
+                return {
+                    "status": "ok",
+                    "message": "当前任务都在等待方案签批",
+                    "timeslots_created": 0,
+                }
         if earliest_start_bounds:
             for task_id, bound in earliest_start_bounds.items():
                 current = approval_bounds.get(task_id)
@@ -205,6 +213,10 @@ class SchedulerService:
         global_prefix_sum = working_calendar.global_prefix_sum
         instrument_prefix_sums = working_calendar.instrument_prefix_sums
 
+        project_end_bounds = pending_approval_end_bounds(
+            forecast_tasks, global_prefix_sum, horizon_start, total_units,
+        )
+
         relevant_instrument_ids = {
             instrument.id
             for task in tasks
@@ -257,6 +269,7 @@ class SchedulerService:
             instrument_prefix_sums=instrument_prefix_sums,
             fixed_slots=fixed_slots,
             remaining_duration_minutes=remaining_duration_minutes,
+            project_end_bounds=project_end_bounds,
         )
         if variable_error:
             return variable_error

@@ -11,7 +11,12 @@ from app.services.scheduler import SchedulerService
 
 
 class SchedulerApprovalGateForecastTest(unittest.TestCase):
-    """方案签批下游任务：计入产能测算，但签批前不落地时间槽。"""
+    """方案签批下游任务：计入产能测算，但不占时间轴、签批前不落地时间槽。
+
+    签批哪天通过没有依据，把工时钉在某个具体时段等于凭空预留一段仪器时间，
+    签批下来之前谁都用不上。所以它们不进求解器的区间模型，改为把所在项目的
+    完工上界按工作日历往前收窄相应工时——工时照样计入，但不占具体位置。
+    """
 
     def setUp(self):
         engine = create_engine("sqlite:///:memory:")
@@ -101,6 +106,37 @@ class SchedulerApprovalGateForecastTest(unittest.TestCase):
             0, self.db.query(TimeSlot).filter(TimeSlot.task_id == verify.id).count(),
         )
         self.assertEqual("waiting_external", verify.status)
+
+
+    def test_downstream_hours_narrow_the_window_without_reserving_a_slot(self):
+        """收窄的是完工上界，不是在时间轴上挖一段预留。"""
+        deadline = self.horizon_start + timedelta(days=4)
+        project, develop, _verify = self._build_plan(deadline)
+
+        result = self._generate(project)
+
+        self.assertEqual("ok", result["status"])
+        slots = self.db.query(TimeSlot).filter(TimeSlot.task_id == develop.id).all()
+        # 方法开发 4 小时，签批下游 8 小时。窗口有 4 天，装得下，
+        # 但方法开发必须在"结题日往前退 8 个有效工时"之前完工。
+        self.assertTrue(slots)
+        self.assertLess(max(slot.plan_end for slot in slots), deadline)
+
+    def test_downstream_tasks_stay_out_of_the_solver(self):
+        project, _develop, verify = self._build_plan(
+            self.horizon_start + timedelta(days=4),
+        )
+
+        with patch(
+            "app.services.scheduler.build_task_variables",
+            wraps=__import__(
+                "app.services.scheduler", fromlist=["build_task_variables"],
+            ).build_task_variables,
+        ) as spy:
+            self._generate(project)
+
+        solved_task_ids = {task.id for task in spy.call_args.kwargs["tasks"]}
+        self.assertNotIn(verify.id, solved_task_ids)
 
 
 if __name__ == "__main__":
