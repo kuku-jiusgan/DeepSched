@@ -201,11 +201,15 @@ def _business_detail(detail: dict) -> dict:
     hidden = {
         "event_version", "category", "summary", "result", "changes",
         "target_display", "task_display", "path", "status", "success",
-        "client_ip", "duration_ms",
+        "client_ip", "duration_ms", "error",
     }
     return {label("field", key, key): format_value(key, value) for key, value in detail.items() if key not in hidden and value not in (None, "", [], {})}
 
 
 def _technical_detail(detail: dict) -> dict:
-    labels = {"path": "请求路径", "status": "状态码", "duration_ms": "耗时(ms)", "client_ip": "来源 IP"}
+    # 错误信息排在最前：翻这类日志多半就是为了看当时到底报了什么。
+    labels = {
+        "error": "错误信息", "path": "请求路径", "status": "状态码",
+        "duration_ms": "耗时(ms)", "client_ip": "来源 IP",
+    }
     return {labels[key]: detail[key] for key in labels if detail.get(key) not in (None, "")}
