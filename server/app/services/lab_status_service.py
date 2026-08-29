@@ -34,7 +34,13 @@ def _instrument_status(
     in_working_time: bool = True,
 ) -> dict:
     status = _reconcile_instrument_status(instrument, current_slot, in_working_time)
-    current = _task_status_fields(current_slot, now, status_data)
+    # 非工作时段连同"当前任务"一起清空：前端是按有没有当前任务来判定运行中的，
+    # 只把 status 改成空闲、任务信息还挂着，界面上依然显示运行中，两个字段也
+    # 自相矛盾。
+    current = (
+        _task_status_fields(current_slot, now, status_data)
+        if in_working_time else _empty_task_fields()
+    )
     upcoming = status_data["next_slots"].get(instrument.id)
     next_fields = _next_task_fields(upcoming, status_data)
     return {
