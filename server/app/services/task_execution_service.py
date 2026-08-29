@@ -39,7 +39,7 @@ def start_task_execution(
     started_at = datetime.now()
     slot = _resume_anchor_slot(task, slot, started_at)
     if advance_schedule:
-        _advance_resumed_schedule(task, slot, started_at)
+        _advance_resumed_schedule(db, task, slot, started_at)
     _ensure_can_start(db, task, slot, allow_queue_insert)
 
     task.status = "running"
@@ -226,20 +226,62 @@ def _resume_anchor_slot(task: Task, requested_slot: TimeSlot, started_at: dateti
     raise TaskExecutionInvalidError("任务没有可恢复的未来活动时间槽，请先重新排程")
 
 
-def _advance_resumed_schedule(task: Task, anchor: TimeSlot, started_at: datetime) -> None:
-    """Move the unstarted continuation slots to the actual resume time."""
+def _advance_resumed_schedule(db, task: Task, anchor: TimeSlot, started_at: datetime) -> None:
+    """把还没开始的后续时间槽按工作日历重新铺放到实际恢复时刻之后。
+
+    此前是给每个时间槽加一个墙钟差值，完全不看工作日历。周六恢复、或临近 20:00
+    收工时恢复，会把计划直接推到周末和工作时段之外（实测出现过 21:01 结束、
+    周日 09:31 开始的时间槽），而且每次恢复都再累加一次差值，排程会被一步步
+    推离工作日。
+
+    改为按有效工时重新铺放：跨越非工作时间时拆成多个时间槽，与求解器产出的形态
+    一致。恢复动作发生在非工作时间时，计划自然落到下一个工作时段——那段时间的
+    实际执行仍然完整记在执行流水里，只是不计入进度。
+    """
+    from app.services.schedule_working_time_service import working_time_chunks
+
     if anchor.actual_start is not None or not anchor.plan_start:
         return
-    delta = started_at - anchor.plan_start
-    if delta.total_seconds() == 0:
+    slots = [
+        slot for slot in sorted(task.time_slots, key=lambda item: (item.plan_start, item.id))
+        if slot.lifecycle_status == "active"
+        and slot.id >= anchor.id
+        and slot.actual_start is None
+        and slot.status in RUNNING_CONTINUATION_STATUSES
+        and slot.plan_start and slot.plan_end
+    ]
+    if not slots:
         return
-    for slot in sorted(task.time_slots, key=lambda item: (item.plan_start, item.id)):
-        if slot.lifecycle_status != "active" or slot.id < anchor.id or slot.actual_start is not None:
-            continue
-        if slot.status not in RUNNING_CONTINUATION_STATUSES or not slot.plan_start or not slot.plan_end:
-            continue
-        slot.plan_start += delta
-        slot.plan_end += delta
+    total_hours = sum(
+        (slot.plan_end - slot.plan_start).total_seconds() for slot in slots
+    ) / 3600
+    chunks = working_time_chunks(db, started_at, total_hours, anchor.instrument_id)
+    if not chunks:
+        return
+    _apply_replanned_chunks(db, anchor, slots, chunks)
+
+
+def _apply_replanned_chunks(db, anchor: TimeSlot, slots: list[TimeSlot], chunks: list) -> None:
+    """把重新铺好的时间段落回时间槽：不够就新建，多余的作废。"""
+    for slot, (chunk_start, chunk_end) in zip(slots, chunks):
+        slot.plan_start = chunk_start
+        slot.plan_end = chunk_end
+    for slot in slots[len(chunks):]:
+        slot.lifecycle_status = "superseded"
+        slot.superseded_reason = "恢复后按工作日历重排"
+        slot.status = "cancelled"
+    for chunk_start, chunk_end in chunks[len(slots):]:
+        db.add(TimeSlot(
+            task_id=anchor.task_id,
+            instrument_id=anchor.instrument_id,
+            schedule_run_id=anchor.schedule_run_id,
+            plan_start=chunk_start,
+            plan_end=chunk_end,
+            tier=anchor.tier,
+            status="scheduled",
+            lifecycle_status="active",
+            is_night_run=False,
+        ))
 
 
 def ensure_paused_state_consistent(task: Task) -> None:

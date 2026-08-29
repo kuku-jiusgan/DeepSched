@@ -594,6 +594,7 @@ class TaskPauseServiceTest(unittest.TestCase):
         return sum(int((slot.plan_end - slot.plan_start).total_seconds() / 60) for slot in slots)
 
     def test_completing_replacement_resumes_paused_source_task(self):
+
         pause_and_switch_task(
             self.db,
             self.source_slot.id,
@@ -621,7 +622,14 @@ class TaskPauseServiceTest(unittest.TestCase):
             if slot.status == "running" and slot.actual_start is not None
         ]
         self.assertEqual(1, len(resumed_slots))
-        self.assertEqual(resumed_slots[0].actual_start, resumed_slots[0].plan_start)
+        # 恢复后的计划落在工作时段内，且不早于实际开始时刻。工作时间恢复时两者
+        # 相等；非工作时间恢复时计划落到下一个工作时段，实际开始仍记真实时刻——
+        # 那段时间的执行按规则不计入进度，但记录完整保留。
+        resumed = resumed_slots[0]
+        self.assertGreaterEqual(resumed.plan_start, resumed.actual_start)
+        self.assertLess(resumed.plan_start.weekday(), 5)
+        self.assertGreaterEqual(resumed.plan_start.hour, 8)
+        self.assertLess(resumed.plan_start.hour, 20)
         self.assertIsNotNone(self.source_slot.actual_end)
         self.assertEqual("completed", self.target_task.status)
 
