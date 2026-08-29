@@ -86,3 +86,17 @@ class ApprovalGateActionOut(BaseModel):
     schedule_status: str
     schedule_message: str | None = None
     preview_token: str | None = None
+
+
+class PendingApprovalSegmentOut(BaseModel):
+    """待方案签批工时在仪器时间轴上的预测段。每个项目单独一段，不合并。"""
+
+    instrument_id: int
+    project_id: int
+    project_code: str
+    project_name: str
+    task_id: int
+    task_name: str
+    hours: float
+    plan_start: datetime
+    plan_end: datetime

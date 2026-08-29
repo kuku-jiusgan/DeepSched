@@ -123,6 +123,19 @@ export interface Task {
 export type ApprovalGateStatus = 'not_submitted' | 'waiting_approval' | 'approved';
 export type ApprovalRiskStatus = 'normal' | 'upcoming' | 'overdue' | 'deadline_risk';
 
+/** 待方案签批工时在仪器时间轴上的预测段。每个项目单独一段，不合并。 */
+export interface PendingApprovalSegment {
+  instrument_id: number;
+  project_id: number;
+  project_code: string;
+  project_name: string;
+  task_id: number;
+  task_name: string;
+  hours: number;
+  plan_start: string;
+  plan_end: string;
+}
+
 export interface ApprovalGateTaskRef {
   id: number;
   name: string;

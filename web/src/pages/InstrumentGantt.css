@@ -370,28 +370,23 @@
 .tooltip-row span { color: #94a3b8; }
 .tooltip-row.is-delay { color: #fecaca; }
 
-/* 待方案签批的工时：只标数量，不画成时间块。
-   块断言的是"这段区间被占用"，而这部分工时还没有位置——签批哪天通过没有依据。
-   画成块等于把取消掉的预留用画面又加回来，还会和真正占用那段时间的项目重叠。 */
-.gantt-pending-approval {
-  position: absolute;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  margin-left: 6px;
-  padding: 0 8px;
-  height: 20px;
-  border: 1px dashed #cbd5e1;
-  border-radius: 10px;
-  background: #f8fafc;
+/* 待方案签批的工时段：按工作日历铺在最后一个已排时间块之后。
+   用虚线描边和浅底与真实排程区分——这段还没有真正占用仪器，签批通过后才会
+   正式排入；长度是按真实工时铺出来的，能看出会做到哪一天。 */
+.gantt-bar.gantt-bar-pending {
+  background: repeating-linear-gradient(
+    45deg, #f8fafc, #f8fafc 6px, #eef2f7 6px, #eef2f7 12px
+  );
+  border: 1px dashed #94a3b8;
   color: #64748b;
-  font-size: 11px;
-  line-height: 1;
-  white-space: nowrap;
+  box-shadow: none;
   cursor: help;
 }
 
-.gantt-pending-approval:hover {
-  border-color: #94a3b8;
-  color: #475569;
+.gantt-bar.gantt-bar-pending:hover {
+  border-color: #64748b;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+  transform: none;
 }
+
+.gantt-bar.gantt-bar-pending .bar-label { color: #64748b; }

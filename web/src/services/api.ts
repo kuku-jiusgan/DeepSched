@@ -1,5 +1,6 @@
 import api from './http'
 import type {
+  PendingApprovalSegment,
   Project, Instrument, TimeSlot, InstrumentBridgeReservation, DashboardData, UtilizationStats, ProjectPlanApplyResult,
   DAGData, InsertCost, InsertOrderResult, Task, CapabilityReq, InstrumentFault,
   ApprovalGate, ApprovalGateAction, ApprovalGateList,
@@ -210,6 +211,9 @@ export const createApprovalGate = (projectId: number, data: ApprovalGateCreatePa
 
 export const getApprovalGates = (params?: ApprovalGateQuery): Promise<ApprovalGateList> =>
   api.get<ApprovalGateList>('/approval-gates', { params }).then(r => r.data)
+
+export const getPendingApprovalSegments = (): Promise<PendingApprovalSegment[]> =>
+  api.get<PendingApprovalSegment[]>('/approval-gates/pending-forecast').then(r => r.data)
 
 export const getApprovalGate = (gateId: number): Promise<ApprovalGate> =>
   api.get<ApprovalGate>(`/approval-gates/${gateId}`).then(r => r.data)

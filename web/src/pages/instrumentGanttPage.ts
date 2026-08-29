@@ -2,7 +2,7 @@
 import { ref, computed, nextTick } from 'vue'
 import type { CSSProperties, Component } from 'vue'
 import { LeftOutlined, RightOutlined, FullscreenOutlined, FullscreenExitOutlined, ExperimentOutlined, EditOutlined, CheckSquareOutlined, DotChartOutlined, FileTextOutlined } from '@ant-design/icons-vue'
-import type { Instrument, InstrumentBridgeReservation, TimeSlot } from '@/types'
+import type { Instrument, InstrumentBridgeReservation, TimeSlot, PendingApprovalSegment } from '@/types'
 import { taskStatusLabel } from '@/utils/statusMeta'
 import dayjs from 'dayjs'
 import { centerGanttTimelineOnCurrentTime } from './kanban/ganttTimelineScroll'
@@ -105,7 +105,7 @@ const tooltipX = ref(0)
 const tooltipY = ref(0)
 const tooltipStyle = computed(() => ({ left: tooltipX.value + 'px', top: tooltipY.value + 'px' }))
 const containerRef = ref<HTMLElement | null>(null)
-const { approvalGates, bridgeReservations, faults, instruments, loadData: fetchData, loading, slots, taskTypeMap } = useInstrumentGanttData({
+const { pendingSegments, bridgeReservations, faults, instruments, loadData: fetchData, loading, slots, taskTypeMap } = useInstrumentGanttData({
   viewMode,
   cursorDate,
   afterLoad: async () => {
@@ -429,60 +429,31 @@ function buildQuarterFragments(slot: GanttSlot, quarter: number) {
   return fragments
 }
 
-interface PendingApprovalItem {
-  projectName: string
-  taskName: string
-  hours: number
+/** 待方案签批的工时段：按工作日历铺在该仪器最后一个已排时间块之后。
+    后端算好起止时刻，前端按普通时间块的方式渲染，长度即真实占用跨度，
+    一眼能看出这些活会做到哪一天。每个项目单独一段，不合并。 */
+function getPendingSegments(instrumentId: number, quarter?: number) {
+  return pendingSegments.value
+    .filter(segment => segment.instrument_id === instrumentId)
+    .map(segment => ({
+      segment,
+      style: getBarStyle(
+        {
+          id: -segment.task_id,
+          instrument_id: instrumentId,
+          plan_start: segment.plan_start,
+          plan_end: segment.plan_end,
+        } as unknown as GanttSlot,
+        quarter,
+      ),
+    }))
+    .filter(item => !('display' in item.style))
 }
 
-/** 各仪器上"等方案签批通过才会排入"的工时。 */
-const pendingByInstrument = computed(() => {
-  const result: Record<number, PendingApprovalItem[]> = {}
-  for (const gate of approvalGates.value) {
-    if (gate.gate_status === 'approved') continue
-    for (const task of gate.unlock_tasks || []) {
-      if (!task.requires_instrument || task.is_scheduled) continue
-      for (const instrumentId of task.instrument_ids || []) {
-        (result[instrumentId] ||= []).push({
-          projectName: gate.project_name,
-          taskName: task.name,
-          hours: Number(task.est_duration_hours || 0),
-        })
-      }
-    }
-  }
-  return result
-})
-
-function pendingHours(instrumentId: number) {
-  return (pendingByInstrument.value[instrumentId] || [])
-    .reduce((total, item) => total + item.hours, 0)
-}
-
-function pendingItems(instrumentId: number) {
-  return pendingByInstrument.value[instrumentId] || []
-}
-
-/** 标签锚在该仪器最后一个已排时间块之后，只定位不占宽度。 */
-function getPendingStyle(instrumentId: number, quarter?: number) {
-  const ends = slots.value
-    .filter(slot => slot.instrument_id === instrumentId && slot.plan_end)
-    .map(slot => dayjs(slot.plan_end))
-  if (!ends.length) return { display: 'none' }
-  const anchor = ends.reduce((latest, item) => (item.isAfter(latest) ? item : latest))
-  const style = getBarStyle(
-    {
-      id: -instrumentId,
-      instrument_id: instrumentId,
-      plan_start: anchor.toISOString(),
-      plan_end: anchor.add(30, 'minute').toISOString(),
-    } as unknown as GanttSlot,
-    quarter,
-  )
-  if ('display' in style) return style
-  // 去掉宽度：块断言"这段区间被占用"，而这部分工时还没有位置，只能用标签表达。
-  const { width: _width, ...rest } = style as { width?: string } & Record<string, unknown>
-  return { ...rest, width: 'auto' }
+function pendingSegmentTitle(segment: PendingApprovalSegment) {
+  const start = dayjs(segment.plan_start).format('MM-DD HH:mm')
+  const end = dayjs(segment.plan_end).format('MM-DD HH:mm')
+  return `${segment.project_code} ${segment.project_name}\n${segment.task_name} ${segment.hours}h\n待方案签批后排入，预计 ${start} → ${end}`
 }
 
 function getBarStyle(slot: GanttSlot, quarter?: number) {
@@ -958,7 +929,7 @@ return {
   FullscreenExitOutlined, FullscreenOutlined, LeftOutlined, RightOutlined,
   WEEK_SEGMENT_COUNT, autoScrollEnabled,
   colWidth, containerRef, dayjs, flatRows, getBarClasses, getBarProjectText, getBarStyle,
-  getPendingStyle, pendingHours, pendingItems,
+  getPendingSegments, pendingSegmentTitle,
   getDelaySegmentStyle, getDelayText, getInstrumentStatusMeta, getLeftRowStyle, getSegmentLabel,
   getSlotsForQuarter, getTaskIcon, getTaskTypeLabel, getWeekBarDisplay, goNext, goPrev, goToday,
   dismissTooltip, getPausedExecutionStyle, hasDelay, hasPausedExecution, hasVerticalOverflow, hideTooltip, hoveredSlot, instruments, isCompactBar, isFullscreen,

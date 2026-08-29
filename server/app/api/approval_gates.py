@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.users import auth_token, get_current_user
 from app.core.database import get_db
 from app.schemas.approval_gate_schemas import (
+    PendingApprovalSegmentOut,
     ApprovalGateActionOut,
     ApprovalGateApprove,
     ApprovalGateCreate,
@@ -13,6 +14,7 @@ from app.schemas.approval_gate_schemas import (
     ApprovalGateOut,
     ApprovalGateSubmit,
 )
+from app.services.pending_approval_forecast_service import pending_approval_segments
 from app.services.approval_gate_service import (
     ApprovalGateInvalidError,
     ApprovalGateNotFoundError,
@@ -70,6 +72,13 @@ def approve_gate(gate_id: int, data: ApprovalGateApprove, token: str = Depends(a
 @router.post("/approval-gates/{gate_id}/confirm-schedule-impact", response_model=ApprovalGateActionOut)
 def confirm_gate_schedule(gate_id: int, preview_token: str, token: str = Depends(auth_token), db: Session = Depends(get_db)):
     return _handle(lambda: confirm_approval_schedule(db, gate_id, preview_token, get_current_user(token, db)))
+
+
+@router.get("/approval-gates/pending-forecast", response_model=list[PendingApprovalSegmentOut])
+def pending_approval_forecast(token: str = Depends(auth_token), db: Session = Depends(get_db)):
+    """各仪器上"等签批通过才会排入"的工时，按工作日历铺成时间段。"""
+    get_current_user(token, db)
+    return pending_approval_segments(db)
 
 
 def _handle(callback):
