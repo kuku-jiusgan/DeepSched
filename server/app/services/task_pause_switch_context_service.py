@@ -53,12 +53,18 @@ class PauseSwitchContext:
             if not entry.task.requires_instrument:
                 dependencies.append((entry.task.id, predecessor.task.id))
                 continue
+            if predecessor.task.requires_instrument:
+                dependencies.append((entry.task.id, predecessor.task.id))
+                continue
+            # 下面只处理"前驱是非仪器任务"：它不该挡住后面的仪器任务，所以要么
+            # 确认它有资格挡（同仪器同负责人），要么把依赖改挂到更早的仪器任务上。
+            # previous_instrument 只服务于这两种判断，此前它的 None 判断挡在最
+            # 前面，导致前驱本身就是队首仪器任务时（暂停并切换最常见的形态）顺序
+            # 依赖被整条丢掉，求解器随即把被暂停任务的剩余排到了接替任务之前。
             previous_instrument = _previous_instrument_entry(self.queue, predecessor)
             if previous_instrument is None:
                 continue
-            if predecessor.task.requires_instrument or _queue_dependency_allowed(
-                self.queue, predecessor, entry,
-            ):
+            if _queue_dependency_allowed(self.queue, predecessor, entry):
                 dependencies.append((entry.task.id, predecessor.task.id))
             else:
                 dependencies.append((entry.task.id, previous_instrument.task.id))

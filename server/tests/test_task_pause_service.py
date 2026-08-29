@@ -10,6 +10,8 @@ from app.domain.errors import DomainConflictError
 from app.models import Instrument, Project, Task, TaskDependency, TaskExecutionSegment, TimeSlot, User
 from app.services.schedule_completion_service import complete_task_and_shift
 from app.services.task_execution_service import start_task_execution
+from app.services import task_execution_service as execution_service
+from app.services import task_pause_service as pause_service
 from app.services.task_pause_service import _approval_ready_time, list_switch_candidates, pause_and_switch_task
 
 
@@ -26,6 +28,21 @@ def _next_working_day() -> datetime:
     while day.weekday() >= 5:
         day += timedelta(days=1)
     return day
+
+
+class _FrozenDatetime(datetime):
+    """把暂停服务里的"当前时刻"冻结到用例基准时刻。
+
+    暂停用真实的 datetime.now() 计算已执行工时和切换时刻。用例把时间槽放在
+    未来的工作日上以避开周末，若不冻结，"任务已经跑了一段"这个前提就不成立，
+    已执行工时会被算成 0，被暂停任务的剩余时长断言随之失真。
+    """
+
+    frozen: datetime | None = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.frozen or datetime.now(tz)
 
 
 class TaskPauseServiceTest(unittest.TestCase):
@@ -79,6 +96,22 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.db.commit()
         start_task_execution(self.db, self.source_slot.id, self.operator.id)
         self.db.commit()
+
+    def _freeze_now(self, moment: datetime) -> None:
+        """把暂停服务里的"当前时刻"冻结到指定时刻。
+
+        暂停用真实的 datetime.now() 计算已执行工时。用例把时间槽放在未来的
+        工作日上以避开周末，因此凡是断言"已经跑了一段、只剩多少"的用例，都必须
+        冻结当前时刻，否则已执行工时会被算成 0。不需要这个前提的用例不要冻结，
+        它们依赖真实时间判断任务是否正在运行。
+        """
+        _FrozenDatetime.frozen = moment
+        # 暂停会调用执行服务去启动接替任务，两边必须冻在同一时刻，否则接替任务
+        # 的实际开始时间落在计划之外，会留下零长度的锚点时间槽。
+        for module in (pause_service, execution_service):
+            freezer = patch.object(module, "datetime", _FrozenDatetime)
+            freezer.start()
+            self.addCleanup(freezer.stop)
 
     def tearDown(self):
         self.db.close()
@@ -233,6 +266,8 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertEqual(2, self.db.query(TaskExecutionSegment).count())
 
     def test_pause_and_switch_moves_the_whole_target_before_source_remainder(self):
+        # 断言依赖"源任务已跑一段、只剩剩余部分"，必须冻结当前时刻。
+        self._freeze_now(self.base_day.replace(hour=10))
         target_followup = TimeSlot(
             task_id=self.target_task.id,
             instrument_id=self.instrument.id,
@@ -347,6 +382,8 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertTrue(all(slot.plan_end.weekday() < 5 for slot in future_slots))
 
     def test_pause_and_switch_shifts_all_slots_of_intermediate_tasks(self):
+        # 断言依赖"源任务已跑一段、只剩剩余部分"，必须冻结当前时刻。
+        self._freeze_now(self.base_day.replace(hour=10))
         now = _next_working_day().replace(hour=10)
         self.source_task.assignee_id = self.operator.id
         self.source_task.requires_human = True
@@ -400,6 +437,8 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertLessEqual(source_slots[-1].plan_end, intermediate_slots[0].plan_start)
 
     def test_pause_switch_replans_target_assignee_noninstrument_task_when_source_is_nonhuman(self):
+        # 断言依赖"源任务已跑一段、只剩剩余部分"，必须冻结当前时刻。
+        self._freeze_now(self.base_day.replace(hour=10))
         self.source_task.requires_human = False
         self.source_task.assignee_id = None
         self.source_task.est_duration_hours = 2
