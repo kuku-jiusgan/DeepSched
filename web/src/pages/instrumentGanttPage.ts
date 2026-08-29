@@ -105,7 +105,7 @@ const tooltipX = ref(0)
 const tooltipY = ref(0)
 const tooltipStyle = computed(() => ({ left: tooltipX.value + 'px', top: tooltipY.value + 'px' }))
 const containerRef = ref<HTMLElement | null>(null)
-const { bridgeReservations, faults, instruments, loadData: fetchData, loading, slots, taskTypeMap } = useInstrumentGanttData({
+const { approvalGates, bridgeReservations, faults, instruments, loadData: fetchData, loading, slots, taskTypeMap } = useInstrumentGanttData({
   viewMode,
   cursorDate,
   afterLoad: async () => {
@@ -427,6 +427,62 @@ function buildQuarterFragments(slot: GanttSlot, quarter: number) {
     })
   }
   return fragments
+}
+
+interface PendingApprovalItem {
+  projectName: string
+  taskName: string
+  hours: number
+}
+
+/** 各仪器上"等方案签批通过才会排入"的工时。 */
+const pendingByInstrument = computed(() => {
+  const result: Record<number, PendingApprovalItem[]> = {}
+  for (const gate of approvalGates.value) {
+    if (gate.gate_status === 'approved') continue
+    for (const task of gate.unlock_tasks || []) {
+      if (!task.requires_instrument || task.is_scheduled) continue
+      for (const instrumentId of task.instrument_ids || []) {
+        (result[instrumentId] ||= []).push({
+          projectName: gate.project_name,
+          taskName: task.name,
+          hours: Number(task.est_duration_hours || 0),
+        })
+      }
+    }
+  }
+  return result
+})
+
+function pendingHours(instrumentId: number) {
+  return (pendingByInstrument.value[instrumentId] || [])
+    .reduce((total, item) => total + item.hours, 0)
+}
+
+function pendingItems(instrumentId: number) {
+  return pendingByInstrument.value[instrumentId] || []
+}
+
+/** 标签锚在该仪器最后一个已排时间块之后，只定位不占宽度。 */
+function getPendingStyle(instrumentId: number, quarter?: number) {
+  const ends = slots.value
+    .filter(slot => slot.instrument_id === instrumentId && slot.plan_end)
+    .map(slot => dayjs(slot.plan_end))
+  if (!ends.length) return { display: 'none' }
+  const anchor = ends.reduce((latest, item) => (item.isAfter(latest) ? item : latest))
+  const style = getBarStyle(
+    {
+      id: -instrumentId,
+      instrument_id: instrumentId,
+      plan_start: anchor.toISOString(),
+      plan_end: anchor.add(30, 'minute').toISOString(),
+    } as unknown as GanttSlot,
+    quarter,
+  )
+  if ('display' in style) return style
+  // 去掉宽度：块断言"这段区间被占用"，而这部分工时还没有位置，只能用标签表达。
+  const { width: _width, ...rest } = style as { width?: string } & Record<string, unknown>
+  return { ...rest, width: 'auto' }
 }
 
 function getBarStyle(slot: GanttSlot, quarter?: number) {
@@ -902,6 +958,7 @@ return {
   FullscreenExitOutlined, FullscreenOutlined, LeftOutlined, RightOutlined,
   WEEK_SEGMENT_COUNT, autoScrollEnabled,
   colWidth, containerRef, dayjs, flatRows, getBarClasses, getBarProjectText, getBarStyle,
+  getPendingStyle, pendingHours, pendingItems,
   getDelaySegmentStyle, getDelayText, getInstrumentStatusMeta, getLeftRowStyle, getSegmentLabel,
   getSlotsForQuarter, getTaskIcon, getTaskTypeLabel, getWeekBarDisplay, goNext, goPrev, goToday,
   dismissTooltip, getPausedExecutionStyle, hasDelay, hasPausedExecution, hasVerticalOverflow, hideTooltip, hoveredSlot, instruments, isCompactBar, isFullscreen,

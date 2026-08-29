@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.domain.task_status import resolve_task_execution_status
-from app.models import Task, TaskDependency, User
+from app.models import Task, TaskDependency, TimeSlot, User
 from app.schemas.approval_gate_schemas import ApprovalGateOut, ApprovalGateTaskRef
 from app.services.approval_gate_access_service import can_operate_gate_task
 from app.services.approval_gate_graph_service import task_completed_at
@@ -24,11 +24,23 @@ def gate_out(db, gate: Task, user: User) -> ApprovalGateOut:
         )
         for dependency in gate.predecessors
     ]
+    unlock_dependencies = db.query(TaskDependency).filter(
+        TaskDependency.predecessor_id == gate.id,
+    ).all()
+    scheduled_unlock_ids = _scheduled_task_ids(
+        db, {dependency.task_id for dependency in unlock_dependencies},
+    )
     unlock_tasks = [
-        ApprovalGateTaskRef(id=dependency.task.id, name=dependency.task.name)
-        for dependency in db.query(TaskDependency).filter(
-            TaskDependency.predecessor_id == gate.id
-        ).all()
+        ApprovalGateTaskRef(
+            id=dependency.task.id,
+            name=dependency.task.name,
+            status=resolve_task_execution_status(dependency.task),
+            est_duration_hours=dependency.task.est_duration_hours,
+            requires_instrument=bool(dependency.task.requires_instrument),
+            instrument_ids=list(dependency.task.instrument_ids or []),
+            is_scheduled=dependency.task.id in scheduled_unlock_ids,
+        )
+        for dependency in unlock_dependencies
     ]
     latest_approval_at = latest_approval_deadline(db, gate, unlock_tasks)
     expected = gate.expected_approval_at
@@ -78,6 +90,17 @@ def gate_out(db, gate: Task, user: User) -> ApprovalGateOut:
             can_operate_gate_task(gate, user)
         ) and not has_role(user, "项目管理员"),
     )
+
+def _scheduled_task_ids(db, task_ids: set[int]) -> set[int]:
+    """已经有活跃时间槽的任务。签批通过后它们会正常排入，就不再算待排工时。"""
+    if not task_ids:
+        return set()
+    rows = db.query(TimeSlot.task_id).filter(
+        TimeSlot.task_id.in_(task_ids),
+        TimeSlot.lifecycle_status == "active",
+    ).distinct().all()
+    return {row[0] for row in rows}
+
 
 def latest_approval_deadline(db, gate: Task, unlock_tasks: list[ApprovalGateTaskRef]) -> datetime | None:
     if not gate.project.end_date:

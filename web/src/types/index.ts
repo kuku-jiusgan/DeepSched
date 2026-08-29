@@ -128,6 +128,11 @@ export interface ApprovalGateTaskRef {
   name: string;
   status?: string | null;
   completed_at?: string | null;
+  // 签批通过前下游任务不落地时间槽，甘特图据此在已排时间块之后列出待排工时。
+  est_duration_hours?: number | null;
+  requires_instrument?: boolean;
+  instrument_ids?: number[];
+  is_scheduled?: boolean;
 }
 
 export interface ApprovalGate {

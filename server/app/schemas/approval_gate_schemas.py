@@ -30,6 +30,12 @@ class ApprovalGateTaskRef(BaseModel):
     name: str
     status: str | None = None
     completed_at: datetime | None = None
+    # 签批解锁的任务在通过之前不落地时间槽，甘特图要在已排时间槽之后把这部分
+    # 待排工时显式列出来，否则排程看起来会比真实情况乐观。
+    est_duration_hours: float | None = None
+    requires_instrument: bool = False
+    instrument_ids: list[int] = []
+    is_scheduled: bool = False
 
 
 class ApprovalGateOut(BaseModel):

@@ -2,13 +2,14 @@ import { ref, type Ref } from 'vue'
 import { message } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
+  getApprovalGates,
   getInstrumentFaults,
   getInstrumentBridgeReservations,
   getInstruments,
   getTaskTypes,
   getTimeslots,
 } from '@/services/api'
-import type { Instrument, InstrumentBridgeReservation, InstrumentFault, TimeSlot } from '@/types'
+import type { ApprovalGate, Instrument, InstrumentBridgeReservation, InstrumentFault, TimeSlot } from '@/types'
 
 export type InstrumentGanttViewMode = 'day' | 'week' | 'month'
 
@@ -41,6 +42,9 @@ export function useInstrumentGanttData(options: InstrumentGanttDataOptions) {
   const faults = ref<InstrumentFault[]>([])
   const bridgeReservations = ref<InstrumentBridgeReservation[]>([])
   const taskTypeMap = ref<Record<string, string>>({})
+  // 方案签批通过前，下游任务不进排程也不落地时间槽。甘特图要在已排时间块
+  // 之后把这部分待排工时显式列出来，否则排程看起来会比真实情况乐观。
+  const approvalGates = ref<ApprovalGate[]>([])
   let activeRequest: Promise<void> | null = null
   let isReloadPending = false
 
@@ -68,6 +72,7 @@ export function useInstrumentGanttData(options: InstrumentGanttDataOptions) {
         Promise.all([getTimeslots(range, REQUEST_TIMEOUT_MS), getInstrumentBridgeReservations(range, REQUEST_TIMEOUT_MS)]),
         Promise.all([getInstruments(), getInstrumentFaults(), getTaskTypes()]),
       ])
+      approvalGates.value = (await getApprovalGates()).items
       slots.value = timeslots
       bridgeReservations.value = reservations
       instruments.value = instrumentItems
@@ -84,5 +89,5 @@ export function useInstrumentGanttData(options: InstrumentGanttDataOptions) {
     }
   }
 
-  return { bridgeReservations, faults, instruments, loadData, loading, slots, taskTypeMap }
+  return { approvalGates, bridgeReservations, faults, instruments, loadData, loading, slots, taskTypeMap }
 }

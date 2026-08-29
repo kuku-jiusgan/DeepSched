@@ -369,3 +369,29 @@
 .tooltip-row { display: flex; justify-content: space-between; padding: 2px 0; }
 .tooltip-row span { color: #94a3b8; }
 .tooltip-row.is-delay { color: #fecaca; }
+
+/* 待方案签批的工时：只标数量，不画成时间块。
+   块断言的是"这段区间被占用"，而这部分工时还没有位置——签批哪天通过没有依据。
+   画成块等于把取消掉的预留用画面又加回来，还会和真正占用那段时间的项目重叠。 */
+.gantt-pending-approval {
+  position: absolute;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 8px;
+  height: 20px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.gantt-pending-approval:hover {
+  border-color: #94a3b8;
+  color: #475569;
+}

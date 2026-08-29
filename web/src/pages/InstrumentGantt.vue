@@ -71,6 +71,11 @@
             :style="{ height: Math.max(12, rowHeight) + 'px' }">
             <div v-for="col in timeColumns" :key="col.key" class="gantt-grid-cell"
               :style="{ width: colWidth + 'px' }" :class="{ 'is-weekend': col.isWeekend, 'is-today': col.isToday, 'is-current': col.isCurrent }" />
+            <div v-if="pendingHours(row.inst.id) > 0" class="gantt-pending-approval"
+              :style="getPendingStyle(row.inst.id, row.quarter)"
+              :title="pendingItems(row.inst.id).map(item => `${item.projectName} · ${item.taskName} ${item.hours}h`).join('\n')">
+              +{{ pendingHours(row.inst.id) }}h 待签批
+            </div>
             <div v-for="slot in getSlotsForQuarter(row.inst.id, row.quarter)" :key="slot.renderKey || slot.id"
               class="gantt-bar" :class="getBarClasses(slot, row.quarter)"
               :style="getBarStyle(slot, row.quarter)"
@@ -133,7 +138,8 @@ const {
   FullscreenExitOutlined, FullscreenOutlined, LeftOutlined, RightOutlined,
   WEEK_SEGMENT_COUNT, autoScrollEnabled, colWidth,
   containerRef, dayjs, dismissTooltip, flatRows, getBarClasses, getBarProjectText, getBarStyle, getDelaySegmentStyle,
-  getDelayText, getInstrumentStatusMeta, getLeftRowStyle, getPausedExecutionStyle, getSegmentLabel, getSlotsForQuarter,
+  getDelayText, getInstrumentStatusMeta, getLeftRowStyle, getPausedExecutionStyle, getPendingStyle, getSegmentLabel, getSlotsForQuarter,
+  pendingHours, pendingItems,
   getTaskIcon, getTaskTypeLabel, getWeekBarDisplay, goNext, goPrev, goToday, hasDelay,
   hasVerticalOverflow, hideTooltip, hoveredSlot, instruments, isCompactBar, isFullscreen, leftRef,
   hasPausedExecution, loading, periodLabel, rightRef, rowHeight, showTooltip, statusLabel, switchView, timeColumns,
