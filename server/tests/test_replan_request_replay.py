@@ -68,3 +68,46 @@ class ReplanRequestReplayTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplayableKwargsSerializationTest(unittest.TestCase):
+    """求解参数要能写进 JSON 列并原样还原。
+
+    参数里大量使用任务 ID 作键（remaining_duration_minutes、earliest_start_bounds
+    等），若还原成字符串键，generate 里按 task.id 查就全部落空，等于这个参数没传，
+    验证又会解上另一道题。setup_exempt_task_pairs 是 frozenset 的集合，不额外
+    处理会直接 JSON 序列化失败，作业创建被异常吞掉、连方案都没有。
+    """
+
+    def _round_trip(self, value):
+        import json
+        from app.services.schedule_deadline_recommendation_job_service import (
+            _deserialize_generate_kwargs,
+            _serialize_generate_kwargs,
+        )
+
+        encoded = _serialize_generate_kwargs({"value": value})
+        return _deserialize_generate_kwargs(json.loads(json.dumps(encoded)))["value"]
+
+    def test_integer_keyed_mapping_keeps_its_key_type(self):
+        self.assertEqual({546: 2100, 547: 150}, self._round_trip({546: 2100, 547: 150}))
+
+    def test_datetime_values_survive(self):
+        from datetime import datetime
+
+        value = {546: datetime(2026, 9, 7, 8, 30)}
+
+        self.assertEqual(value, self._round_trip(value))
+
+    def test_set_of_frozensets_survives(self):
+        value = {frozenset({546, 547}), frozenset({540, 541})}
+
+        self.assertEqual(value, self._round_trip(value))
+
+    def test_tuple_keyed_mapping_survives(self):
+        value = {(546, 547): 30, (540, 541): 60}
+
+        self.assertEqual(value, self._round_trip(value))
+
+    def test_plain_set_survives(self):
+        self.assertEqual({4565, 4566}, self._round_trip({4565, 4566}))

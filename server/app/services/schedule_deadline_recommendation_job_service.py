@@ -239,16 +239,27 @@ def _serialize_generate_kwargs(values: dict) -> dict:
 
 
 def _serialize_value(value):
+    """把求解参数编码成可写进 JSON 列的形式，且能原样还原。
+
+    键的类型必须保住：求解参数里大量使用任务 ID 作键（remaining_duration_minutes、
+    earliest_start_bounds 等），若还原成字符串键，generate 里按 task.id 查就全部
+    落空，等于这个参数没传——验证又会解上另一道题。
+    """
     if isinstance(value, datetime):
         return {"datetime": value.isoformat()}
+    if isinstance(value, frozenset):
+        return {"frozenset": sorted((_serialize_value(item) for item in value), key=repr)}
     if isinstance(value, set):
-        return {"set": sorted(value)}
+        return {"set": sorted((_serialize_value(item) for item in value), key=repr)}
     if isinstance(value, tuple):
         return {"tuple": [_serialize_value(item) for item in value]}
     if isinstance(value, list):
         return [_serialize_value(item) for item in value]
     if isinstance(value, dict):
-        return {str(key): _serialize_value(item) for key, item in value.items()}
+        return {"dict": [
+            [_serialize_value(key), _serialize_value(item)]
+            for key, item in value.items()
+        ]}
     return value
 
 
@@ -263,8 +274,15 @@ def _deserialize_value(value):
         return value
     if "datetime" in value:
         return datetime.fromisoformat(value["datetime"])
+    if "frozenset" in value:
+        return frozenset(_deserialize_value(item) for item in value["frozenset"])
     if "set" in value:
-        return set(value["set"])
+        return {_deserialize_value(item) for item in value["set"]}
     if "tuple" in value:
         return tuple(_deserialize_value(item) for item in value["tuple"])
+    if "dict" in value:
+        return {
+            _deserialize_value(key): _deserialize_value(item)
+            for key, item in value["dict"]
+        }
     return {key: _deserialize_value(item) for key, item in value.items()}
