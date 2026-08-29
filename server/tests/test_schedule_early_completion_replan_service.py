@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -156,3 +157,44 @@ class EarlyCompletionReplanServiceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CurrentProjectIsTheQueueProjectTest(unittest.TestCase):
+    """资源前移重排排的是被释放资源上的其他任务，当前项目必须指向它们。
+
+    此前传的是刚完成任务的项目，而那个项目一个任务都不在求解集合里，导致工时
+    校验、失败诊断和交期建议全部指向一个没在排的项目：技术员看到的
+    "项目未能在截止日期前排入"报的是另一个项目的结题日。
+    """
+
+    def test_current_project_follows_the_queue_head(self):
+        from unittest.mock import patch
+        from app.services import schedule_early_completion_replan_service as service
+
+        queue_head = SimpleNamespace(
+            id=11, project_id=77, requires_human=True, assignee_id=5,
+        )
+        captured = {}
+
+        def fake_closure(_db, _ids, _released_at, **kwargs):
+            captured.update(kwargs)
+            return {"status": "ok", "timeslots_created": 0}
+
+        with patch.object(service, "load_forward_shift_candidates", return_value=[queue_head]), \
+             patch.object(service, "is_movable_task", return_value=True), \
+             patch.object(service, "_scheduled_windows", return_value={}), \
+             patch.object(service, "_scheduled_minutes", return_value={}), \
+             patch.object(service, "_fixed_instruments", return_value={}), \
+             patch.object(service, "_queue_instruments", return_value={}), \
+             patch.object(service, "_queue_dependencies", return_value=[]), \
+             patch.object(service, "_queue_dependency_gaps", return_value={}), \
+             patch.object(service, "_first_task_start_bound", return_value={}), \
+             patch.object(service, "_window_changes", return_value={}), \
+             patch.object(service, "replan_resource_closure", fake_closure):
+            service.replan_released_resource_queue(
+                db=None, instrument_id=None, released_at=datetime(2026, 9, 7, 20, 0),
+                assignee_id=5, previous_project_id=99,
+            )
+
+        # 99 是刚完成任务的项目，77 才是被前移的队列所属项目。
+        self.assertEqual(77, captured["current_project_id"])

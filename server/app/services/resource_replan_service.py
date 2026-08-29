@@ -46,7 +46,9 @@ def replan_resource_closure(
             "timeslots_created": 0,
             "replan_diagnostic": {"seed_task_ids": [], "iterations": []},
         }
-    seed_tasks = db.query(Task).filter(Task.id.in_(seed_task_ids)).all()
+    # 排序固定：兜底的 current_project_id 取 seed_tasks[0]，不排序的话取到哪个
+    # 项目取决于数据库返回顺序，同一批任务两次调用可能落到不同项目。
+    seed_tasks = db.query(Task).filter(Task.id.in_(seed_task_ids)).order_by(Task.id).all()
     if not seed_tasks:
         raise ValueError("资源重排没有找到种子任务")
     closure_ids = set(seed_task_ids)

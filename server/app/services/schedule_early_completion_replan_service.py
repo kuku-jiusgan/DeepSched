@@ -55,7 +55,13 @@ def replan_released_resource_queue(
         db,
         {task.id for task in candidates},
         released_at,
-        current_project_id=previous_project_id or candidates[0].project_id,
+        # 当前项目取队首候选所属的项目，而不是刚完成任务的项目。这次重排排的是
+        # 被释放资源上可以前移的**其他**任务，刚完成任务的项目一个任务都不在求解
+        # 集合里；拿它当 current_project_id 会让工时校验、失败诊断和交期建议
+        # 全部指向一个没在排的项目——王方就曾看到"项目未能在截止日期前排入"
+        # 报的是另一个项目的结题日。previous_project_id 仍用于判断队首任务是否
+        # 跨项目、要不要加切换时间，那个用法是对的。
+        current_project_id=candidates[0].project_id,
         earliest_start_bounds=earliest_start_bounds,
         advance_notification_reason="任务提前完成后资源释放",
         remaining_duration_minutes=remaining_minutes,
