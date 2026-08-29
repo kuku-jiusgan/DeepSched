@@ -1,5 +1,4 @@
 import unittest
-from unittest.mock import patch
 from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
@@ -15,15 +14,6 @@ class LabStatusNextTaskTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
-        # 这些用例测的是"当前任务/下一任务"的取值逻辑，与工作时段无关。非工作
-        # 时段仪器不显示运行中、当前任务一并清空，在周末或夜里跑就会全部失败，
-        # 所以这里固定按处于工作时段处理。
-        flags = patch(
-            "app.services.lab_status_service.working_time_flags",
-            side_effect=lambda _db, _moment, ids: {item: True for item in ids},
-        )
-        flags.start()
-        self.addCleanup(flags.stop)
 
     def tearDown(self):
         self.db.close()

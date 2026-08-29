@@ -122,27 +122,6 @@ def working_time_chunks(
     return chunks
 
 
-def working_time_flags(db, moment: datetime, instrument_ids) -> dict[int, bool]:
-    """各仪器在给定时刻是否处于有效工作时段。
-
-    一次性载入工作日历上下文再逐台判断，避免每台仪器各查一次库。
-    """
-    instrument_ids = list(instrument_ids)
-    if not instrument_ids:
-        return {}
-    context = load_working_time_context(db, moment, moment + timedelta(days=1))
-    flags: dict[int, bool] = {}
-    for instrument_id in instrument_ids:
-        try:
-            policy = context.policy_for(instrument_id)
-        except ValueError:
-            flags[instrument_id] = False
-            continue
-        window_start, window_end = _day_window(moment, policy, context.calendar_days)
-        flags[instrument_id] = window_end is not None and window_start <= moment < window_end
-    return flags
-
-
 def _day_window(cursor, policy, calendar_days) -> tuple[datetime, datetime | None]:
     """返回 cursor 当天剩余的可用工作时段；当天不可用时第二个元素为 None。"""
     if not is_allowed_calendar_day(
