@@ -131,3 +131,49 @@ class TaskHoursInputRoundingTest(unittest.TestCase):
 
         # 1.5h + 0.5h = 2.0h，两次取整与合并取整结果一致。
         self.assertEqual(4, task_duration_units(task))
+
+
+class WorkingTimeChunksTest(unittest.TestCase):
+    """待签批工时要按工作日切段，一整段画过去会盖住周末和夜间。"""
+
+    def setUp(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.core.database import Base
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+
+    def tearDown(self):
+        self.db.close()
+
+    def _friday(self):
+        from datetime import datetime, timedelta
+
+        day = datetime(2026, 9, 4, 15, 30)
+        while day.weekday() != 4:
+            day += timedelta(days=1)
+        return day
+
+    def test_chunks_skip_the_weekend(self):
+        from app.services.schedule_working_time_service import working_time_chunks
+
+        chunks = working_time_chunks(self.db, self._friday(), 8, None)
+
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertTrue(all(start.weekday() < 5 for start, _end in chunks))
+        self.assertTrue(all(start.date() == end.date() for start, end in chunks))
+
+    def test_total_matches_the_requested_hours(self):
+        from app.services.schedule_working_time_service import working_time_chunks
+
+        chunks = working_time_chunks(self.db, self._friday(), 8, None)
+        total = sum((end - start).total_seconds() for start, end in chunks) / 3600
+
+        self.assertAlmostEqual(8, total, places=6)
+
+    def test_zero_hours_produces_no_chunk(self):
+        from app.services.schedule_working_time_service import working_time_chunks
+
+        self.assertEqual([], working_time_chunks(self.db, self._friday(), 0, None))

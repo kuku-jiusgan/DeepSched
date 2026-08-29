@@ -439,7 +439,7 @@ function getPendingSegments(instrumentId: number, quarter?: number) {
       segment,
       style: getBarStyle(
         {
-          id: -segment.task_id,
+          id: -(segment.task_id * 100 + segment.segment_index),
           instrument_id: instrumentId,
           plan_start: segment.plan_start,
           plan_end: segment.plan_end,

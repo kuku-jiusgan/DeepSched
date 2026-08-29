@@ -84,6 +84,44 @@ def advance_working_hours(
     raise ValueError(f"工时推演超出 {MAX_ADVANCE_DAYS} 天上限，请检查工作日历配置")
 
 
+def working_time_chunks(
+    db,
+    start: datetime,
+    hours: float,
+    instrument_id: int | None = None,
+) -> list[tuple[datetime, datetime]]:
+    """把 hours 个有效工时按天切成若干段，每段落在当天的工作时段内。
+
+    advance_working_hours 只给出结束时刻，中间跨掉的夜间和周末是隐含的。要在
+    甘特图上画出来就必须切段：一整段画过去会盖住周末，而排程本身是按工作日
+    切成多个时间槽的，预测不切段就跟真实排程长得不一样。
+    """
+    if hours <= 0:
+        return []
+    remaining_seconds = hours * 3600
+    cursor = start
+    chunks: list[tuple[datetime, datetime]] = []
+    walked_days = 0
+    while walked_days < MAX_ADVANCE_DAYS and remaining_seconds > 0:
+        chunk_end = cursor + timedelta(days=_CHUNK_DAYS)
+        context = load_working_time_context(db, cursor, chunk_end)
+        policy = context.policy_for(instrument_id)
+        for _ in range(_CHUNK_DAYS):
+            if remaining_seconds <= 0:
+                return chunks
+            window_start, window_end = _day_window(cursor, policy, context.calendar_days)
+            if window_end is not None:
+                available = (window_end - window_start).total_seconds()
+                used = min(available, remaining_seconds)
+                chunks.append((window_start, window_start + timedelta(seconds=used)))
+                remaining_seconds -= used
+            cursor = datetime.combine(cursor.date(), time.min) + timedelta(days=1)
+            walked_days += 1
+    if remaining_seconds > 0:
+        raise ValueError(f"工时推演超出 {MAX_ADVANCE_DAYS} 天上限，请检查工作日历配置")
+    return chunks
+
+
 def _day_window(cursor, policy, calendar_days) -> tuple[datetime, datetime | None]:
     """返回 cursor 当天剩余的可用工作时段；当天不可用时第二个元素为 None。"""
     if not is_allowed_calendar_day(

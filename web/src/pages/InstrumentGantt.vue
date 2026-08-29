@@ -72,7 +72,7 @@
             <div v-for="col in timeColumns" :key="col.key" class="gantt-grid-cell"
               :style="{ width: colWidth + 'px' }" :class="{ 'is-weekend': col.isWeekend, 'is-today': col.isToday, 'is-current': col.isCurrent }" />
             <div v-for="item in getPendingSegments(row.inst.id, row.quarter)"
-              :key="'pending-' + item.segment.task_id"
+              :key="'pending-' + item.segment.task_id + '-' + item.segment.segment_index"
               class="gantt-bar gantt-bar-pending" :style="item.style"
               :title="pendingSegmentTitle(item.segment)">
               <span class="bar-label">

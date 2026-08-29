@@ -98,5 +98,7 @@ class PendingApprovalSegmentOut(BaseModel):
     task_id: int
     task_name: str
     hours: float
+    # 同一个任务按工作日切成多段，段序号用于前端渲染时区分。
+    segment_index: int = 0
     plan_start: datetime
     plan_end: datetime

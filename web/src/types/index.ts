@@ -132,6 +132,8 @@ export interface PendingApprovalSegment {
   task_id: number;
   task_name: string;
   hours: number;
+  /** 同一任务按工作日切成多段，段序号用于区分。 */
+  segment_index: number;
   plan_start: string;
   plan_end: string;
 }

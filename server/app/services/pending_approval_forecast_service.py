@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.models import Project, Task, TaskDependency, TimeSlot
-from app.services.schedule_working_time_service import advance_working_hours
+from app.services.schedule_working_time_service import working_time_chunks
 from app.services.task_progress_service import remaining_task_minutes
 
 
@@ -36,19 +36,25 @@ def pending_approval_segments(db) -> list[dict]:
             hours = remaining_task_minutes(task) / 60
             if hours <= 0:
                 continue
-            end = advance_working_hours(db, cursor, hours, instrument_id)
-            segments.append({
-                "instrument_id": instrument_id,
-                "project_id": task.project_id,
-                "project_code": task.project.code if task.project else "",
-                "project_name": task.project.name if task.project else "",
-                "task_id": task.id,
-                "task_name": task.name,
-                "hours": round(hours, 2),
-                "plan_start": cursor,
-                "plan_end": end,
-            })
-            cursor = end
+            # 按工作日切段：一整段画过去会盖住周末和夜间，而排程本身也是按
+            # 工作日切成多个时间槽的，预测不切段就跟真实排程长得不一样。
+            chunks = working_time_chunks(db, cursor, hours, instrument_id)
+            if not chunks:
+                continue
+            for index, (chunk_start, chunk_end) in enumerate(chunks):
+                segments.append({
+                    "instrument_id": instrument_id,
+                    "project_id": task.project_id,
+                    "project_code": task.project.code if task.project else "",
+                    "project_name": task.project.name if task.project else "",
+                    "task_id": task.id,
+                    "task_name": task.name,
+                    "hours": round(hours, 2),
+                    "segment_index": index,
+                    "plan_start": chunk_start,
+                    "plan_end": chunk_end,
+                })
+            cursor = chunks[-1][1]
     return segments
 
 
