@@ -21,6 +21,15 @@
         :placeholder="['项目开始日期起', '项目开始日期止']"
         allow-clear
       />
+      <a-select
+        v-model:value="statusFilter"
+        class="status-filter"
+        mode="multiple"
+        placeholder="项目状态"
+        allow-clear
+        :options="statusOptions"
+        :max-tag-count="2"
+      />
       <a-button type="primary" :loading="loading" @click="searchReport">
         <template #icon><SearchOutlined /></template>
         查询
@@ -152,6 +161,13 @@ const exporting = ref(false)
 const dateRange = ref<DateRange>(null)
 const appliedDateRange = ref<DateRange>(null)
 const keywordInput = ref('')
+const statusFilter = ref<string[]>([])
+const appliedStatus = ref<string[]>([])
+const statusOptions = [
+  { value: 'pending', label: '未开始' },
+  { value: 'active', label: '进行中' },
+  { value: 'completed', label: '已完成' },
+]
 const appliedKeyword = ref('')
 const report = ref<ProjectHoursReport | null>(null)
 
@@ -211,18 +227,21 @@ function projectStatusColor(value: string) {
 const totalVariance = computed(() => (report.value?.actual_hours ?? 0) - (report.value?.planned_hours ?? 0))
 
 function queryParams() {
-  const params: { start_date?: string; end_date?: string; keyword?: string } = {}
+  const params: { start_date?: string; end_date?: string; keyword?: string; status?: string } = {}
   if (appliedDateRange.value) {
     params.start_date = appliedDateRange.value[0].format('YYYY-MM-DD')
     params.end_date = appliedDateRange.value[1].format('YYYY-MM-DD')
   }
   if (appliedKeyword.value) params.keyword = appliedKeyword.value
+  // 逗号分隔而不是数组：数组参数的序列化各家不一致，后端解析要多一层适配。
+  if (appliedStatus.value.length) params.status = appliedStatus.value.join(',')
   return Object.keys(params).length ? params : undefined
 }
 
 function searchReport() {
   appliedKeyword.value = keywordInput.value.trim()
   appliedDateRange.value = dateRange.value
+  appliedStatus.value = [...statusFilter.value]
   loadReport()
 }
 
@@ -231,6 +250,8 @@ function resetFilters() {
   appliedKeyword.value = ''
   dateRange.value = null
   appliedDateRange.value = null
+  statusFilter.value = []
+  appliedStatus.value = []
   loadReport()
 }
 
@@ -286,6 +307,7 @@ onMounted(loadReport)
 .page-header p { margin: 6px 0 0; color: #667085; font-size: 13px; }
 .report-toolbar { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 0; border-top: 1px solid #e5e7eb; }
 .keyword-input { width: min(320px, 100%); }
+.status-filter { width: min(200px, 100%); }
 .export-button { margin-left: auto; }
 .metric-strip { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); border: 1px solid #dfe3e8; border-radius: 6px; margin: 12px 0 16px; background: #fff; }
 .metric-item { min-width: 0; padding: 14px 18px; border-right: 1px solid #e5e7eb; }
@@ -308,6 +330,7 @@ onMounted(loadReport)
   .page-header { padding-right: 0; }
   .report-toolbar { align-items: stretch; flex-direction: column; }
   .keyword-input { width: 100%; }
+  .status-filter { width: 100%; }
   .export-button { margin-left: 0; }
   .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric-item:nth-child(2) { border-right: 0; }

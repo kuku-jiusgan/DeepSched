@@ -23,12 +23,14 @@ def build_project_hours_report(
     start_date: date | None = None,
     end_date: date | None = None,
     keyword: str | None = None,
+    statuses: set[str] | None = None,
 ) -> ProjectHoursReportOut:
     projects = _filter_projects(
         list_visible_projects(db, user),
         start_date,
         end_date,
         keyword,
+        statuses,
     )
     leaf_task_ids = {
         task.id for project in projects for task in project.tasks
@@ -226,8 +228,24 @@ def _task_status_label(status: str) -> str:
     return labels.get(status, "未知状态")
 
 
+PROJECT_STATUS_LABELS = {"pending": "未开始", "active": "进行中", "completed": "已完成"}
+
+
 def _project_status_label(status: str) -> str:
-    return {"pending": "未开始", "active": "进行中", "completed": "已完成"}.get(status, "未开始")
+    return PROJECT_STATUS_LABELS.get(status, "未开始")
+
+
+def parse_project_statuses(value: str | None) -> set[str]:
+    """把逗号分隔的状态筛选值解析成集合，忽略无法识别的值。
+
+    项目状态是按任务实时算出来的，不是数据库列，所以只能在取到项目之后再过滤。
+    """
+    if not value:
+        return set()
+    return {
+        item.strip() for item in value.split(",")
+        if item.strip() in PROJECT_STATUS_LABELS
+    }
 
 
 def _filter_projects(
@@ -235,13 +253,16 @@ def _filter_projects(
     start_date: date | None,
     end_date: date | None,
     keyword: str | None,
+    statuses: set[str] | None = None,
 ):
     start_at = datetime.combine(start_date, time.min) if start_date else None
     end_at = datetime.combine(end_date, time.max) if end_date else None
     normalized_keyword = (keyword or "").strip().lower()
+    wanted = statuses or set()
     return [
         project for project in projects
-        if (start_at is None or project.start_date is None or project.start_date >= start_at)
+        if (not wanted or calculate_project_status(project) in wanted)
+        and (start_at is None or project.start_date is None or project.start_date >= start_at)
         and (end_at is None or project.start_date is None or project.start_date <= end_at)
         and (
             not normalized_keyword
