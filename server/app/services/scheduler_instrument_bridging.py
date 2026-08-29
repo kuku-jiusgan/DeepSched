@@ -80,6 +80,79 @@ def add_instrument_bridge_intervals(
     return bridges
 
 
+def scheduled_bridge_task_ids(tasks, instrument_id: int) -> set[int]:
+    """按该仪器的时间槽队列判定桥接，跨项目。
+
+    依赖边只存在于同一项目内部，沿依赖边找前后任务只能识别项目内的桥接。同一台
+    仪器上可能排着多个项目、同一个负责人的任务，例如「A-方法开发 → A-方案撰写 →
+    B-方法验证」，A 的方案撰写同样占住了这台仪器。已排定的时间槽顺序是已知的，
+    直接按仪器时间轴判定即可覆盖跨项目的情况。
+
+    判定：非仪器任务前后**紧邻**的仪器任务同属一个负责人时构成桥接。取紧邻而非
+    任意前后，中间若插着别人的仪器任务，紧邻关系自然不成立，就不算占用。
+    """
+    instrument_spans = _instrument_task_spans(tasks, instrument_id)
+    bridged: set[int] = set()
+    for start, end, task in _manual_task_spans(tasks):
+        previous = _last_before(instrument_spans, start)
+        following = _first_after(instrument_spans, end)
+        if previous is None or following is None:
+            continue
+        if _same_assignee(task, previous, following):
+            bridged.add(task.id)
+    return bridged
+
+
+def _active_span(task, instrument_id=None):
+    slots = [
+        slot for slot in (getattr(task, "time_slots", []) or [])
+        if getattr(slot, "lifecycle_status", "active") == "active"
+        and slot.plan_start and slot.plan_end
+        and (instrument_id is None or slot.instrument_id == instrument_id)
+    ]
+    if not slots:
+        return None
+    return min(slot.plan_start for slot in slots), max(slot.plan_end for slot in slots)
+
+
+def _instrument_task_spans(tasks, instrument_id: int) -> list:
+    spans = []
+    for task in tasks:
+        if not getattr(task, "requires_instrument", False):
+            continue
+        span = _active_span(task, instrument_id)
+        if span:
+            spans.append((span[0], span[1], task))
+    return sorted(spans, key=lambda item: (item[0], item[1], item[2].id))
+
+
+def _manual_task_spans(tasks) -> list:
+    result = []
+    for task in tasks:
+        if getattr(task, "requires_instrument", False):
+            continue
+        if not getattr(task, "requires_human", False) or not getattr(task, "assignee_id", None):
+            continue
+        span = _active_span(task)
+        if span:
+            result.append((span[0], span[1], task))
+    return sorted(result, key=lambda item: (item[0], item[1], item[2].id))
+
+
+def _last_before(instrument_spans, start):
+    return next(
+        (task for _s, end, task in reversed(instrument_spans) if end <= start),
+        None,
+    )
+
+
+def _first_after(instrument_spans, end):
+    return next(
+        (task for start, _e, task in instrument_spans if start >= end),
+        None,
+    )
+
+
 def bridged_instrument_task_ids(
     tasks, task_dependencies, compatibility, instrument_id, top_level_task_id=None,
 ) -> set[int]:

@@ -12,6 +12,7 @@ from app.services.task_progress_service import remaining_task_minutes
 from app.services.scheduler_instrument_bridging import (
     bridged_instrument_hours,
     bridged_instrument_task_ids,
+    scheduled_bridge_task_ids,
 )
 from app.services.scheduler_failure_presentation import build_failure_presentation
 
@@ -143,10 +144,21 @@ def _instrument_failure_groups(
             _working_units(instrument_prefix_sums[instrument_id], start, end) * TIME_UNIT_MINUTES / 60
             for start, end in zip(segment_starts, segment_ends)
         ]
+        # 桥接按这台仪器的时间槽队列判定，跨项目：同一负责人的两个仪器任务之间
+        # 的非仪器任务占住仪器，而这两个仪器任务可能分属不同项目，沿依赖边找
+        # 前后任务只能识别项目内部的那一类。已排定的顺序是已知的，直接扫队列。
+        all_tasks = [task for items in tasks_by_project.values() for task in items]
+        bridge_task_ids = scheduled_bridge_task_ids(all_tasks, instrument_id) | (
+            # 还没排程的任务没有时间槽，队列上看不见，只能沿依赖边识别。两种
+            # 判定互补：队列覆盖跨项目的已排任务，依赖边覆盖尚未排程的任务。
+            bridged_instrument_task_ids(
+                all_tasks, task_dependencies, compatibility, instrument_id,
+            )
+        )
         details, occupied_hours = _occupied_project_details(
             current_project.id, tasks_by_project, compatibility, instrument_id,
             instrument_label, today_start, horizon_start, end_unit, segment_ends, capacities,
-            task_dependencies, released_slot_intervals or {},
+            task_dependencies, released_slot_intervals or {}, bridge_task_ids,
         )
         available = _working_units(
             instrument_prefix_sums[instrument_id], start_unit, end_unit,
@@ -184,6 +196,7 @@ def _occupied_project_details(
     current_project_id, tasks_by_project, compatibility, instrument_id, instrument_label,
     today_start, horizon_start, end_unit, segment_ends, capacities, task_dependencies=(),
     released_slot_intervals=None,
+    bridge_task_ids=None,
 ) -> tuple[list[dict], float]:
     details = []
     occupied_hours = 0.0
@@ -200,7 +213,7 @@ def _occupied_project_details(
             continue
         _intervals, breakdown = _project_instrument_intervals(
             project_tasks, instrument_id, compatibility, today_start, project_deadline,
-            task_dependencies, released_slot_intervals or {},
+            task_dependencies, released_slot_intervals or {}, bridge_task_ids,
         )
         resource_intervals = breakdown["resource_intervals"]
         if not resource_intervals:
@@ -337,13 +350,17 @@ def _remaining_task_hours(task) -> float:
 
 def _project_instrument_intervals(
     project_tasks, instrument_id, compatibility, window_start, window_end,
-    task_dependencies=(), released_slot_intervals=None,
+    task_dependencies=(), released_slot_intervals=None, bridge_task_ids=None,
 ):
     intervals = []
     # 夹在两个"同仪器 + 同负责人"任务之间的非仪器任务（方案撰写、报告撰写等）
-    # 期间仪器不会被释放，必须算进该仪器的占用，否则缺口分析会偏乐观。
-    bridge_task_ids = bridged_instrument_task_ids(
-        project_tasks, task_dependencies, compatibility, instrument_id,
+    # 期间仪器不会被释放，必须算进该仪器的占用，否则缺口分析会偏乐观。判定由
+    # 调用方按整台仪器的时间槽队列跨项目算好传进来。
+    bridge_task_ids = bridge_task_ids if bridge_task_ids is not None else (
+        scheduled_bridge_task_ids(project_tasks, instrument_id)
+        | bridged_instrument_task_ids(
+            project_tasks, task_dependencies, compatibility, instrument_id,
+        )
     )
     for task in project_tasks:
         if getattr(task, "status", None) in {"done", "completed"}:
