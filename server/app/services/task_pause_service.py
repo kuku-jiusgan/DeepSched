@@ -95,6 +95,7 @@ def pause_and_switch_task(
         db.flush()
         start_task_execution(db, target_slot.id, operator.id, allow_queue_insert=True)
         _promote_switched_instrument_slot(db, target_slot.task_id, paused_at)
+        _discard_zero_length_anchor(db, target_slot.task_id)
 
     record_audit_log(
         db,
@@ -145,6 +146,28 @@ def _promote_switched_instrument_slot(db, task_id: int, started_at: datetime) ->
     candidate.status = "running"
     candidate.actual_start = started_at
     candidate.actual_end = None
+
+
+def _discard_zero_length_anchor(db, task_id: int) -> None:
+    """清掉切换时留下的零长度锚点时间槽。
+
+    重排前会把接替任务的原时间槽压成 plan_start == plan_end 当作锚点，求解器
+    另外生成真正的时间槽。锚点完成使命后若留在库里，同一个任务就会有两个 active
+    的 running 槽：甘特图上多一个退化的块，_actual_running_slot 也可能挑中它，
+    暂停时就会作用在一个零长度的槽上。只有确实存在其他活跃时间槽时才丢弃它。
+    """
+    active_slots = (
+        db.query(TimeSlot)
+        .filter(TimeSlot.task_id == task_id, TimeSlot.lifecycle_status == "active")
+        .all()
+    )
+    anchors = [slot for slot in active_slots if slot.plan_start == slot.plan_end]
+    if not anchors or len(anchors) == len(active_slots):
+        return
+    for anchor in anchors:
+        anchor.lifecycle_status = "superseded"
+        anchor.superseded_reason = "暂停切换锚点"
+        anchor.status = "cancelled"
 
 
 def _approval_ready_time(db, task: Task) -> datetime | None:
