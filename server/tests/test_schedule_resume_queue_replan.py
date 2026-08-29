@@ -18,10 +18,35 @@ from app.models import (
 from app.services.schedule_completion_service import complete_task_and_shift
 
 
+def _base_day() -> datetime:
+    """用例的基准日：下一个周一零点。
+
+    两条约束叠在一起才定得下来：
+
+    整套时间必须落在真实当前时刻之后——写死日期会随时间推移变成过去，而排程不会
+    往回排，被前移的任务无处可去，moved_tasks 恒为 0。用例只冻结了执行服务的当前
+    时刻，求解器的时间视界用的仍是真实时间，所以数据本身也必须放在未来。
+
+    基准日、+2 天、+3 天还必须都是工作日。用例给完成服务patch了 24 小时全天候的
+    工作时段，但求解器读的是真实工作日历（8:30-20:00、不含周末），任何一天落到
+    周末，被前移的任务就会被推到下周一，时间断言随之失败。取周一即可让这三天
+    落在周一、周三、周四。
+    """
+    day = (datetime.now() + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    while day.weekday() != 0:
+        day += timedelta(days=1)
+    return day
+
+
+BASE_DAY = _base_day()
+
+
 class FixedDatetime(datetime):
     @classmethod
     def now(cls, tz=None):
-        value = datetime(2026, 8, 25, 13, 0)
+        value = BASE_DAY.replace(hour=13)
         return value if tz is None else value.replace(tzinfo=tz)
 
 
@@ -57,7 +82,9 @@ class ScheduleResumeQueueReplanTest(unittest.TestCase):
         )
         following = Task(
             project=following_project, name="后续方法开发", task_type="test",
-            status="scheduled", est_duration_hours=1.75, requires_instrument=True,
+            # 工时必须是 30 分钟的整数倍：排程颗粒度就是 30 分钟，1.75 小时会被
+            # to_units 向上取整成 2 小时，用例断言的 105 分钟在网格上表示不出来。
+            status="scheduled", est_duration_hours=2, requires_instrument=True,
             requires_human=True, assignee=operator,
         )
         self.db.add_all([source, target, following])
@@ -65,31 +92,31 @@ class ScheduleResumeQueueReplanTest(unittest.TestCase):
 
         old_source_slot = TimeSlot(
             task=source, instrument_id=instrument.id,
-            plan_start=datetime(2026, 8, 25, 12, 0),
-            plan_end=datetime(2026, 8, 25, 12, 30),
-            actual_start=datetime(2026, 8, 25, 12, 0),
-            actual_end=datetime(2026, 8, 25, 12, 30), status="paused",
+            plan_start=BASE_DAY.replace(hour=12, minute=0),
+            plan_end=BASE_DAY.replace(hour=12, minute=30),
+            actual_start=BASE_DAY.replace(hour=12, minute=0),
+            actual_end=BASE_DAY.replace(hour=12, minute=30), status="paused",
         )
         recovery_slot = TimeSlot(
             task=source, instrument_id=instrument.id,
-            plan_start=datetime(2026, 8, 27, 9, 30),
-            plan_end=datetime(2026, 8, 27, 10, 30), status="paused",
+            plan_start=BASE_DAY.replace(hour=9, minute=30) + timedelta(days=2),
+            plan_end=BASE_DAY.replace(hour=10, minute=30) + timedelta(days=2), status="paused",
         )
         target_slot = TimeSlot(
             task=target, instrument_id=instrument.id,
-            plan_start=datetime(2026, 8, 25, 12, 30),
-            plan_end=datetime(2026, 8, 27, 9, 30),
-            actual_start=datetime(2026, 8, 25, 12, 30), status="running",
+            plan_start=BASE_DAY.replace(hour=12, minute=30),
+            plan_end=BASE_DAY.replace(hour=9, minute=30) + timedelta(days=2),
+            actual_start=BASE_DAY.replace(hour=12, minute=30), status="running",
         )
         following_slot = TimeSlot(
             task=following, instrument_id=instrument.id,
-            plan_start=datetime(2026, 8, 27, 10, 30),
-            plan_end=datetime(2026, 8, 27, 12, 30), status="scheduled",
+            plan_start=BASE_DAY.replace(hour=10, minute=30) + timedelta(days=2),
+            plan_end=BASE_DAY.replace(hour=12, minute=30) + timedelta(days=2), status="scheduled",
         )
         stale_slot = TimeSlot(
             task=following, instrument_id=instrument.id,
-            plan_start=datetime(2026, 8, 28, 8, 30),
-            plan_end=datetime(2026, 8, 28, 18, 30), status="scheduled",
+            plan_start=BASE_DAY.replace(hour=8, minute=30) + timedelta(days=3),
+            plan_end=BASE_DAY.replace(hour=18, minute=30) + timedelta(days=3), status="scheduled",
             lifecycle_status="superseded", superseded_reason="历史重排",
         )
         self.db.add_all([
@@ -100,7 +127,7 @@ class ScheduleResumeQueueReplanTest(unittest.TestCase):
             TaskExecutionSegment(
                 task_id=target.id, slot_id=target_slot.id,
                 instrument_id=instrument.id,
-                started_at=datetime(2026, 8, 25, 12, 30),
+                started_at=BASE_DAY.replace(hour=12, minute=30),
             ),
             AuditLog(
                 user_name="技术员", action="task_paused", target_type="task",
@@ -120,7 +147,7 @@ class ScheduleResumeQueueReplanTest(unittest.TestCase):
             "day_end_minutes": 24 * 60,
             "include_weekends": True,
             "include_holidays": True,
-            "horizon_end": datetime(2026, 9, 30),
+            "horizon_end": BASE_DAY + timedelta(days=40),
             "calendar_days": {},
         }
         with patch("app.services.task_execution_service.datetime", FixedDatetime), patch(
@@ -147,7 +174,7 @@ class ScheduleResumeQueueReplanTest(unittest.TestCase):
             active_following.plan_start,
         )
         self.assertEqual(
-            105,
+            120,
             int((active_following.plan_end - active_following.plan_start).total_seconds() / 60),
         )
         self.assertEqual("superseded", following_slot.lifecycle_status)
