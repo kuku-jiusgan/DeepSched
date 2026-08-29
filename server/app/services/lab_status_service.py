@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from app.services.schedule_working_time_service import working_time_flags
 from app.models import Instrument, Project, Task, TimeSlot
 from app.services.instrument_occupancy_service import ACTIVE_SLOT_STATUSES
 
@@ -15,8 +16,12 @@ def list_lab_status(db) -> list[dict]:
     now = datetime.now()
     current_slots = _current_slots_by_instrument(db)
     status_data = _load_status_data(db, instruments, current_slots)
+    working_flags = working_time_flags(db, now, [item.id for item in instruments])
     items = [
-        _instrument_status(instrument, now, current_slots.get(instrument.id), status_data)
+        _instrument_status(
+            instrument, now, current_slots.get(instrument.id), status_data,
+            working_flags.get(instrument.id, True),
+        )
         for instrument in instruments
     ]
     if db.dirty:
@@ -24,8 +29,11 @@ def list_lab_status(db) -> list[dict]:
     return items
 
 
-def _instrument_status(instrument: Instrument, now: datetime, current_slot: TimeSlot | None, status_data) -> dict:
-    status = _reconcile_instrument_status(instrument, current_slot)
+def _instrument_status(
+    instrument: Instrument, now: datetime, current_slot: TimeSlot | None, status_data,
+    in_working_time: bool = True,
+) -> dict:
+    status = _reconcile_instrument_status(instrument, current_slot, in_working_time)
     current = _task_status_fields(current_slot, now, status_data)
     upcoming = status_data["next_slots"].get(instrument.id)
     next_fields = _next_task_fields(upcoming, status_data)
@@ -103,13 +111,26 @@ def _current_slots_by_instrument(db) -> dict[int, TimeSlot]:
     return current
 
 
-def _reconcile_instrument_status(instrument: Instrument, current_slot: TimeSlot | None) -> str:
+def _reconcile_instrument_status(
+    instrument: Instrument,
+    current_slot: TimeSlot | None,
+    in_working_time: bool = True,
+) -> str:
+    """归置仪器状态；非工作时段一律不显示运行中。
+
+    占用判定看的是"有没有一个已开始且未结束的时间槽"。技术员下班前没点完成，
+    任务就会一直挂着 running，仪器于是在夜里和周末也显示运行中——那个时段
+    根本不会有人在操作。故障与维护状态不受影响，它们与工作时段无关。
+
+    只改对外呈现的状态，不改库里的 instrument.status：那个字段还有别的读者，
+    跟着工作时段来回翻转会带来无谓的写入和状态抖动。
+    """
     if instrument.status in PROTECTED_INSTRUMENT_STATUSES:
         return instrument.status
     effective_status = "running" if current_slot else "idle"
     if instrument.status != effective_status:
         instrument.status = effective_status
-    return effective_status
+    return effective_status if in_working_time else "idle"
 
 
 def _task_status_fields(slot: TimeSlot | None, now: datetime, status_data) -> dict:
