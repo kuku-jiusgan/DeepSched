@@ -68,16 +68,29 @@ def dashboard(
     ).all()
     total_proj = len(projects)
     active_proj = sum(calculate_project_status(project) == "active" for project in projects)
-    delayed_task_ids = (
-        db.query(Task.id)
+    # 两种都算延期：已被明确标记为延期，或者最后一个时间槽都过去了还没做完。
+    # 必须分开查再取并集：此前"已标记延期"写在 filter 里，而 having 又要求最后
+    # 一个时间槽已结束，等于把标记那一支整个吞掉——明确标了延期但时间槽还没到期
+    # 的任务永远不会计入。合并写进 having 也不行，MySQL 的 having 只能引用选出的
+    # 列或聚合，delay_status 不在其中（sqlite 放行，所以用例发现不了）。
+    now = datetime.now()
+    unfinished = Task.status.notin_({"done", "completed"})
+    overdue_ids = {
+        row[0] for row in db.query(Task.id)
         .join(TimeSlot, TimeSlot.task_id == Task.id)
-        .filter(Task.status.notin_({"done", "completed"}))
-        .filter(or_(Task.delay_status == "delayed", TimeSlot.plan_end < datetime.now()))
+        .filter(unfinished)
         .group_by(Task.id)
-        .having(func.max(TimeSlot.plan_end) < datetime.now())
+        .having(func.max(TimeSlot.plan_end) < now)
         .all()
-    )
-    delayed = len(delayed_task_ids)
+    }
+    marked_ids = {
+        row[0] for row in db.query(Task.id)
+        .join(TimeSlot, TimeSlot.task_id == Task.id)
+        .filter(unfinished, Task.delay_status == "delayed")
+        .distinct()
+        .all()
+    }
+    delayed = len(overdue_ids | marked_ids)
 
     utilization_rows = calculate_instrument_utilization(db, window_start, window_end, settings.PERCENT_SCALE)
     total_hours = sum(row.actual_run_hours for row in utilization_rows)
