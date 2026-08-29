@@ -29,10 +29,14 @@ def pending_approval_segments(db) -> list[dict]:
     anchors = _instrument_anchors(db, {
         instrument_id for _task, instrument_id in tasks
     })
+    project_ends = _project_schedule_ends(db, {task.project_id for task, _i in tasks})
     segments = []
     for instrument_id, items in _group_by_instrument(tasks).items():
         cursor = anchors.get(instrument_id) or datetime.now()
         for task in items:
+            # 起点不能早于本项目自己已排工作的结束：签批后的活接在前置工作
+            # 之后，仪器空出来了也不能提前做。
+            cursor = max(cursor, project_ends[task.project_id])
             hours = remaining_task_minutes(task) / 60
             if hours <= 0:
                 continue
@@ -73,13 +77,44 @@ def _unscheduled_downstream_tasks(db) -> list[tuple[Task, int]]:
     if not task_ids:
         return []
     scheduled = _scheduled_task_ids(db, task_ids)
+    # 只对已经进入排程的项目做预测。一个连方法开发都还没排的项目，谈不上
+    # "签批后接着做"，把它的方法验证画到时间轴上会挤在别人前面、误导判断。
+    planned_projects = _projects_with_active_slots(db)
     result = []
     for task in db.query(Task).filter(Task.id.in_(task_ids)).all():
         if task.id in scheduled or not task.requires_instrument:
             continue
+        if task.project_id not in planned_projects:
+            continue
         for instrument_id in task.instrument_ids or []:
             result.append((task, int(instrument_id)))
     return result
+
+
+def _projects_with_active_slots(db) -> set[int]:
+    rows = db.query(Task.project_id).join(TimeSlot, TimeSlot.task_id == Task.id).filter(
+        TimeSlot.lifecycle_status == ACTIVE_SLOT_LIFECYCLE,
+    ).distinct().all()
+    return {row[0] for row in rows}
+
+
+def _project_schedule_ends(db, project_ids: set[int]) -> dict[int, datetime]:
+    """各项目已排工作的结束时刻；没有已排工作的按当前时刻。"""
+    now = datetime.now()
+    ends = {project_id: now for project_id in project_ids}
+    if not project_ids:
+        return ends
+    rows = db.query(Task.project_id, TimeSlot.plan_end).join(
+        TimeSlot, TimeSlot.task_id == Task.id,
+    ).filter(
+        Task.project_id.in_(project_ids),
+        TimeSlot.lifecycle_status == ACTIVE_SLOT_LIFECYCLE,
+        TimeSlot.plan_end.isnot(None),
+    ).all()
+    for project_id, plan_end in rows:
+        if plan_end > ends[project_id]:
+            ends[project_id] = plan_end
+    return ends
 
 
 def _group_by_instrument(tasks: list[tuple[Task, int]]) -> dict[int, list[Task]]:
