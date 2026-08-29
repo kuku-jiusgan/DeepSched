@@ -16,9 +16,9 @@
           v-model:value="projectKeyword"
           allow-clear
           placeholder="项目编号或项目名称"
-          @press-enter="applyProjectSearch"
-        />
-        <a-button type="primary" @click="applyProjectSearch"><SearchOutlined /> 查询</a-button>
+        >
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
       </div>
     </div>
 
@@ -226,8 +226,8 @@ const approvalGates = ref<ApprovalGate[]>([])
 const approvedGates = ref<ApprovalGate[]>([])
 const loading = ref(true)
 const activeTab = ref<string>('active')
+// 输入即过滤，与项目台账一致：过滤发生在已加载的数据上，不需要点查询。
 const projectKeyword = ref('')
-const appliedProjectKeyword = ref('')
 const actingId = ref<number | null>(null)
 const releaseConfirmOpen = ref(false)
 const releaseSubmitting = ref(false)
@@ -257,13 +257,13 @@ const filtered = computed(() => {
   } else {
     result = cardTasks.value
   }
-  const keyword = appliedProjectKeyword.value.trim().toLowerCase()
+  const keyword = projectKeyword.value.trim().toLowerCase()
   if (!keyword) return result
   return result.filter(task => `${task.project_code || ''} ${task.project_name || ''}`.toLowerCase().includes(keyword))
 })
 
 const filteredApprovedGates = computed(() => {
-  const keyword = appliedProjectKeyword.value.trim().toLowerCase()
+  const keyword = projectKeyword.value.trim().toLowerCase()
   if (!keyword) return approvedGates.value
   return approvedGates.value.filter(gate =>
     `${gate.project_code || ''} ${gate.project_name || ''}`.toLowerCase().includes(keyword),
@@ -295,11 +295,6 @@ function mobileTaskPriority(task: WorkspaceTask) {
   }
   return priorities[workspaceActionStatus(task)] ?? 4
 }
-
-function applyProjectSearch() {
-  appliedProjectKeyword.value = projectKeyword.value
-}
-
 
 const taskTypeMap = ref<Record<string, string>>({})
 
