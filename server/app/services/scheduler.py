@@ -1,3 +1,4 @@
+import inspect
 import logging
 
 from sqlalchemy.orm import Session
@@ -55,6 +56,38 @@ from app.services.scheduler_result_service import persist_schedule_result
 _logger = logging.getLogger(__name__)
 
 
+# 交期建议的职责是"把刚才失败的那道题换个结题日再跑一遍"，参数少带一个，解的
+# 就不是同一道题。暂停切换曾因此被重建成"四个任务从头完整排一遍"——真实那次是
+# "只排剩余工时、接替任务锁在当下、被暂停任务保持暂停"，在被改写的题上验证出来
+# 的方案对实际操作并不成立。所以这里不再手挑字段，改为整体快照实参，只排除下面
+# 这些必须由验证方自己决定或与可行性无关的。
+_REPLAY_EXCLUDED_KWARGS = frozenset({
+    "commit",                       # 验证一律不落地
+    "emit_advance_notifications",   # 验证不发提前通知
+    "include_failure_diagnostics",  # 验证不需要诊断
+    "feasibility_only",             # 验证只问可行与否
+    "solver_time_limit",            # 验证用更短的求解预算
+    "advance_notification_reason",
+    "rollback_on_conflict",
+    "current_project_id",           # 由作业按候选项目设置
+    "released_slot_intervals",      # 只服务于失败诊断
+    "original_schedule_windows",    # 只影响目标函数的稳定性惩罚，不影响可行性
+})
+
+
+def replayable_kwargs(scope: dict) -> dict:
+    """从 generate 入口的局部作用域里取出可回放的实参。
+
+    必须在任何形参被重新赋值之前调用。
+    """
+    names = set(inspect.signature(SchedulerService.generate).parameters) - {"self"}
+    return {
+        name: scope[name]
+        for name in sorted(names - _REPLAY_EXCLUDED_KWARGS)
+        if scope.get(name) is not None
+    }
+
+
 class SchedulerService:
     def __init__(self, db: Session, reuse_prepared_context: bool = False):
         self.db = db
@@ -105,6 +138,7 @@ class SchedulerService:
         released_slot_intervals: dict[int, list[tuple]] | None = None,
         feasibility_only: bool = False,
     ) -> dict:
+        replan_request = replayable_kwargs(locals())
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
         tasks, instruments = load_scheduler_data(
@@ -445,17 +479,7 @@ class SchedulerService:
                 relaxed_project_end_task_ids=relaxed_project_end_task_ids,
                 include_failure_diagnostics=include_failure_diagnostics,
                 released_slot_intervals=released_slot_intervals,
-                replan_request={
-                    "project_ids": project_ids,
-                    "mode": mode,
-                    "task_ids": task_ids,
-                    "excluded_task_ids": excluded_task_ids,
-                    "additional_dependencies": additional_dependencies,
-                    "earliest_start_bounds": earliest_start_bounds,
-                    "relaxed_project_end_task_ids": relaxed_project_end_task_ids,
-                    "early_start_task_ids": early_start_task_ids,
-                    "rollback_on_conflict": False,
-                },
+                replan_request=replan_request,
             )
 
         if feasibility_only:
