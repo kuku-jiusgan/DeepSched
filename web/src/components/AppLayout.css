@@ -354,29 +354,6 @@
   padding: 0;
 }
 
-:deep(.mobile-navigation-drawer .ant-drawer-content),
-:deep(.mobile-navigation-drawer .ant-drawer-header),
-:deep(.mobile-navigation-drawer .ant-drawer-footer) {
-  background: #17223a;
-  border-color: rgba(255, 255, 255, 0.08);
-}
-
-:deep(.mobile-navigation-drawer .ant-drawer-header) {
-  padding: 14px 16px;
-}
-
-:deep(.mobile-navigation-drawer .ant-drawer-body) {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 12px 0 0;
-  background: #17223a;
-}
-
-:deep(.mobile-navigation-drawer .ant-drawer-title) {
-  color: #ffffff;
-}
-
 @media (max-width: 768px) {
   .app-content {
     padding: 64px 14px max(18px, env(safe-area-inset-bottom));

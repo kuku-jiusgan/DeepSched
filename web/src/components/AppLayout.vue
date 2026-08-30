@@ -675,3 +675,4 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped src="./AppLayout.css"></style>
+<style src="./AppLayoutDrawer.css"></style>

@@ -1,0 +1,28 @@
+/* 手机端菜单抽屉的容器样式。
+   a-drawer 的内容会被 teleport 到 <body> 下，脱离组件的 DOM 子树，
+   因此这些规则不能写在 <style scoped> 里——scoped 编译出的
+   [data-v-xxx] 祖先选择器在传送后永远匹配不上，抽屉会退回 Ant 默认的
+   白底，配上组件内的白色文字就成了白底白字，只有选中项看得见。
+   这里必须是全局样式。 */
+.mobile-navigation-drawer .ant-drawer-content,
+.mobile-navigation-drawer .ant-drawer-header,
+.mobile-navigation-drawer .ant-drawer-footer {
+  background: #17223a;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.mobile-navigation-drawer .ant-drawer-header {
+  padding: 14px 16px;
+}
+
+.mobile-navigation-drawer .ant-drawer-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 0 0;
+  background: #17223a;
+}
+
+.mobile-navigation-drawer .ant-drawer-title {
+  color: #ffffff;
+}
