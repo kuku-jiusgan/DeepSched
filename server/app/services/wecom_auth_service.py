@@ -177,9 +177,17 @@ def _get_access_token(config: PushChannelConfig) -> str:
     return str(response["access_token"])
 
 
+# 企业微信接口一律直连，不走任何代理。urlopen 默认会读环境变量里的代理设置，
+# 一旦服务是从带 http_proxy 的终端里启动的，出口 IP 就变成代理节点的地址，
+# 企业微信按「企业可信IP」白名单校验时直接返回 60020（not allow to access from
+# your ip），而且节点一换 IP 就变，白名单根本加不过来。这里显式关掉代理，
+# 使得无论进程怎么启动都不受影响。
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _get_json(url: str) -> dict:
     try:
-        with urllib.request.urlopen(url, timeout=10) as response:
+        with _DIRECT_OPENER.open(url, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise WeComAuthenticationError(f"企业微信服务暂时不可用：{exc}")

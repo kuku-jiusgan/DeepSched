@@ -46,6 +46,10 @@ fi
 
 mkdir -p "$BACKEND_LOG_DIR" "$FRONTEND_LOG_DIR"
 
+# 后端一律不走代理。它对外只调企业微信这类国内接口，走代理反而让出口 IP 变成
+# 代理节点的地址，企业微信按"企业可信IP"白名单校验时会返回 60020
+# （not allow to access from your ip），而且节点一换 IP 就变，白名单加不过来。
+
 if [[ "$MODE" == "production" ]]; then
   HOST="${DEEPSCHED_HOST:-0.0.0.0}"
   PORT="${DEEPSCHED_PRODUCTION_PORT:-5889}"
@@ -60,7 +64,8 @@ if [[ "$MODE" == "production" ]]; then
   export CORS_ORIGINS="${CORS_ORIGINS:-https://deepsched.sduzbbri.online,http://127.0.0.1:$PORT}"
   echo "正式模式：http://127.0.0.1:$PORT"
   cd "$ROOT_DIR/server"
-  exec "$VENV_DIR/bin/uvicorn" app.production:app --host "$HOST" --port "$PORT" \
+  exec env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    "$VENV_DIR/bin/uvicorn" app.production:app --host "$HOST" --port "$PORT" \
     > >(tee -a "$BACKEND_LOG_DIR/uvicorn.out.log") \
     2> >(tee -a "$BACKEND_LOG_DIR/uvicorn.err.log" >&2)
 fi
@@ -82,7 +87,8 @@ trap cleanup EXIT INT TERM
 
 (
   cd "$ROOT_DIR/server"
-  exec "$VENV_DIR/bin/uvicorn" app.main:app --reload --host "$BACKEND_HOST" --port "$BACKEND_PORT"
+  exec env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    "$VENV_DIR/bin/uvicorn" app.main:app --reload --host "$BACKEND_HOST" --port "$BACKEND_PORT"
 ) > >(tee -a "$BACKEND_LOG_DIR/uvicorn.out.log") \
   2> >(tee -a "$BACKEND_LOG_DIR/uvicorn.err.log" >&2) &
 BACKEND_PID=$!
