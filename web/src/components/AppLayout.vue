@@ -62,11 +62,24 @@
       placement="left"
       :width="280"
       class="mobile-navigation-drawer"
-      title="资源智能调度协同平台"
+      :closable="false"
     >
+      <template #title>
+        <div class="mobile-drawer-identity">
+          <span class="mobile-drawer-avatar">{{ currentUserInitial }}</span>
+          <span class="mobile-drawer-user">
+            <strong>{{ currentUserLabel }}</strong>
+            <small>资源智能调度协同平台</small>
+          </span>
+        </div>
+      </template>
       <a-spin v-if="mobileMenuLoading" class="mobile-menu-loading" />
       <nav v-else-if="mobileVisibleMenuItems.length" class="mobile-nav-list" aria-label="主菜单">
-        <template v-for="item in mobileVisibleMenuItems" :key="item.key">
+        <section
+          v-for="item in mobileVisibleMenuItems"
+          :key="item.key"
+          class="mobile-nav-section"
+        >
           <div v-if="item.children?.length" class="mobile-nav-group">{{ item.mobileLabel ?? item.label }}</div>
           <button
             v-for="entry in (item.children?.length ? item.children : [item])"
@@ -74,12 +87,14 @@
             type="button"
             class="mobile-nav-entry"
             :class="{ 'mobile-nav-entry-selected': route.path === entry.key }"
+            :aria-current="route.path === entry.key ? 'page' : undefined"
             @click="navigate({ key: entry.key })"
           >
-            <component :is="entry.icon" />
-            <span>{{ entry.label }}</span>
+            <span class="mobile-nav-icon"><component :is="entry.icon" /></span>
+            <span class="mobile-nav-text">{{ entry.label }}</span>
+            <RightOutlined class="mobile-nav-arrow" />
           </button>
-        </template>
+        </section>
       </nav>
       <a-empty v-else description="暂无可访问菜单" :image="Empty.PRESENTED_IMAGE_SIMPLE" class="mobile-menu-empty" />
       <template #footer>
@@ -197,7 +212,7 @@ import {
   ThunderboltOutlined, SwapOutlined, DollarOutlined,
   BellOutlined, TeamOutlined, CalendarOutlined, LogoutOutlined,
   MenuFoldOutlined, MenuUnfoldOutlined, MenuOutlined, HomeOutlined,
-  SafetyCertificateOutlined,
+  SafetyCertificateOutlined, RightOutlined,
 } from '@ant-design/icons-vue'
 import {
   changeMyPassword,
@@ -256,7 +271,7 @@ const iconMap: Record<string, any> = {
   ThunderboltOutlined, SwapOutlined, DollarOutlined,
   BellOutlined, TeamOutlined, CalendarOutlined, LogoutOutlined,
   HomeOutlined,
-  SafetyCertificateOutlined,
+  SafetyCertificateOutlined, RightOutlined,
 }
 
 function icon(name: string) {
@@ -306,12 +321,18 @@ const menuItems = computed(() => {
   return filterMenuItems(baseMenuItems)
 })
 
-const mobileVisibleMenuItems = computed(() => (
-  baseMenuItems
-    .filter(item => item.mobile)
-    .map(item => ({ ...item, children: item.children?.filter(child => (child as { mobile?: boolean }).mobile) }))
-    .filter(item => item.children?.length || !item.children)
-))
+const mobileVisibleMenuItems = computed(() => {
+  permissionState.permissions
+  return baseMenuItems
+    .filter(item => item.mobile && !item.hidden)
+    .map(item => ({
+      ...item,
+      children: item.children?.filter(
+        child => (child as { mobile?: boolean }).mobile && canViewPage(child.key),
+      ),
+    }))
+    .filter(item => (item.children ? item.children.length > 0 : canViewPage(item.key)))
+})
 
 function filterMenuItems(items: typeof baseMenuItems) {
   return items
