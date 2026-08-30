@@ -321,17 +321,26 @@ const menuItems = computed(() => {
   return filterMenuItems(baseMenuItems)
 })
 
+// 手机端菜单 = 「常用」（mobile 标记的入口）+ 桌面端同一套完整菜单。
+// 只给白名单会让手机端能去的地方远少于账号实际权限，这里补齐其余分组。
 const mobileVisibleMenuItems = computed(() => {
   permissionState.permissions
-  return baseMenuItems
+  const quickEntries = baseMenuItems
     .filter(item => item.mobile && !item.hidden)
+    .flatMap(item => (item.children ?? [item]).filter(
+      entry => (entry as { mobile?: boolean }).mobile && canViewPage(entry.key),
+    ))
+  const quickKeys = new Set(quickEntries.map(entry => entry.key))
+  const remaining = filterMenuItems(baseMenuItems)
     .map(item => ({
       ...item,
-      children: item.children?.filter(
-        child => (child as { mobile?: boolean }).mobile && canViewPage(child.key),
-      ),
+      children: item.children?.filter(child => !quickKeys.has(child.key)),
     }))
-    .filter(item => (item.children ? item.children.length > 0 : canViewPage(item.key)))
+    .filter(item => (item.children ? item.children.length > 0 : !quickKeys.has(item.key)))
+  return [
+    ...(quickEntries.length ? [{ key: '__quick', icon: icon('AppstoreOutlined'), label: '常用', mobileLabel: '常用', children: quickEntries }] : []),
+    ...remaining,
+  ]
 })
 
 function filterMenuItems(items: typeof baseMenuItems) {
