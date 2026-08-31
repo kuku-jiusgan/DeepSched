@@ -213,12 +213,6 @@ function renderInsertImpact(task: DetectionTask) {
               : '未超出',
           ),
         ]),
-        ...(impact.pending_approval_hours > 0
-          ? [h('div', [
-              h('dt', '签批后待排'),
-              h('dd', `${impact.pending_approval_hours} 小时（已计入推演）`),
-            ])]
-          : []),
       ]),
     ])),
   ])
@@ -335,9 +329,11 @@ onMounted(() => { loadTasks() })
 }
 
 .insert-impact-rows {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 6px 20px;
+  /* 每项按内容宽度排列、内部不换行，三项通常一行放得下；窗口窄了自然折行，
+     而不会把日期从中间劈成两行。 */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
   margin: 0;
 }
 
@@ -345,7 +341,7 @@ onMounted(() => { loadTasks() })
   display: flex;
   align-items: baseline;
   gap: 8px;
-  min-width: 0;
+  white-space: nowrap;
 }
 
 .insert-impact-rows dt {
