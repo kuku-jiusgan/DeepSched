@@ -50,6 +50,46 @@ def working_hours_between(
     return total_seconds / 3600
 
 
+def working_time_spans(
+    db,
+    start: datetime,
+    end: datetime,
+    instrument_id: int | None = None,
+) -> list[tuple[datetime, datetime]]:
+    """把一个时间窗口切成落在工作日历内的若干段。
+
+    与 working_hours_between 是同一套逐日重叠的算法，只是把求和换成收集区间。
+    用于甘特图显示：一个周五开始、周一才结束的时间槽在数据上保留完整起止，
+    但画出来必须拆成"周五一段 + 周一一段"，中间的周末留空。
+    """
+    if end <= start:
+        return []
+
+    context = load_working_time_context(db, start, end)
+    policy = context.policy_for(instrument_id)
+    calendar_days = context.calendar_days
+
+    spans: list[tuple[datetime, datetime]] = []
+    current_date = start.date()
+    while current_date <= end.date():
+        if is_allowed_calendar_day(
+            current_date,
+            calendar_days,
+            policy.include_weekends,
+            policy.include_holidays,
+        ):
+            midnight = datetime.combine(current_date, time.min)
+            overlap_start = max(start, midnight + timedelta(minutes=policy.day_start_minutes))
+            overlap_end = min(end, midnight + timedelta(minutes=policy.day_end_minutes))
+            if overlap_end > overlap_start:
+                if spans and spans[-1][1] == overlap_start:
+                    spans[-1] = (spans[-1][0], overlap_end)
+                else:
+                    spans.append((overlap_start, overlap_end))
+        current_date += timedelta(days=1)
+    return spans
+
+
 def advance_working_hours(
     db,
     start: datetime,

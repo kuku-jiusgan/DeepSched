@@ -13,6 +13,7 @@ from app.schemas.schemas import (
     TaskPauseRequest, TaskSwitchCandidateOut,
     ScheduleDiagnosticOut,
 )
+from app.services.schedule_working_time_service import working_time_spans
 from app.services.scheduler import SchedulerService
 from app.services.instrument_bridge_sync_service import (
     historical_bridge_reservations,
@@ -413,6 +414,7 @@ def _enrich_slot(
         actual_start=actual_start, actual_end=actual_end,
         task_actual_start=task_actual_start, task_actual_end=task_actual_end,
         is_night_run=bool(slot.is_night_run),
+        display_spans=_slot_display_spans(db, slot, actual_start, actual_end),
         tier=slot.tier, status=slot.status, execution_status=_slot_execution_status(slot, task),
         task_name=task.name if task else None,
         task_type=task.task_type if task else None,
@@ -437,6 +439,27 @@ def _slot_execution_status(slot: TimeSlot, task: Task | None) -> str:
     if slot.status == "scheduled":
         return "scheduled"
     return resolve_task_execution_status(task)
+
+
+def _slot_display_spans(
+    db: Session,
+    slot: TimeSlot,
+    actual_start: datetime | None,
+    actual_end: datetime | None,
+) -> list[tuple[datetime, datetime]]:
+    """时间槽在甘特图上应当画出来的分段。
+
+    显示窗口取实际时间（两端都有时）否则取计划时间，再按工作日历切开：一个
+    周五开始、周一才结束的槽，数据上保留完整起止，但画出来是"周五一段 +
+    周一一段"，周末留空。夜间运行不切——那段时间仪器确实被占用着。
+    """
+    start = actual_start if actual_start and actual_end else slot.plan_start
+    end = actual_end if actual_start and actual_end else slot.plan_end
+    if not start or not end or end <= start:
+        return []
+    if slot.is_night_run:
+        return [(start, end)]
+    return working_time_spans(db, start, end, slot.instrument_id)
 
 
 def _slot_actual_window(task: Task | None, slot: TimeSlot):

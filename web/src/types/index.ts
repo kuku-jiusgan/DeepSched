@@ -285,6 +285,8 @@ export interface TimeSlot {
   status: string;
   execution_status?: string;
   is_night_run?: boolean;
+  /** 后端按工作日历切好的显示分段：周末与每日工作时段之外不出现色块。 */
+  display_spans?: [string, string][];
   task_name?: string;
   task_type?: string | null;
   task_status?: string | null;

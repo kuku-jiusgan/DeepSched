@@ -318,6 +318,9 @@ class TimeSlotOut(BaseModel):
     task_actual_start: Optional[datetime] = None
     task_actual_end: Optional[datetime] = None
     is_night_run: bool = False
+    # 甘特图实际画出来的分段：把显示窗口按工作日历切开，周末和每日工作时段之外
+    # 不出现色块。夜间运行的时间槽不切，因为那段时间仪器确实被占着。
+    display_spans: list[tuple[datetime, datetime]] = []
     tier: str
     status: str
     execution_status: str

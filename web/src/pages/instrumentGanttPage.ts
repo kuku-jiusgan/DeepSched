@@ -708,6 +708,32 @@ function dismissTooltip() {
   hoveredSlot.value = null
 }
 
+/** 把一条显示色块按后端给出的工作日历分段切开。
+
+    时间槽的计划／实际窗口允许跨越周末（一个周五开始、周一才结束的任务，数据上
+    保留完整起止是正确的），但画出来不能横跨周末——必须拆成"周五一段 + 周一一段"，
+    中间留空。分段由后端 display_spans 给出；夜间运行的槽后端返回整条不拆，因为
+    那段时间仪器确实被占用着。 */
+function splitByWorkingSpans(slot: GanttSlot): GanttSlot[] {
+  const spans = slot.display_spans
+  if (!spans?.length) return [slot]
+  const start = dayjs(slot.plan_start)
+  const end = dayjs(slot.plan_end)
+  const pieces = spans
+    .map(([spanStart, spanEnd]) => ({
+      from: dayjs(spanStart).isAfter(start) ? dayjs(spanStart) : start,
+      to: dayjs(spanEnd).isBefore(end) ? dayjs(spanEnd) : end,
+    }))
+    .filter(piece => piece.to.isAfter(piece.from))
+  // 显示窗口完全落在非工作时段时不要把色块弄没了，退回原样画一条。
+  if (!pieces.length) return [slot]
+  return pieces.map(piece => ({
+    ...slot,
+    plan_start: piece.from.toISOString(),
+    plan_end: piece.to.toISOString(),
+  }))
+}
+
 function toDisplaySlots(sourceSlots: TimeSlot[]): GanttSlot[] {
   return sourceSlots.flatMap(slot => {
     if (slot.status === 'fault') return [{ ...slot, originalPlanStart: slot.plan_start, originalPlanEnd: slot.plan_end }]
@@ -749,7 +775,7 @@ function toDisplaySlots(sourceSlots: TimeSlot[]): GanttSlot[] {
       plan_start: slot.actual_start,
       plan_end: slot.actual_end,
     }]
-  })
+  }).flatMap(splitByWorkingSpans)
 }
 
 function splitSlotsAroundExecutedOccupancy(sourceSlots: GanttSlot[]): GanttSlot[] {
