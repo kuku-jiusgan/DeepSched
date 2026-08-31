@@ -15,6 +15,7 @@
             type="primary"
             class="mobile-task-primary"
             :loading="actingId === task.actionable_slot?.id"
+            :disabled="isBusy"
             @click="emit('start', task)"
           >
             <PlayCircleOutlined /> {{ workspaceActionStatus(task) === 'paused' ? '恢复任务' : '开始任务' }}
@@ -24,6 +25,7 @@
             v-operation="'complete'"
             class="mobile-task-primary mobile-task-complete"
             :loading="actingId === task.actionable_slot?.id"
+            :disabled="isBusy"
             @click="emit('complete', task)"
           >
             <CheckCircleOutlined /> 确认完成
@@ -55,6 +57,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { CheckCircleOutlined, MoreOutlined, PauseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons-vue'
 import dayjs from 'dayjs'
 import type { WorkspaceTask } from '@/domains/tasks/workspaceTask'
@@ -68,7 +71,11 @@ interface Props {
   actingId: number | null
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
+
+// 有请求在途时，其余任务的按钮一并禁用。完成任务要跑几秒，只给当前按钮加载态
+// 的话，点别的任务会被父组件静默拦掉、用户得不到任何反馈。
+const isBusy = computed(() => props.actingId !== null && props.actingId !== undefined)
 const emit = defineEmits<{ start: [task: WorkspaceTask]; complete: [task: WorkspaceTask]; pause: [task: WorkspaceTask] }>()
 
 function statusColor(status: string) { return taskStatusColor(status) }
