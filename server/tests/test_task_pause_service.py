@@ -12,6 +12,7 @@ from app.services.schedule_completion_service import complete_task_and_shift
 from app.services.task_execution_service import start_task_execution
 from app.services import task_execution_service as execution_service
 from app.services import task_pause_service as pause_service
+from app.services.task_dependency_service import create_continuous_successor
 from app.services.task_pause_service import _approval_ready_time, list_switch_candidates, pause_and_switch_task
 
 
@@ -316,23 +317,35 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.source_slot.actual_start = self.source_slot.plan_start
         self.target_slot.plan_start = self.source_slot.plan_end
         self.target_slot.plan_end = self.base_day.replace(hour=14, minute=30)
+        # 连续后续依赖要求两个任务同属一个顶级任务分组（is_valid_continuous_successor）。
+        # 早先这里直接 new 一个 TaskDependency，绕过了 create_continuous_successor 的
+        # 校验，造出一条系统判定为无效的依赖——暂停切换会把它过滤掉并打
+        # pause_switch_invalid_continuous_successor 警告，后续任务根本没进排序集合，
+        # 断言的顺序约束自然无从谈起。这里补上分组，并改用工厂函数构造。
+        group_task = Task(
+            project_id=self.project_b.id,
+            name="标准计划B",
+            task_type="manual",
+            status="scheduled",
+            plan_order=1,
+        )
+        self.db.add(group_task)
+        self.db.flush()
+        self.target_task.parent_id = group_task.id
         followup_task = Task(
             project_id=self.project_b.id,
+            parent_id=group_task.id,
             name="方案撰写",
             task_type="QCFA_001",
             requires_human=True,
             assignee_id=self.operator.id,
             status="scheduled",
             est_duration_hours=1,
-            plan_order=1,
+            plan_order=2,
         )
         self.db.add(followup_task)
         self.db.flush()
-        self.db.add(TaskDependency(
-            task_id=followup_task.id,
-            predecessor_id=self.target_task.id,
-            dependency_type="continuous_successor",
-        ))
+        self.db.add(create_continuous_successor(self.target_task, followup_task))
         self.db.add(TimeSlot(
             task_id=followup_task.id,
             instrument_id=None,
