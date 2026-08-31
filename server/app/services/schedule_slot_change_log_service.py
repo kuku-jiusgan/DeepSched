@@ -45,6 +45,10 @@ def supersede_slot(db, slot: TimeSlot, reason: str, replacement: TimeSlot | None
     if slot.actual_start is not None or slot.actual_end is not None:
         raise ValueError("已发生时间槽不可被替代")
     slot.lifecycle_status = "superseded"
+    # 作废的同时必须把执行状态一起收掉。只改生命周期的话，一个当时状态为
+    # running 的槽会带着这个状态永远留在库里，任何忘记过滤生命周期的查询都
+    # 会把它当成"仪器正在运行"。项目里另外三处作废逻辑都设了这一行。
+    slot.status = "cancelled"
     slot.superseded_at = datetime.now()
     slot.superseded_reason = reason
     slot.superseded_by = operator_id
