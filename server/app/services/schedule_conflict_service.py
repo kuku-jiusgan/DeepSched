@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 
+from sqlalchemy.orm import contains_eager
+
 from app.models import Task, TimeSlot
 
 
@@ -54,7 +56,9 @@ def find_instrument_conflicts(db, schedule_run_id: str | None = None) -> list[di
 
 
 def find_human_conflicts(db, schedule_run_id: str | None = None) -> list[dict]:
-    slots = db.query(TimeSlot).join(Task).filter(
+    # 已经 join 了 Task，用 contains_eager 把它一并取回来复用这个 join：否则下面
+    # 每次访问 slot.task.assignee_id 都会再发一条 task 查询。
+    slots = db.query(TimeSlot).join(Task).options(contains_eager(TimeSlot.task)).filter(
         Task.requires_human.is_(True),
         Task.assignee_id.isnot(None),
         TimeSlot.status.in_(ACTIVE_SLOT_STATUSES),

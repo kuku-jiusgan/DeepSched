@@ -262,16 +262,22 @@ def _has_open_fault_repair_time(instrument) -> bool:
     )
 
 
-def build_working_prefix_sum(
+def build_working_flags(
     horizon_start: datetime,
     total_units: int,
     day_start_minutes: int,
     day_end_minutes: int,
-    maintenance_windows=None,
     calendar_days=None,
     include_weekends: bool = False,
     include_holidays: bool = False,
 ) -> list[int]:
+    """逐个时间单元标记是否属于工作时段（不含仪器维护窗口）。
+
+    这是整条日历计算里最贵的一步：要在整个排程视野上逐单元做日期运算和日历查表
+    （90 天视野即 4320 个单元）。而结果只取决于工作时段策略，与具体是哪台仪器
+    无关——维护窗口是按仪器叠加的，放在外面处理。调用方据此按策略缓存，26 台
+    仪器只算 2 次而不是 26 次。
+    """
     calendar_days = calendar_days or {}
     is_working = [1] * total_units
     for index in range(total_units):
@@ -290,18 +296,52 @@ def build_working_prefix_sum(
             )
         ):
             is_working[index] = 0
+    return is_working
 
+
+def apply_maintenance_windows(
+    is_working: list[int],
+    total_units: int,
+    maintenance_windows=None,
+) -> list[int]:
+    """在工作时段标记上扣掉维护窗口。就地修改，调用方须先复制。"""
     for _, (start_unit, end_unit) in maintenance_windows or []:
         for index in range(
             max(0, start_unit),
             min(end_unit, total_units),
         ):
             is_working[index] = 0
+    return is_working
 
+
+def prefix_sum_from_flags(is_working: list[int], total_units: int) -> list[int]:
     prefix_sum = [0] * (total_units + 1)
     for index in range(total_units):
         prefix_sum[index + 1] = prefix_sum[index] + is_working[index]
     return prefix_sum
+
+
+def build_working_prefix_sum(
+    horizon_start: datetime,
+    total_units: int,
+    day_start_minutes: int,
+    day_end_minutes: int,
+    maintenance_windows=None,
+    calendar_days=None,
+    include_weekends: bool = False,
+    include_holidays: bool = False,
+) -> list[int]:
+    is_working = build_working_flags(
+        horizon_start,
+        total_units,
+        day_start_minutes,
+        day_end_minutes,
+        calendar_days,
+        include_weekends,
+        include_holidays,
+    )
+    apply_maintenance_windows(is_working, total_units, maintenance_windows)
+    return prefix_sum_from_flags(is_working, total_units)
 
 
 def is_allowed_calendar_day(

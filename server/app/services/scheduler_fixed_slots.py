@@ -5,6 +5,8 @@ from datetime import datetime
 
 from ortools.sat.python import cp_model
 
+from sqlalchemy.orm import joinedload
+
 from app.models import InstrumentBridgeReservation, TimeSlot
 from app.services.scheduler_helpers import datetime_to_units
 
@@ -50,7 +52,9 @@ def load_fixed_slots(
     relevant_instrument_ids: set[int] | None = None,
     relevant_assignee_ids: set[int] | None = None,
 ) -> list[TimeSlot]:
-    query = db.query(TimeSlot).filter(
+    # 下面按 slot.task.requires_human / assignee_id 过滤，不预加载的话每个时间槽
+    # 都会触发一次单独的 task 查询——实测一次排程里仅此一处就发了 142 条 SQL。
+    query = db.query(TimeSlot).options(joinedload(TimeSlot.task)).filter(
         TimeSlot.status.in_(FIXED_SLOT_STATUSES),
         TimeSlot.lifecycle_status == "active",
     )

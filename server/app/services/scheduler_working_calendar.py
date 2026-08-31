@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.services.instrument_working_time_service import load_working_time_context
-from app.services.scheduler_helpers import build_working_prefix_sum
+from app.services.scheduler_helpers import (
+    apply_maintenance_windows,
+    build_working_flags,
+    build_working_prefix_sum,
+    prefix_sum_from_flags,
+)
 
 
 @dataclass(frozen=True)
@@ -53,17 +58,42 @@ def build_working_calendar(
         include_weekends,
         include_holidays,
     )
-    instrument_prefix_sums = {
-        instrument.id: build_working_prefix_sum(
-            horizon_start,
-            total_units,
-            working_context.policy_for(instrument.id).day_start_minutes,
-            working_context.policy_for(instrument.id).day_end_minutes,
-            [window for window in maint_windows if window[0] == instrument.id],
-            calendar_days,
+    # 基础工作时段标记按策略缓存：26 台仪器通常只有一两种工作时段，逐台重算
+    # 等于把整个视野（90 天 = 4320 个单元）的日期运算和日历查表做二十几遍。
+    # 维护窗口是按仪器不同的，所以只缓存不含维护窗口的部分，每台仪器复制一份
+    # 再叠加自己的窗口——**必须复制**，否则一台仪器的维护窗口会污染其他仪器。
+    # include_weekends / include_holidays 沿用原先的全局策略取值，不改语义。
+    base_flags_cache: dict[tuple[int, int, bool, bool], list[int]] = {}
+
+    def _instrument_prefix_sum(instrument_id: int) -> list[int]:
+        policy = working_context.policy_for(instrument_id)
+        key = (
+            policy.day_start_minutes,
+            policy.day_end_minutes,
             include_weekends,
             include_holidays,
         )
+        base = base_flags_cache.get(key)
+        if base is None:
+            base = build_working_flags(
+                horizon_start,
+                total_units,
+                policy.day_start_minutes,
+                policy.day_end_minutes,
+                calendar_days,
+                include_weekends,
+                include_holidays,
+            )
+            base_flags_cache[key] = base
+        flags = apply_maintenance_windows(
+            list(base),
+            total_units,
+            [window for window in maint_windows if window[0] == instrument_id],
+        )
+        return prefix_sum_from_flags(flags, total_units)
+
+    instrument_prefix_sums = {
+        instrument.id: _instrument_prefix_sum(instrument.id)
         for instrument in instruments
     }
     return WorkingCalendar(
