@@ -8,6 +8,7 @@ from app.core.database import Base
 from app.models import Instrument, Project, Task, TimeSlot
 from app.services.schedule_advance_notification_service import capture_task_schedule_windows
 from app.services.schedule_insert_resources import anchor_schedule_end
+from app.services.schedule_insert_service import _task_windows
 
 
 class ScheduleImpactWindowTest(unittest.TestCase):
@@ -53,6 +54,13 @@ class ScheduleImpactWindowTest(unittest.TestCase):
         start, end = capture_task_schedule_windows(self.db, {1})[1]
 
         self.assertEqual(2.5, (end - start).total_seconds() / 3600)
+
+    def test_impact_modal_window_ignores_superseded_slots(self):
+        """排程影响弹窗走的是 _task_windows，同样只能看现行槽。"""
+        window = _task_windows(self.db, {1})[1]
+
+        self.assertEqual(self.base, window[0])
+        self.assertEqual(self.base + timedelta(hours=2.5), window[1])
 
     def test_insert_anchor_ignores_superseded_slots(self):
         self.assertEqual(self.base + timedelta(hours=2.5), anchor_schedule_end(self.db, 1))

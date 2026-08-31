@@ -396,6 +396,9 @@ def _dependency_ready_time(db, task: Task | None) -> datetime | None:
         return None
     return db.query(TimeSlot.plan_end).filter(
         TimeSlot.task_id.in_(predecessor_ids),
+        # 作废槽里常有排得很晚的旧版本，混进来会把"前驱何时就绪"算得过晚，
+        # 延期传播据此把后续任务推到不必要的位置。
+        TimeSlot.lifecycle_status == "active",
     ).order_by(TimeSlot.plan_end.desc()).limit(1).scalar()
 
 

@@ -469,7 +469,17 @@ def _selected_instrument_ids(tasks: list[Task]) -> set[int]:
 
 
 def _task_windows(db, task_ids: set[int], schedule_run_id: str | None = None) -> dict[int, tuple[datetime, datetime]]:
-    query = db.query(TimeSlot).filter(TimeSlot.task_id.in_(task_ids))
+    """各任务现行计划的起止区间，供排程影响对比使用。
+
+    必须排除作废的槽。把历次被推翻的版本一起取最早开始、最晚结束，得到的是所有
+    版本的并集——头取自一个版本、尾取自另一个版本，这个区间从未存在过。排程影响
+    弹窗据此显示「原计划」，于是一个 2.5 小时、位置从未变过的任务，会被显示成
+    横跨五天然后"缩回"原位，还被误列进被顺延任务。
+    """
+    query = db.query(TimeSlot).filter(
+        TimeSlot.task_id.in_(task_ids),
+        TimeSlot.lifecycle_status == "active",
+    )
     if schedule_run_id:
         query = query.filter(TimeSlot.schedule_run_id == schedule_run_id)
     windows: dict[int, tuple[datetime, datetime]] = {}
