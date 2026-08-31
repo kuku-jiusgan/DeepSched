@@ -82,9 +82,13 @@ def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot,
     source_followups = target_followup_groups(db, source_slot.task, switch_time, CANDIDATE_SLOT_STATUSES)
     followup_ids = {group[0].task_id for group in [*target_followups, *source_followups]}
     intermediate_groups = [group for group in intermediate_groups if group[0].task_id not in followup_ids]
+    intermediate_followups, intermediate_groups = _split_intermediate_followups(
+        db, intermediate_groups, switch_time, followup_ids,
+    )
     replaceable = [slot for slot in source_slots if slot.id != source_slot.id]
     replaceable.extend(slot for slot in target_slots if slot.id != target_slot.id)
     replaceable.extend(slot for group in [*intermediate_groups, *target_followups, *source_followups] for slot in group)
+    replaceable.extend(slot for groups in intermediate_followups.values() for group in groups for slot in group)
     # 已经开始或结束的时间槽是既成事实，supersede_slot 会直接拒绝作废它们并
     # 抛异常，整个暂停切换随之变成 500。这里先滤掉，重排只动尚未发生的部分。
     replaceable = [slot for slot in replaceable if slot.actual_start is None and slot.actual_end is None]
@@ -92,8 +96,39 @@ def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot,
     queue.extend(_followup_entries(target_followups))
     queue.append(PauseSwitchQueueEntry(source_slot.task, None, remaining_minutes(source_slot.task, source_slots, switch_time, source_slot), "paused", source_slot))
     queue.extend(_followup_entries(source_followups))
-    queue.extend(PauseSwitchQueueEntry(group[0].task, None, slot_minutes(group), group[0].status, group[0]) for group in intermediate_groups)
+    for group in intermediate_groups:
+        queue.append(PauseSwitchQueueEntry(group[0].task, None, slot_minutes(group), group[0].status, group[0]))
+        queue.extend(_followup_entries(intermediate_followups.get(group[0].task_id, [])))
     return PauseSwitchContext(switch_time, queue_end, replaceable, queue)
+
+
+def _split_intermediate_followups(
+    db,
+    intermediate_groups: list[list[TimeSlot]],
+    switch_time: datetime,
+    followup_ids: set[int],
+) -> tuple[dict[int, list[list[TimeSlot]]], list[list[TimeSlot]]]:
+    """把中间任务的连续后续任务从中间队列里摘出来，改挂到各自前驱之后。
+
+    闭包按仪器队列圈定，中间任务的后续往往是不占仪器的方案撰写。它们会以自己
+    的时间槽先后混在中间队列里，而队列顺序会被原样当成硬约束交给求解器——一旦
+    某个后续任务还停在上一批次的老位置、时间上早于它的前驱，求解器收到的就是
+    一条方向完全相反的约束：前驱被迫排到后续之后。实测中这条反向约束把一个
+    35 小时的任务顶到了三天以后，中间空出整整两个工作日。
+
+    摘出来重新挂载后，队列顺序与声明的依赖一致，两者都跟着前驱一起重排。
+    """
+    claimed: set[int] = set()
+    result: dict[int, list[list[TimeSlot]]] = {}
+    for group in intermediate_groups:
+        for followup in target_followup_groups(db, group[0].task, switch_time, CANDIDATE_SLOT_STATUSES):
+            followup_task_id = followup[0].task_id
+            if followup_task_id in followup_ids or followup_task_id in claimed:
+                continue
+            claimed.add(followup_task_id)
+            result.setdefault(group[0].task_id, []).append(followup)
+    remaining = [group for group in intermediate_groups if group[0].task_id not in claimed]
+    return result, remaining
 
 
 def _followup_entries(groups: list[list[TimeSlot]]) -> list[PauseSwitchQueueEntry]:
