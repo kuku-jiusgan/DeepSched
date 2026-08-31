@@ -116,6 +116,7 @@ def _load_segments_by_instrument(db, slot_map, window_start, window_end):
 def _load_nights_by_instrument(db, window_start, window_end):
     rows = db.query(TaskNightRun).filter(
         TaskNightRun.instrument_id.isnot(None),
+        TaskNightRun.lifecycle_status == "active",
         TaskNightRun.started_at < window_end,
         TaskNightRun.ended_at > window_start,
     ).all()
@@ -252,6 +253,7 @@ def _night_ranges(
 ) -> list[TimeRange]:
     records = db.query(TaskNightRun).filter(
         TaskNightRun.instrument_id == instrument_id,
+        TaskNightRun.lifecycle_status == "active",
         TaskNightRun.started_at < window_end,
         TaskNightRun.ended_at > window_start,
     ).all()

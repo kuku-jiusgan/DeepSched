@@ -142,6 +142,17 @@ def ensure_runtime_schema(engine) -> None:
             for column_name, column_type in lifecycle_columns.items():
                 if column_name not in slot_columns:
                     connection.execute(text(f"ALTER TABLE time_slot ADD COLUMN {column_name} {column_type}"))
+            if "task_night_run" in table_names:
+                night_run_columns = {column["name"] for column in inspector.get_columns("task_night_run")}
+                for column_name, column_type in {
+                    "lifecycle_status": "VARCHAR(20) NOT NULL DEFAULT 'active'",
+                    "superseded_at": "DATETIME",
+                    "superseded_reason": "VARCHAR(200)",
+                }.items():
+                    if column_name not in night_run_columns:
+                        connection.execute(text(
+                            f"ALTER TABLE task_night_run ADD COLUMN {column_name} {column_type}"
+                        ))
             approval_columns = {
                 "is_external_gate": "BOOLEAN DEFAULT 0",
                 "gate_status": "VARCHAR(30) DEFAULT 'not_submitted'",

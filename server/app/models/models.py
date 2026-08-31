@@ -304,6 +304,11 @@ class TaskNightRun(Base):
     operator_id = Column(Integer, ForeignKey("user.id"))
     started_at = Column(DateTime, nullable=False)
     ended_at = Column(DateTime, nullable=False)
+    # 与 TimeSlot 同一套作废范式：夜跑被取消时保留原条目、只打标记，
+    # 这样"曾经安排过一次夜跑、后因切换取消"这个事实仍可追溯。
+    lifecycle_status = Column(String(20), nullable=False, default="active")
+    superseded_at = Column(DateTime)
+    superseded_reason = Column(String(200))
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     __table_args__ = (UniqueConstraint("task_id", "instrument_id", "started_at"),)
