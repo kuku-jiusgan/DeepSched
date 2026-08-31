@@ -15,8 +15,12 @@ def replan_pause_switch(
     source_slot: TimeSlot,
     target_slot: TimeSlot,
     started_at: datetime,
-) -> None:
-    """Replan the original switch window while preserving the start anchor."""
+) -> datetime:
+    """Replan the original switch window while preserving the start anchor.
+
+    返回本次切换的时刻。锚点时间槽被压在这一刻上，接替任务必须以同一个时刻恢复，
+    调用方不能自己再取一次当前时间。
+    """
     context = build_pause_switch_context(db, source_slot, target_slot, started_at)
     savepoint = db.begin_nested()
     try:
@@ -40,7 +44,12 @@ def replan_pause_switch(
             ),
             replaceable_after=context.switch_time,
             expand_closure=False,
-            preserved_status_task_ids={context.paused_source_task_id},
+            # 源任务和接替任务都要进保留名单。落地环节会把状态是运行中/已暂停/
+            # 已中断、又不在名单里的任务整个跳过，一个时间槽都不落。接替任务本身
+            # 完全可能是"已暂停"——界面上带「恢复」标签的候选就是，切回一个刚被
+            # 暂停的任务是最常见的形态。它不在名单里时，原有时间槽被作废却没有
+            # 替代，剩余工时在时间轴上凭空消失，排程还报成功。
+            preserved_status_task_ids={context.paused_source_task_id, target_slot.task_id},
             additional_dependencies=context.queue_dependencies,
             preserved_slot_ids={target_slot.id},
             setup_exempt_task_pairs={
@@ -59,6 +68,7 @@ def replan_pause_switch(
         if savepoint.is_active:
             savepoint.rollback()
         raise
+    return context.switch_time
 
 
 def _prepare_switch_anchors(

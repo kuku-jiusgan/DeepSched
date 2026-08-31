@@ -91,9 +91,15 @@ def pause_and_switch_task(
     target_task_name = None
     if target_slot:
         target_task_name = target_slot.task.name
-        _insert_target_into_source_schedule(db, source_slot, target_slot, paused_at)
+        switch_time = _insert_target_into_source_schedule(db, source_slot, target_slot, paused_at)
         db.flush()
-        start_task_execution(db, target_slot.id, operator.id, allow_queue_insert=True)
+        # 恢复接替任务必须用切换那一刻，不能让下游再取一次当前时间：中间隔着一次
+        # 重排求解（上限 8 秒），锚点时间槽被压成 plan_start == plan_end == 切换
+        # 时刻，晚几十秒回头看它就已经"过期"，接替一个已暂停的任务会被判成没有
+        # 可恢复的未来时间槽。
+        start_task_execution(
+            db, target_slot.id, operator.id, allow_queue_insert=True, started_at=switch_time,
+        )
         _promote_switched_instrument_slot(db, target_slot.task_id, paused_at)
         _discard_zero_length_anchor(db, target_slot.task_id)
 
@@ -123,8 +129,8 @@ def _insert_target_into_source_schedule(
     source_slot: TimeSlot,
     target_slot: TimeSlot,
     started_at: datetime,
-) -> None:
-    replan_pause_switch(db, source_slot, target_slot, started_at)
+) -> datetime:
+    return replan_pause_switch(db, source_slot, target_slot, started_at)
 
 
 def _promote_switched_instrument_slot(db, task_id: int, started_at: datetime) -> None:

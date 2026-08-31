@@ -28,6 +28,7 @@ def start_task_execution(
     operator_id: int | None = None,
     allow_queue_insert: bool = False,
     advance_schedule: bool = False,
+    started_at: datetime | None = None,
 ) -> dict[str, str]:
     slot = db.query(TimeSlot).filter(TimeSlot.id == slot_id).first()
     if not slot:
@@ -36,7 +37,10 @@ def start_task_execution(
     if not task:
         raise TaskExecutionNotFoundError("任务不存在")
     reconcile_task_status_from_slots(task, slot)
-    started_at = datetime.now()
+    # 暂停切换要把切换那一刻传进来。那条路径上目标时间槽被压成零长度锚点钉在切换
+    # 时刻，而重排求解要跑几秒；这里若自己再取一次当前时间，锚点就永远落在它之前，
+    # 恢复时会被判成"没有可恢复的未来活动时间槽"。
+    started_at = started_at or datetime.now()
     slot = _resume_anchor_slot(task, slot, started_at)
     if advance_schedule:
         _advance_resumed_schedule(db, task, slot, started_at)
