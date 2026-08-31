@@ -77,7 +77,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, h, onMounted, reactive, ref } from 'vue'
 import { EditOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { isAxiosError } from 'axios'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -88,6 +88,7 @@ import {
   confirmDetectionTaskInsert, createDetectionTask, deleteDetectionTask, getDetectionTasks, getInstruments, updateDetectionTask,
   getTaskTypes, getUserDirectory, type DetectionTask, type TaskTypeConfig,
 } from '@/services/api'
+import type { ProjectScheduleImpact } from '@/types'
 
 const tasks = ref<DetectionTask[]>([])
 const instruments = ref<{ id: number; code: string; name: string }[]>([])
@@ -169,10 +170,66 @@ async function submitForm() {
     }
   } catch (error: unknown) { message.error(errorDetail(error, editingTask.value ? '检测任务更新失败' : '检测任务创建失败')) } finally { isSaving.value = false }
 }
+/** 插单影响的结构化渲染。
+
+    后端同时返回了整段提示语和结构化的 project_impacts，早先直接把整段话塞进
+    弹窗，几个项目用分号连成一行，关键数字（顺延几小时、调整后什么时候开始、
+    会不会超结题日）全埋在文字里，看的人得逐字读。这里改成一个项目一张卡片，
+    数字单独成行，超期的用红色标出来。 */
+function impactTitle(impact: ProjectScheduleImpact) {
+  // 测试项目常把项目号和项目名设成同一个词，原样拼接会显示成「测试项目A · 测试项目A」。
+  return impact.project_name && impact.project_name !== impact.project_code
+    ? `${impact.project_code} · ${impact.project_name}`
+    : impact.project_code
+}
+
+function renderInsertImpact(task: DetectionTask) {
+  const impacts = task.project_impacts || []
+  const intro = h(
+    'div',
+    { class: 'insert-impact-intro' },
+    '本次插单需要移动同优先级或低优先级的未开始项目任务，请确认以下影响：',
+  )
+  if (!impacts.length) {
+    return h('div', [intro, h('div', { class: 'insert-impact-empty' }, task.schedule_message || '暂无可展示的影响明细')])
+  }
+  return h('div', { class: 'insert-impact' }, [
+    intro,
+    ...impacts.map(impact => h('div', { class: 'insert-impact-card' }, [
+      h('div', { class: 'insert-impact-title' }, impactTitle(impact)),
+      h('dl', { class: 'insert-impact-rows' }, [
+        h('div', [h('dt', '预计顺延'), h('dd', `${Math.max(0, impact.delay_hours)} 小时`)]),
+        h('div', [
+          h('dt', '调整后开始'),
+          h('dd', impact.new_start ? dayjs(impact.new_start).format('YYYY-MM-DD HH:mm') : '暂无'),
+        ]),
+        h('div', [
+          h('dt', '结题日期'),
+          h(
+            'dd',
+            { class: impact.exceeds_end_date ? 'insert-impact-danger' : 'insert-impact-safe' },
+            impact.exceeds_end_date
+              ? `超出 ${impact.overdue_hours} 小时`
+              : '未超出',
+          ),
+        ]),
+        ...(impact.pending_approval_hours > 0
+          ? [h('div', [
+              h('dt', '签批后待排'),
+              h('dd', `${impact.pending_approval_hours} 小时（已计入推演）`),
+            ])]
+          : []),
+      ]),
+    ])),
+  ])
+}
+
 function showInsertConfirmation(task: DetectionTask) {
   Modal.confirm({
     title: '确认检测任务插入排程',
-    content: task.schedule_message || '需要移动结题日期更晚且尚未开始的项目任务，是否确认？',
+    width: 560,
+    icon: null,
+    content: renderInsertImpact(task),
     okText: '确认并重排',
     cancelText: '暂不调整',
     async onOk() {
@@ -239,4 +296,76 @@ onMounted(() => { loadTasks() })
 <style scoped>
 .page-header p { margin: 4px 0 0; color: #64748b; }
 .task-code { color: #2563eb; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
+</style>
+
+<!-- Modal.confirm 的内容会被传送到组件之外，scoped 样式匹配不上，必须用全局样式。 -->
+<style>
+.insert-impact-intro {
+  margin-bottom: 12px;
+  color: #334155;
+  line-height: 1.6;
+}
+
+.insert-impact-empty {
+  color: #64748b;
+  line-height: 1.6;
+}
+
+.insert-impact {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.insert-impact-card {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.insert-impact-card:last-child {
+  margin-bottom: 0;
+}
+
+.insert-impact-title {
+  margin-bottom: 8px;
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.insert-impact-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px 20px;
+  margin: 0;
+}
+
+.insert-impact-rows > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.insert-impact-rows dt {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.insert-impact-rows dd {
+  margin: 0;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.insert-impact-danger {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.insert-impact-safe {
+  color: #16a34a;
+}
 </style>
