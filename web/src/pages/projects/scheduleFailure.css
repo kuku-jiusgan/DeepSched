@@ -117,3 +117,48 @@
   .schedule-failure-recommendation { padding-right: 12px; }
   .schedule-failure-recommendation > span { position: static; display: block; margin-top: 5px; }
 }
+
+/* 影响卡片：插单确认弹窗和排程失败的调整方案共用同一个模板（见 impactCard.ts）。
+   一个项目一张卡，数据项按内容宽度横排、内部不换行，三项通常一行放得下；
+   窗口窄了自然折行，而不会把日期从中间劈成两行。 */
+.impact-card {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.impact-card:last-child { margin-bottom: 0; }
+.impact-card-title {
+  margin-bottom: 8px;
+  color: #0f172a;
+  font-weight: 600;
+}
+.impact-card-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+}
+.impact-card-rows > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+.impact-card-rows dt {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 12px;
+}
+.impact-card-rows dd {
+  margin: 0;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.impact-card-danger { color: #dc2626; font-weight: 600; }
+.impact-card-safe { color: #16a34a; }
+/* 调整方案里的卡片嵌在方案框内，标题下留出间距，且不与右上角的「求解器已验证」
+   挤在一起。 */
+.schedule-failure-recommendation .impact-card { margin-top: 8px; background: #fff; }
+.schedule-failure-recommendation-note { margin: 3px 0 0; }

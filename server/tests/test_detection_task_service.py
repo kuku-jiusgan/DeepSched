@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.models import Instrument, Project, Task, TimeSlot, User
+from app.api.detection_tasks import _response
 from app.services.detection_task_service import (
     DetectionTaskInvalidError,
     create_detection_task,
@@ -290,3 +291,56 @@ class DetectionTaskServiceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DetectionTaskResponseTest(unittest.TestCase):
+    """接口层要把排程诊断原样带给前台。
+
+    检测任务和计划排程共用同一个求解入口，失败诊断（仪器余量、占用明细、调整
+    方案任务号）也是同一份。这里曾经只回传一句 message，前台除了「暂未排入
+    日程」什么都显示不出来。
+    """
+
+    def setUp(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        user = User(username="manager", display_name="负责人", role="项目管理员", is_active=True)
+        self.db.add(user)
+        self.db.commit()
+        project = Project(
+            code="JC-900", name="含量检测", project_kind="detection", status="pending",
+            priority=2, manager_id=user.id,
+            start_date=datetime(2026, 7, 21), end_date=datetime(2026, 7, 24),
+        )
+        self.db.add(project)
+        self.db.flush()
+        self.db.add(Task(
+            project_id=project.id, name="含量检测", task_type="RCJC_001",
+            requires_instrument=True, requires_human=True, est_duration_hours=8,
+            switchover_hours=0, allow_split=False, assignee_id=user.id, instrument_ids=[],
+        ))
+        self.db.commit()
+        self.project = project
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_response_carries_schedule_failure_diagnostic(self):
+        diagnostic = {
+            "kind": "scheduling_constraints",
+            "summary": "项目未能在截止日期前排入",
+            "occupancy": [{"project_label": "测试项目A"}],
+            "recommendation_job": {"id": "job-1", "status": "pending"},
+        }
+        schedule = {"status": "error", "message": "排程失败", "schedule_failure": diagnostic}
+
+        response = _response(self.project, self.db, schedule)
+
+        self.assertEqual("error", response["schedule_status"])
+        self.assertEqual(diagnostic, response["schedule_failure"])
+
+    def test_response_without_schedule_leaves_failure_empty(self):
+        response = _response(self.project, self.db)
+
+        self.assertIsNone(response["schedule_failure"])

@@ -11,10 +11,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getDeadlineRecommendation } from '@/services/api'
-import type { ProjectPlanApplyResult, ScheduleFailureDiagnostic } from '@/types'
+import type { ScheduleFailureDiagnostic, ScheduleFailureResult } from '@/types'
 import { scheduleFailureContent } from '../planScheduleFailure'
 
-const props = defineProps<{ projectId: number; result: ProjectPlanApplyResult }>()
+const props = defineProps<{ projectId: number; result: ScheduleFailureResult }>()
 const diagnostic = ref<ScheduleFailureDiagnostic | null>(props.result.schedule_failure || null)
 const jobStatus = ref(props.result.schedule_failure?.recommendation_job?.status || 'completed')
 let timer: ReturnType<typeof setTimeout> | undefined

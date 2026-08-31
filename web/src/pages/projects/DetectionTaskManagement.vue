@@ -88,6 +88,9 @@ import {
   confirmDetectionTaskInsert, createDetectionTask, deleteDetectionTask, getDetectionTasks, getInstruments, updateDetectionTask,
   getTaskTypes, getUserDirectory, type DetectionTask, type TaskTypeConfig,
 } from '@/services/api'
+import ScheduleFailureModal from './components/ScheduleFailureModal.vue'
+import { impactCard } from './impactCard'
+import './scheduleFailure.css'
 import type { ProjectScheduleImpact } from '@/types'
 
 const tasks = ref<DetectionTask[]>([])
@@ -164,7 +167,7 @@ async function submitForm() {
     if (result.schedule_status === 'insert_confirmation_required' && result.preview_token) {
       showInsertConfirmation(result)
     } else if (result.schedule_status === 'error') {
-      message.warning(result.schedule_message || '任务已保存，但暂未排入日程')
+      showScheduleFailure(result)
     } else {
       message.success(result.schedule_message || (editingTask.value ? '检测任务已更新并重新排程' : '检测任务已保存并完成排程'))
     }
@@ -175,7 +178,7 @@ async function submitForm() {
     后端同时返回了整段提示语和结构化的 project_impacts，早先直接把整段话塞进
     弹窗，几个项目用分号连成一行，关键数字（顺延几小时、调整后什么时候开始、
     会不会超结题日）全埋在文字里，看的人得逐字读。这里改成一个项目一张卡片，
-    数字单独成行，超期的用红色标出来。 */
+    数字单独成行，超期的用红色标出来。卡片模板与排程失败的调整方案共用。 */
 function impactTitle(impact: ProjectScheduleImpact) {
   // 测试项目常把项目号和项目名设成同一个词，原样拼接会显示成「测试项目A · 测试项目A」。
   return impact.project_name && impact.project_name !== impact.project_code
@@ -195,27 +198,36 @@ function renderInsertImpact(task: DetectionTask) {
   }
   return h('div', { class: 'insert-impact' }, [
     intro,
-    ...impacts.map(impact => h('div', { class: 'insert-impact-card' }, [
-      h('div', { class: 'insert-impact-title' }, impactTitle(impact)),
-      h('dl', { class: 'insert-impact-rows' }, [
-        h('div', [h('dt', '预计顺延'), h('dd', `${Math.max(0, impact.delay_hours)} 小时`)]),
-        h('div', [
-          h('dt', '调整后开始'),
-          h('dd', impact.new_start ? dayjs(impact.new_start).format('YYYY-MM-DD HH:mm') : '暂无'),
-        ]),
-        h('div', [
-          h('dt', '结题日期'),
-          h(
-            'dd',
-            { class: impact.exceeds_end_date ? 'insert-impact-danger' : 'insert-impact-safe' },
-            impact.exceeds_end_date
-              ? `超出 ${impact.overdue_hours} 小时`
-              : '未超出',
-          ),
-        ]),
-      ]),
+    ...impacts.map(impact => impactCard(impactTitle(impact), [
+      { label: '预计顺延', value: `${Math.max(0, impact.delay_hours)} 小时` },
+      {
+        label: '调整后开始',
+        value: impact.new_start ? dayjs(impact.new_start).format('YYYY-MM-DD HH:mm') : '暂无',
+      },
+      {
+        label: '结题日期',
+        value: impact.exceeds_end_date ? `超出 ${impact.overdue_hours} 小时` : '未超出',
+        tone: impact.exceeds_end_date ? 'danger' : 'safe',
+      },
     ])),
   ])
+}
+
+/** 排程失败的完整诊断，与计划排程共用同一个弹窗。
+
+    检测任务和计划排程走的是同一个求解入口，失败原因一样复杂，以前这里只弹一条
+    「任务已保存，但暂未排入日程」的浮层提示，仪器余量、占用明细和求解器验证过
+    的调整方案都没地方看，人只能靠猜。 */
+function showScheduleFailure(task: DetectionTask) {
+  Modal.error({
+    title: '排程失败',
+    width: 900,
+    wrapClassName: 'schedule-failure-modal',
+    content: h(ScheduleFailureModal, {
+      projectId: task.project_id,
+      result: { message: task.schedule_message || undefined, schedule_failure: task.schedule_failure },
+    }),
+  })
 }
 
 function showInsertConfirmation(task: DetectionTask) {
@@ -310,58 +322,4 @@ onMounted(() => { loadTasks() })
   overflow-y: auto;
 }
 
-.insert-impact-card {
-  margin-bottom: 10px;
-  padding: 10px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
-.insert-impact-card:last-child {
-  margin-bottom: 0;
-}
-
-.insert-impact-title {
-  margin-bottom: 8px;
-  color: #0f172a;
-  font-weight: 600;
-}
-
-.insert-impact-rows {
-  /* 每项按内容宽度排列、内部不换行，三项通常一行放得下；窗口窄了自然折行，
-     而不会把日期从中间劈成两行。 */
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 18px;
-  margin: 0;
-}
-
-.insert-impact-rows > div {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  white-space: nowrap;
-}
-
-.insert-impact-rows dt {
-  flex: 0 0 auto;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.insert-impact-rows dd {
-  margin: 0;
-  color: #0f172a;
-  font-variant-numeric: tabular-nums;
-}
-
-.insert-impact-danger {
-  color: #dc2626;
-  font-weight: 600;
-}
-
-.insert-impact-safe {
-  color: #16a34a;
-}
 </style>

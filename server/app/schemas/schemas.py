@@ -222,6 +222,10 @@ class DetectionTaskOut(BaseModel):
     schedule_message: Optional[str] = None
     preview_token: Optional[str] = None
     project_impacts: List["ProjectScheduleImpact"] = []
+    # 排程失败时的完整诊断（仪器余量、占用明细、调整方案任务号）。检测任务和
+    # 计划排程走的是同一个求解入口，失败原因也一样复杂，只回传一句话的话前台
+    # 除了「暂未排入日程」什么都说不出来。
+    schedule_failure: Optional[dict] = None
 
 # ---- Instrument ----
 class CapabilityCreate(BaseModel):

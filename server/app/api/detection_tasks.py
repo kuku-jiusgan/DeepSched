@@ -33,6 +33,7 @@ def _response(project, db, schedule=None, actual_hours: float | None = None) -> 
         schedule_message=(schedule or {}).get("message"),
         preview_token=(schedule or {}).get("preview_token"),
         project_impacts=(schedule or {}).get("project_impacts") or [],
+        schedule_failure=(schedule or {}).get("schedule_failure"),
     ).model_dump()
 
 

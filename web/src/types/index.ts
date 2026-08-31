@@ -33,6 +33,7 @@ export interface DetectionTask {
   schedule_message?: string | null;
   preview_token?: string | null;
   project_impacts: ProjectScheduleImpact[];
+  schedule_failure?: ScheduleFailureDiagnostic | null;
 }
 
 export interface ProjectHoursTask {
@@ -402,6 +403,11 @@ export interface ProjectPlanApplyResult {
   project_impacts: ProjectScheduleImpact[];
   schedule_failure?: ScheduleFailureDiagnostic | null;
 }
+
+/** 排程失败弹窗只需要这两个字段。检测任务返回的是 DetectionTask、计划排程返回
+    的是 ProjectPlanApplyResult，两者共用同一套渲染，所以按需求收窄到最小交集，
+    而不是逼调用方拼一个假的 ProjectPlanApplyResult 出来。 */
+export type ScheduleFailureResult = Pick<ProjectPlanApplyResult, 'message' | 'schedule_failure'>
 
 export interface ScheduleRecommendationJob {
   id: string;

@@ -1,9 +1,12 @@
 import { h } from 'vue'
+import { impactCard } from './impactCard'
 import type {
-  ProjectPlanApplyResult,
   ScheduleFailureDiagnostic,
   ScheduleFailureInstrument,
   ScheduleFailureOccupancy,
+  ScheduleFailureRecommendation,
+  ScheduleFailureResult,
+  ScheduleFailureWindow,
 } from '@/types'
 
 function formatHours(value: number) {
@@ -60,6 +63,27 @@ function occupancyTable(rows: ScheduleFailureOccupancy[]) {
   ])
 }
 
+/** 一个方案里每个要改期的项目一张卡片。
+
+    后端本来就按项目返回了结构化的 changes（原结题日、建议结题日、延期天数），
+    以前却渲染成一句用分号连起来的话，几个项目挤在一行，跟插单确认弹窗改造前
+    是同一个毛病。这里改成和插单一样的卡片。 */
+function recommendationBody(row: ScheduleFailureRecommendation) {
+  const changes = row.changes ?? []
+  if (!changes.length) return [h('p', row.description)]
+  return [
+    // 搜索是从"只改一个项目"开始试的，能给出多项目方案说明单改一个排不下。
+    ...(changes.length > 1
+      ? [h('p', { class: 'schedule-failure-recommendation-note' }, `这 ${changes.length} 个项目需要一起调整。`)]
+      : []),
+    ...changes.map(change => impactCard(change.project_label, [
+      { label: '原结题日', value: change.original_deadline },
+      { label: '建议结题日', value: change.suggested_deadline },
+      { label: '延期天数', value: `${change.delay_days} 天`, tone: 'danger' },
+    ])),
+  ]
+}
+
 function recommendations(diagnostic: ScheduleFailureDiagnostic) {
   const rows = diagnostic.recommendations ?? []
   const isSearching = ['pending', 'running'].includes(diagnostic.recommendation_job?.status || '')
@@ -68,7 +92,7 @@ function recommendations(diagnostic: ScheduleFailureDiagnostic) {
     ...(rows.length
       ? rows.map((row, index) => h('div', { class: 'schedule-failure-recommendation', key: `${index}-${row.title}` }, [
           h('strong', `方案 ${index + 1} · ${row.title}`),
-          h('p', row.description),
+          ...recommendationBody(row),
           h('span', { class: 'is-verified' }, '求解器已验证'),
         ]))
       : [h('div', { class: 'schedule-failure-empty' }, isSearching
@@ -77,14 +101,39 @@ function recommendations(diagnostic: ScheduleFailureDiagnostic) {
   ])
 }
 
+function failureHeader(diagnostic: ScheduleFailureDiagnostic, deadline: string) {
+  const days = diagnostic.days_remaining === undefined ? '' : `（距今 ${diagnostic.days_remaining} 天）`
+  return h('header', { class: 'schedule-failure-header' }, [
+    h('strong', diagnostic.project_label || '当前项目'),
+    h('span', `项目结题日：${deadline}${days}`),
+  ])
+}
+
+function windowSection(window: ScheduleFailureWindow, deadline: string) {
+  return h('section', { class: 'schedule-failure-section' }, [
+    h('h3', '约束明细'),
+    h('div', { class: 'schedule-failure-table-scroll' }, [
+      h('table', { class: 'schedule-failure-table' }, [
+        h('thead', [h('tr', [
+          h('th', '任务'), h('th', '最早可开始'), h('th', '截止时间'),
+          h('th', '所需工时'), h('th', '窗口跨度'),
+        ])]),
+        h('tbody', [h('tr', [
+          cell(window.task_name, 'schedule-failure-name'),
+          cell(window.earliest_start),
+          cell(window.deadline || deadline),
+          cell(formatHours(window.required_hours)),
+          cell(formatHours(window.available_hours)),
+        ])]),
+      ]),
+    ]),
+  ])
+}
+
 function capacityContent(diagnostic: ScheduleFailureDiagnostic) {
   const deadline = diagnostic.deadline || diagnostic.groups[0]?.deadline || '未知'
-  const days = diagnostic.days_remaining === undefined ? '' : `（距今 ${diagnostic.days_remaining} 天）`
   return h('div', { class: 'schedule-failure-content' }, [
-    h('header', { class: 'schedule-failure-header' }, [
-      h('strong', diagnostic.project_label || '当前项目'),
-      h('span', `项目结题日：${deadline}${days}`),
-    ]),
+    failureHeader(diagnostic, deadline),
     instrumentTable(diagnostic.instruments ?? []),
     occupancyTable(diagnostic.occupancy ?? []),
     recommendations(diagnostic),
@@ -95,38 +144,25 @@ function capacityContent(diagnostic: ScheduleFailureDiagnostic) {
 function constraintContent(diagnostic: ScheduleFailureDiagnostic) {
   const deadline = diagnostic.deadline || '未知'
   const window = diagnostic.window
+  // 排不进去不等于没余量。这类失败常见的形态是余量被别的项目切得零碎，或者
+  // 让位之后那些项目自己越过结题日——两种都得看占用明细和调整方案才说得清。
+  // 以前这里只画一句「受连续时间段、人员、前置依赖或仪器切换等约束限制」，
+  // 后端算出来的仪器余量、占用明细和求解器验证过的调整方案全被丢掉了。
   return h('div', { class: 'schedule-failure-content' }, [
-    h('header', { class: 'schedule-failure-header' }, [
-      h('strong', diagnostic.project_label || '当前项目'),
-      h('span', `项目结题日：${deadline}`),
-    ]),
+    failureHeader(diagnostic, deadline),
     window
-      ? h('section', { class: 'schedule-failure-section' }, [
-          h('h3', '约束明细'),
-          h('div', { class: 'schedule-failure-table-scroll' }, [
-            h('table', { class: 'schedule-failure-table' }, [
-              h('thead', [h('tr', [
-                h('th', '任务'), h('th', '最早可开始'), h('th', '截止时间'),
-                h('th', '所需工时'), h('th', '窗口跨度'),
-              ])]),
-              h('tbody', [h('tr', [
-                cell(window.task_name, 'schedule-failure-name'),
-                cell(window.earliest_start),
-                cell(window.deadline || deadline),
-                cell(formatHours(window.required_hours)),
-                cell(formatHours(window.available_hours)),
-              ])]),
-            ]),
-          ]),
-        ])
+      ? windowSection(window, deadline)
       : h('div', { class: 'schedule-failure-plain schedule-failure-section' }, diagnostic.summary),
+    ...(diagnostic.instruments?.length ? [instrumentTable(diagnostic.instruments)] : []),
+    ...(diagnostic.occupancy?.length ? [occupancyTable(diagnostic.occupancy)] : []),
+    recommendations(diagnostic),
     h('div', { class: 'schedule-failure-action' }, window
       ? '请修正项目日期或调整任务工时后重新排程。'
       : '请检查前置关系、负责人可用时间、仪器连续可用时段和切换时间后重新排程。'),
   ])
 }
 
-export function scheduleFailureContent(result: ProjectPlanApplyResult) {
+export function scheduleFailureContent(result: ScheduleFailureResult) {
   const diagnostic = result.schedule_failure
   if (!diagnostic) {
     return h('div', { class: 'schedule-failure-content' }, [
