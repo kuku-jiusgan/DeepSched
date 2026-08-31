@@ -74,9 +74,16 @@ def capture_task_schedule_windows(
     if not ids:
         return {}
 
+    # 必须只取现行时间槽。把历次被推翻的作废槽一起取最早开始、最晚结束，得到的
+    # 不是某一版计划，而是所有版本的并集——一个 2.5 小时的任务会显示成横跨数天，
+    # 排程影响弹窗里就成了「原计划 09-03 14:00–09-08 19:30」这种从未存在过的区间，
+    # 看上去像是任务被莫名拉长，而它其实压根没动。
     slots = (
         db.query(TimeSlot)
-        .filter(TimeSlot.task_id.in_(ids))
+        .filter(
+            TimeSlot.task_id.in_(ids),
+            TimeSlot.lifecycle_status == "active",
+        )
         .order_by(TimeSlot.plan_start, TimeSlot.id)
         .all()
     )

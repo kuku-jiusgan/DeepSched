@@ -11,7 +11,15 @@ MOVABLE_TASK_STATUSES = ["pending", "scheduled", "blocked"]
 
 
 def anchor_schedule_end(db, task_id: int) -> datetime | None:
-    slots = db.query(TimeSlot).filter(TimeSlot.task_id == task_id).all()
+    """任务现行计划的结束时刻。
+
+    必须排除作废的槽：历次被推翻的版本里往往有排得很晚的位置，混进来会把
+    插单锚点推到一个早已不存在的时间点上。
+    """
+    slots = db.query(TimeSlot).filter(
+        TimeSlot.task_id == task_id,
+        TimeSlot.lifecycle_status == "active",
+    ).all()
     return max((slot.plan_end for slot in slots), default=None)
 
 

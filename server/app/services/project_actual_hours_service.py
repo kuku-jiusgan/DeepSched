@@ -37,7 +37,10 @@ def task_actual_hours_map(db, task_ids) -> dict[int, float]:
         return totals
     segments = db.query(TaskExecutionSegment).filter(TaskExecutionSegment.task_id.in_(task_ids)).all()
     slots = db.query(TimeSlot).filter(TimeSlot.task_id.in_(task_ids)).all()
-    night_runs = db.query(TaskNightRun).filter(TaskNightRun.task_id.in_(task_ids)).all()
+    night_runs = db.query(TaskNightRun).filter(
+        TaskNightRun.task_id.in_(task_ids),
+        TaskNightRun.lifecycle_status == "active",
+    ).all()
     ranges_by_task = _actual_ranges_by_task(task_ids, segments, slots)
     all_ranges = [item for ranges in ranges_by_task.values() for item in ranges]
     if not all_ranges:

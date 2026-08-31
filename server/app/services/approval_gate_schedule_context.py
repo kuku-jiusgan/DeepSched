@@ -135,6 +135,9 @@ def _branch_anchor_at(db, task_ids: set[int]) -> datetime | None:
         return None
     slots = db.query(TimeSlot).filter(
         TimeSlot.task_id.in_(task_ids),
+        # 作废的槽属于被推翻的旧计划，拿它的结束时刻当锚点会把签批下游推得比
+        # 实际需要的晚得多。
+        TimeSlot.lifecycle_status == "active",
         TimeSlot.status.in_([
             "scheduled", "running", "paused", "blocked", "interrupted", "completed",
         ]),
