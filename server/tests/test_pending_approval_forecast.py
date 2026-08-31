@@ -157,3 +157,76 @@ class PendingApprovalBridgeRuleTest(PendingApprovalForecastTest):
         names = {s["task_name"] for s in pending_approval_segments(self.db)}
 
         self.assertNotIn("报告撰写", names)
+
+
+class PendingApprovalBranchBoundTest(unittest.TestCase):
+    """预测起点按分支算，不按项目算。
+
+    一个项目常有多条互不相干的并行链（不同负责人、不同仪器各自走完整流程）。
+    用项目整体的收工时刻当下界，会让早就干完的那条分支白等最慢的那条——实测
+    中一条 09-02 就收工的分支被另一条干到 09-15 的分支拖住，仪器空着好几天。
+    """
+
+    def setUp(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        monday = datetime.now() + timedelta(days=1)
+        while monday.weekday() != 0:
+            monday += timedelta(days=1)
+        self.monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+        # 两条分支各用一台仪器：真实场景里不同负责人的并行链往往在不同仪器上，
+        # 这样才能把「项目级下界」的影响和「仪器已被占用」区分开。
+        self.instrument = Instrument(code="BRANCH-A", name="分支仪器A",
+                                     availability_status="available", status="idle")
+        self.other_instrument = Instrument(code="BRANCH-B", name="分支仪器B",
+                                           availability_status="available", status="idle")
+        self.project = Project(code="MULTI", name="多分支项目",
+                               start_date=self.monday, end_date=self.monday + timedelta(days=60))
+        self.db.add_all([self.instrument, self.other_instrument, self.project])
+        self.db.flush()
+
+    def tearDown(self):
+        self.db.close()
+
+    def _branch(self, name: str, assignee_id: int, develop_days: int, instrument=None):
+        instrument = instrument or self.instrument
+        group = Task(project_id=self.project.id, name=name, task_type="manual", status="pending")
+        self.db.add(group)
+        self.db.flush()
+        develop = Task(project_id=self.project.id, parent_id=group.id, name="方法开发",
+                       task_type="FFKF_001", requires_instrument=True, est_duration_hours=4,
+                       assignee_id=assignee_id, instrument_ids=[instrument.id],
+                       status="pending", plan_order=0)
+        gate = Task(project_id=self.project.id, parent_id=group.id, name="方案签批",
+                    task_type="approval_gate", status="waiting_external",
+                    is_external_gate=True, gate_status="not_submitted", plan_order=1)
+        verify = Task(project_id=self.project.id, parent_id=group.id, name="方法验证",
+                      task_type="FFYZ_001", requires_instrument=True, est_duration_hours=4,
+                      assignee_id=assignee_id, instrument_ids=[instrument.id],
+                      status="waiting_external", plan_order=2)
+        self.db.add_all([develop, gate, verify])
+        self.db.flush()
+        self.db.add_all([
+            TaskDependency(task_id=gate.id, predecessor_id=develop.id),
+            TaskDependency(task_id=verify.id, predecessor_id=gate.id),
+        ])
+        start = self.monday + timedelta(days=develop_days)
+        self.db.add(TimeSlot(
+            task_id=develop.id, instrument_id=instrument.id, schedule_run_id="r",
+            plan_start=start.replace(hour=8, minute=30), plan_end=start.replace(hour=12, minute=30),
+            tier="confirmed", status="scheduled", lifecycle_status="active",
+        ))
+        self.db.flush()
+        return verify
+
+    def test_early_branch_is_not_held_back_by_a_slow_one(self):
+        early = self._branch("早分支", assignee_id=1, develop_days=0)
+        self._branch("慢分支", assignee_id=2, develop_days=10, instrument=self.other_instrument)
+        self.db.commit()
+
+        segments = [s for s in pending_approval_segments(self.db) if s["task_id"] == early.id]
+
+        self.assertTrue(segments)
+        # 早分支自己的开发当天 12:30 就完了，不该被慢分支拖到十天后
+        self.assertLess(segments[0]["plan_start"], self.monday + timedelta(days=3))

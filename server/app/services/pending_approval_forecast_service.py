@@ -29,14 +29,16 @@ def pending_approval_segments(db) -> list[dict]:
     anchors = _instrument_anchors(db, {
         instrument_id for _task, instrument_id in tasks
     })
-    project_ends = _project_schedule_ends(db, {task.project_id for task, _i in tasks})
+    branch_ends = _branch_schedule_ends(db, [task for task, _i in tasks])
     segments = []
     for instrument_id, items in _group_by_instrument(tasks).items():
         cursor = anchors.get(instrument_id) or datetime.now()
         for task in items:
-            # 起点不能早于本项目自己已排工作的结束：签批后的活接在前置工作
-            # 之后，仪器空出来了也不能提前做。
-            cursor = max(cursor, project_ends[task.project_id])
+            # 起点不能早于**本分支**自己已排工作的结束。按分支而不是按项目算——
+            # 一个项目常有多条互不相干的并行链（不同负责人、不同仪器各自走完整
+            # 流程），用项目整体的收工时刻当下界，会让早就干完的那条分支白等
+            # 最慢的那条。
+            cursor = max(cursor, branch_ends[task.id])
             hours = remaining_task_minutes(task) / 60
             if hours <= 0:
                 continue
@@ -164,23 +166,50 @@ def _projects_with_active_slots(db) -> set[int]:
     return {row[0] for row in rows}
 
 
-def _project_schedule_ends(db, project_ids: set[int]) -> dict[int, datetime]:
-    """各项目已排工作的结束时刻；没有已排工作的按当前时刻。"""
+def _branch_schedule_ends(db, tasks: list[Task]) -> dict[int, datetime]:
+    """每个任务所属分支已排工作的结束时刻，按任务 id 返回。
+
+    分支指该任务所属的顶级任务分组（一路 parent 上溯到根）。同一项目里
+    「文霞的方法开发→方案撰写→方法验证」和「刘文静的同一串」是两条独立的链，
+    各自有各自的进度，谁也不该等谁。
+    """
     now = datetime.now()
-    ends = {project_id: now for project_id in project_ids}
-    if not project_ids:
-        return ends
-    rows = db.query(Task.project_id, TimeSlot.plan_end).join(
+    if not tasks:
+        return {}
+    project_ids = {task.project_id for task in tasks}
+    parent_of = {
+        task_id: parent_id
+        for task_id, parent_id in db.query(Task.id, Task.parent_id).filter(
+            Task.project_id.in_(project_ids),
+        ).all()
+    }
+    roots = {task_id: _root_task_id(task_id, parent_of) for task_id in parent_of}
+    ends_by_root: dict[int, datetime] = {}
+    rows = db.query(Task.id, TimeSlot.plan_end).join(
         TimeSlot, TimeSlot.task_id == Task.id,
     ).filter(
         Task.project_id.in_(project_ids),
         TimeSlot.lifecycle_status == ACTIVE_SLOT_LIFECYCLE,
         TimeSlot.plan_end.isnot(None),
     ).all()
-    for project_id, plan_end in rows:
-        if plan_end > ends[project_id]:
-            ends[project_id] = plan_end
-    return ends
+    for task_id, plan_end in rows:
+        root = roots.get(task_id)
+        if root is None:
+            continue
+        if root not in ends_by_root or plan_end > ends_by_root[root]:
+            ends_by_root[root] = plan_end
+    return {
+        task.id: max(now, ends_by_root.get(roots.get(task.id), now))
+        for task in tasks
+    }
+
+
+def _root_task_id(task_id: int, parent_of: dict[int, int | None]) -> int:
+    seen: set[int] = set()
+    while parent_of.get(task_id) is not None and task_id not in seen:
+        seen.add(task_id)
+        task_id = parent_of[task_id]
+    return task_id
 
 
 def _group_by_instrument(tasks: list[tuple[Task, int]]) -> dict[int, list[Task]]:
