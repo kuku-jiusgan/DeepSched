@@ -26,6 +26,7 @@ class PauseSwitchContext:
     queue_end: datetime
     replaceable_slots: list[TimeSlot]
     queue: list[PauseSwitchQueueEntry]
+    source_task_id: int
 
     @property
     def task_ids(self) -> set[int]:
@@ -41,7 +42,17 @@ class PauseSwitchContext:
 
     @property
     def paused_source_task_id(self) -> int:
-        return next(entry.task.id for entry in self.queue if entry.status == "paused")
+        """本次被暂停的源任务。
+
+        这个值会作为 preserved_status_task_ids 交给落地环节——不在这个名单里的
+        running/paused 任务会被整个跳过，一个时间槽都不落。早先它是靠
+        `next(entry.status == "paused")` 从队列里猜的，而队列第一个元素是目标
+        任务、状态直接取自目标时间槽。切换到一个此前已被暂停的任务（界面上带
+        「恢复」标签的候选）时，目标自己就是 paused，于是猜到的是目标而不是源，
+        真正的源任务落不进保留名单，剩余工时被静默丢弃：排程报成功，任务却一个
+        时间槽都没有。源任务必须直接记下来，不能靠状态反推。
+        """
+        return self.source_task_id
 
     @property
     def queue_dependencies(self) -> list[tuple[int, int]]:
@@ -99,7 +110,7 @@ def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot,
     for group in intermediate_groups:
         queue.append(PauseSwitchQueueEntry(group[0].task, None, slot_minutes(group), group[0].status, group[0]))
         queue.extend(_followup_entries(intermediate_followups.get(group[0].task_id, [])))
-    return PauseSwitchContext(switch_time, queue_end, replaceable, queue)
+    return PauseSwitchContext(switch_time, queue_end, replaceable, queue, source_slot.task_id)
 
 
 def _split_intermediate_followups(
