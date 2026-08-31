@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from app.domain.errors import DomainConflictError
+
 from app.core.config import get_settings
 from app.models import Task, TimeSlot
 from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
@@ -14,6 +16,10 @@ from app.services.schedule_slot_change_log_service import record_slot_created
 from app.services.instrument_working_time_service import WorkingTimeContext
 
 ACTIVE_EXECUTION_STATUSES = {"running", "paused", "interrupted"}
+
+
+class ScheduleSlotPersistError(DomainConflictError):
+    """排程结果落地时发现任务缺少仪器分配。"""
 
 
 def persist_slots(
@@ -56,7 +62,15 @@ def persist_slots(
             continue
         assigned_instrument = _assigned_instrument(task, instruments, solver, presences)
         if task.requires_instrument and assigned_instrument is None:
-            continue
+            # 求解模型对每个仪器任务都下了 AddExactlyOne，正常情况下必定分到一台
+            # 仪器。走到这里说明这个任务压根没进模型，它的工时会凭空消失——旧代码
+            # 在这里直接 continue，于是排程"成功"返回、任务的时间槽却一个都没有，
+            # 剩余工时还挂在账上。这违背了"排不下必须当场报失败"的原则，宁可让
+            # 整次排程回滚，也不能悄悄把活弄丢。
+            raise ScheduleSlotPersistError(
+                f"排程结果缺少任务【{task.name}】的仪器分配，本次排程未落地。"
+                f"该任务仍有未完成工时，请重新排程或调整项目时间窗。"
+            )
 
         if task.allow_split:
             created += _persist_split_task_slots(
