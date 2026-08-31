@@ -55,6 +55,7 @@
       <TodayTaskCards
         v-if="activeTab === 'active'"
         :tasks="tasks"
+        :acting-id="actingId"
         @start="handleStart"
         @complete="handleComplete"
         @pause="handlePause"
@@ -484,6 +485,10 @@ function getEarlyCompletionMinutes(record: WorkspaceTask) {
 async function submitComplete(record: WorkspaceTask, releaseInstrument: boolean) {
   const slotId = actionableSlotId(record)
   if (!slotId) return false
+  // 完成任务会触发资源释放重排，实测要二三十秒。这段时间没有重入保护的话，
+  // 反复点击会让多个请求各自跑一遍重排、各自落一份时间槽，同一任务留下多份
+  // 完全重叠的副本。服务端已加行锁兜底，这里挡住请求本身。
+  if (actingId.value !== null) return false
   actingId.value = slotId
   try {
     const result = await completeTask(slotId, { release_instrument: releaseInstrument })

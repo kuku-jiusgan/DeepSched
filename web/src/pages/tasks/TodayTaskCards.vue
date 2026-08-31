@@ -47,7 +47,15 @@
               >
                 <PlayCircleOutlined /> {{ card.actionStatus === 'paused' ? '恢复任务' : '开始任务' }}
               </a-button>
-              <a-button v-if="canCompleteTask(card.task)" v-operation.readonly="'complete'" size="small" class="workspace-action-button workspace-action-button-success" @click="emit('complete', card.task)">确认完成</a-button>
+              <a-button
+                v-if="canCompleteTask(card.task)"
+                v-operation.readonly="'complete'"
+                size="small"
+                class="workspace-action-button workspace-action-button-success"
+                :loading="isActing(card.task)"
+                :disabled="isBusy"
+                @click="emit('complete', card.task)"
+              >确认完成</a-button>
               <a-button
                 v-if="canPauseTask(card.task)"
                 v-operation.readonly="'pause'"
@@ -174,6 +182,8 @@ type TodayCardGroupKey = TodayCardCategory
 
 interface Props {
   tasks: WorkspaceTask[]
+  /** 正在提交的时间槽 id：对应按钮进入加载态，其余操作按钮禁用，避免重复提交。 */
+  actingId?: number | null
 }
 
 interface TodayTaskCard {
@@ -224,6 +234,13 @@ interface DelayForm {
 }
 
 const props = defineProps<Props>()
+
+// 有请求在途时禁用全部操作按钮，正在提交的那一个显示加载态。完成任务的重排
+// 要跑二三十秒，没有反馈用户就会反复点击，重复请求会各自落一份时间槽。
+const isBusy = computed(() => props.actingId !== null && props.actingId !== undefined)
+function isActing(task: WorkspaceTask) {
+  return props.actingId !== null && props.actingId === actionableSlotId(task)
+}
 const emit = defineEmits<{
   start: [task: WorkspaceTask]
   complete: [task: WorkspaceTask]
