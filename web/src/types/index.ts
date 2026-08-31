@@ -52,6 +52,8 @@ export interface ProjectHoursTask {
   actual_end: string | null;
   schedule_judgement: string;
   delay_hours: number;
+  /** 该任务全部未作废夜跑时间槽的时长合计，父任务按子任务汇总。 */
+  night_run_hours: number;
   pause_count: number;
   pause_reasons: string[];
 }

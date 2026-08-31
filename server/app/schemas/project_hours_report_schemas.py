@@ -22,6 +22,7 @@ class ProjectHoursTaskOut(BaseModel):
     actual_end: datetime | None = None
     schedule_judgement: str
     delay_hours: float
+    night_run_hours: float = 0.0
     pause_count: int
     pause_reasons: list[str]
 

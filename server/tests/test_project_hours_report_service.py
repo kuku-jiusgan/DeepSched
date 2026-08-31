@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Project, Task, User
+from app.models import Project, Task, TimeSlot, User
 from app.services.project_hours_report_service import build_project_hours_report, export_project_hours_report
 
 
@@ -34,6 +34,35 @@ class ProjectHoursReportServiceTest(unittest.TestCase):
 
     def tearDown(self):
         self.db.close()
+
+    @patch("app.services.project_hours_report_service.task_actual_hours_map", return_value={})
+    def test_night_run_hours_sum_per_task_and_roll_up(self, _actual_hours_map):
+        """夜间运行小时数取时间槽自然时长，作废的槽不计，父任务按子任务汇总。"""
+        from datetime import datetime
+        self.db.add_all([
+            # 方法验证的两段夜跑：20:00-次日 8:30 共 12.5h，再加 3h
+            TimeSlot(id=1, task_id=3, plan_start=datetime(2026, 9, 1, 20, 0),
+                     plan_end=datetime(2026, 9, 2, 8, 30), is_night_run=True,
+                     status="completed", lifecycle_status="active"),
+            TimeSlot(id=2, task_id=3, plan_start=datetime(2026, 9, 2, 20, 0),
+                     plan_end=datetime(2026, 9, 2, 23, 0), is_night_run=True,
+                     status="completed", lifecycle_status="active"),
+            # 已作废的夜跑不计
+            TimeSlot(id=3, task_id=3, plan_start=datetime(2026, 9, 3, 20, 0),
+                     plan_end=datetime(2026, 9, 4, 8, 0), is_night_run=True,
+                     status="cancelled", lifecycle_status="superseded"),
+            # 非夜跑不计
+            TimeSlot(id=4, task_id=3, plan_start=datetime(2026, 9, 4, 8, 30),
+                     plan_end=datetime(2026, 9, 4, 17, 30), is_night_run=False,
+                     status="completed", lifecycle_status="active"),
+        ])
+        self.db.commit()
+
+        tasks = {t.task_name: t for t in build_project_hours_report(self.db, self.user).items[0].tasks}
+
+        self.assertEqual(15.5, tasks["方法验证"].night_run_hours)
+        self.assertEqual(0.0, tasks["方案撰写"].night_run_hours)
+        self.assertEqual(15.5, tasks["LCMS方法开发"].night_run_hours)
 
     @patch("app.services.project_hours_report_service.task_actual_hours_map")
     def test_rolls_up_project_and_parent_actual_hours(self, actual_hours_map):

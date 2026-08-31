@@ -197,6 +197,7 @@ const taskColumns: TableColumnsType<ProjectHoursTask> = [
   { title: '实际工时(h)', dataIndex: 'actual_hours', key: 'actual_hours', width: 100, align: 'right' },
   { title: '系统判定', dataIndex: 'schedule_judgement', key: 'schedule_judgement', width: 110 },
   { title: '延期小时数', dataIndex: 'delay_hours', key: 'delay_hours', width: 100 },
+  { title: '夜间运行小时数', dataIndex: 'night_run_hours', key: 'night_run_hours', width: 130, align: 'right' },
   { title: '暂停次数', dataIndex: 'pause_count', key: 'pause_count', width: 90 },
   { title: '延期/暂停原因', dataIndex: 'pause_reasons', key: 'pause_reasons', width: 240 },
 ]

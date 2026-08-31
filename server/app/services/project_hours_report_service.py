@@ -42,7 +42,8 @@ def build_project_hours_report(
     pauses_by_task = _pauses_by_task(db, task_ids)
     delay_reasons_by_task = _delay_reasons_by_task(db, task_ids)
     delay_hours_by_task = _delay_hours_by_task(db, task_ids)
-    items = [_project_item(project, leaf_actual_hours, slots_by_task, pauses_by_task, delay_reasons_by_task, delay_hours_by_task) for project in projects]
+    night_run_hours_by_task = _night_run_hours_by_task(slots_by_task)
+    items = [_project_item(project, leaf_actual_hours, slots_by_task, pauses_by_task, delay_reasons_by_task, delay_hours_by_task, night_run_hours_by_task) for project in projects]
     items.sort(key=lambda item: item.project_code)
     return ProjectHoursReportOut(
         generated_at=datetime.now(),
@@ -64,24 +65,24 @@ def export_project_hours_report(report: ProjectHoursReportOut) -> BytesIO:
             item.start_date, item.end_date, _project_status_label(item.project_status), item.task_count, item.planned_hours, item.actual_hours, item.variance_hours,
         ])
     detail = workbook.create_sheet("任务明细")
-    _append_header(detail, ["项目编号", "项目名称", "任务名称", "层级", "负责人", "仪器编号", "计划开始", "计划结束", "实际开始", "实际完成", "任务状态", "预计工时(h)", "实际工时(h)", "系统判定", "延期小时数", "暂停次数", "延期/暂停原因"])
+    _append_header(detail, ["项目编号", "项目名称", "任务名称", "层级", "负责人", "仪器编号", "计划开始", "计划结束", "实际开始", "实际完成", "任务状态", "预计工时(h)", "实际工时(h)", "系统判定", "延期小时数", "夜间运行小时数", "暂停次数", "延期/暂停原因"])
     for item in report.items:
         for task in item.tasks:
             detail.append([
                 item.project_code, item.project_name, f"{'  ' * task.depth}{task.task_name}", task.depth + 1,
                 task.assignee_name or "", "、".join(task.instrument_codes), task.planned_start, task.planned_end,
                 task.actual_start, task.actual_end, _task_status_label(task.status), task.planned_hours, task.actual_hours,
-                task.schedule_judgement, task.delay_hours, task.pause_count, "；".join(task.pause_reasons),
+                task.schedule_judgement, task.delay_hours, task.night_run_hours, task.pause_count, "；".join(task.pause_reasons),
             ])
     _format_sheet(summary, [16, 24, 20, 16, 20, 20, 14, 10, 14, 14, 14])
-    _format_sheet(detail, [16, 24, 32, 10, 16, 16, 18, 18, 18, 18, 14, 14, 14, 12, 10, 10, 30])
+    _format_sheet(detail, [16, 24, 32, 10, 16, 16, 18, 18, 18, 18, 14, 14, 14, 12, 10, 14, 10, 30])
     output = BytesIO()
     workbook.save(output)
     output.seek(0)
     return output
 
 
-def _project_item(project, leaf_actual_hours: dict[int, float], slots_by_task: dict, pauses_by_task: dict, delay_reasons_by_task: dict, delay_hours_by_task: dict) -> ProjectHoursItemOut:
+def _project_item(project, leaf_actual_hours: dict[int, float], slots_by_task: dict, pauses_by_task: dict, delay_reasons_by_task: dict, delay_hours_by_task: dict, night_run_hours_by_task: dict) -> ProjectHoursItemOut:
     tasks = [task for task in project.tasks if not task.is_external_gate]
     task_by_parent: dict[int | None, list] = {}
     for task in tasks:
@@ -95,6 +96,17 @@ def _project_item(project, leaf_actual_hours: dict[int, float], slots_by_task: d
             children = task_by_parent.get(task.id, [])
             actual_cache[task.id] = sum(actual_hours(child) for child in children) if children else leaf_actual_hours.get(task.id, 0.0)
         return actual_cache[task.id]
+
+    night_run_cache: dict[int, float] = {}
+
+    def night_run_hours(task) -> float:
+        if task.id not in night_run_cache:
+            children = task_by_parent.get(task.id, [])
+            night_run_cache[task.id] = (
+                sum(night_run_hours(child) for child in children) if children
+                else night_run_hours_by_task.get(task.id, 0.0)
+            )
+        return night_run_cache[task.id]
 
     rows: list[ProjectHoursTaskOut] = []
 
@@ -122,6 +134,7 @@ def _project_item(project, leaf_actual_hours: dict[int, float], slots_by_task: d
             planned_start=planned_start, planned_end=planned_end,
             actual_start=actual_start, actual_end=actual_end,
             schedule_judgement=judgement, delay_hours=round(delay_hours_by_task.get(task.id, 0.0), 2),
+            night_run_hours=round(night_run_hours(task), 2),
             pause_count=len(pause_reasons), pause_reasons=pause_reasons,
         ))
         for child in task_by_parent.get(task.id, []):
@@ -147,6 +160,26 @@ def _project_item(project, leaf_actual_hours: dict[int, float], slots_by_task: d
         variance_hours=round(actual - planned, 2),
         tasks=rows,
     )
+
+
+def _night_run_hours_by_task(slots_by_task: dict[int, list]) -> dict[int, float]:
+    """每个任务的夜间运行小时数。
+
+    只统计未作废的夜跑时间槽——作废的槽属于被推翻的旧计划，计进来会重复。
+    这里用时间槽的自然时长而不是有效工时：夜跑整段都在工作时段之外，按工作
+    日历折算的话恒为 0，而我们要的正是这段被排除在工时口径之外的占用时长。
+    """
+    result: dict[int, float] = {}
+    for task_id, slots in slots_by_task.items():
+        hours = sum(
+            (slot.plan_end - slot.plan_start).total_seconds() / 3600
+            for slot in slots
+            if slot.is_night_run and slot.lifecycle_status == "active"
+            and slot.plan_start and slot.plan_end
+        )
+        if hours:
+            result[task_id] = hours
+    return result
 
 
 def _slots_by_task(db, task_ids: set[int]) -> dict[int, list]:
