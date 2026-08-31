@@ -1,6 +1,7 @@
 from typing import Iterable, Optional
 
 from app.models import Instrument, TimeSlot
+from app.services.instrument_occupancy_service import current_occupying_slot
 from app.services.schedule_slot_change_log_service import record_slot_deleted, supersede_slot
 
 
@@ -75,7 +76,11 @@ def delete_time_slot_and_refresh(db, slot: TimeSlot) -> None:
 
 
 def _has_running_slot(db, instrument_id: int) -> bool:
-    return db.query(TimeSlot.id).filter(
-        TimeSlot.instrument_id == instrument_id,
-        TimeSlot.status == "running",
-    ).first() is not None
+    """仪器是否真的在跑。
+
+    这里必须与首页仪器状态用同一个判定，否则两处会给出互相矛盾的结论。
+    早先只看 `TimeSlot.status == "running"`，既不过滤生命周期，也不要求时间槽
+    真的开始了、还没结束：一个被「暂停切换重排」作废掉的槽仍然带着 running
+    状态，就会让仪器在甘特图上永远显示运行中，而首页显示空闲。
+    """
+    return current_occupying_slot(db, instrument_id) is not None
