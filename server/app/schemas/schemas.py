@@ -389,6 +389,14 @@ class TaskPauseRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
     target_slot_id: Optional[int] = None
 
+class CancelledNightRunOut(BaseModel):
+    project_code: str
+    task_name: str
+    assignee_name: Optional[str] = None
+    plan_start: datetime
+    plan_end: datetime
+
+
 class TaskSwitchCandidateOut(BaseModel):
     slot_id: int
     task_id: int
@@ -399,6 +407,8 @@ class TaskSwitchCandidateOut(BaseModel):
     plan_start: datetime
     plan_end: datetime
     is_paused: bool = False
+    # 切到这个目标会被一并作废的夜间运行。取消是静默发生的，必须在确认前告诉操作者。
+    cancelled_night_runs: List[CancelledNightRunOut] = []
 
 # ---- Schedule ----
 class ScheduleGenerateRequest(BaseModel):

@@ -46,6 +46,21 @@
             </div>
           </a-select-option>
         </a-select>
+        <a-alert
+          v-if="cancelledNightRuns.length"
+          type="warning"
+          show-icon
+          class="pause-night-run-alert"
+        >
+          <template #message>本次切换将取消以下夜间运行</template>
+          <template #description>
+            <div v-for="run in cancelledNightRuns" :key="`${run.project_code}-${run.plan_start}`">
+              {{ run.project_code }} · {{ run.task_name }}（{{ run.assignee_name || '未指派' }}）
+              {{ formatWindow(run) }}
+            </div>
+            <div class="pause-night-run-hint">仪器让给接替任务后这段夜跑无法进行，如仍需要请切换完成后重新登记。</div>
+          </template>
+        </a-alert>
         <a-empty
           v-if="!isLoadingCandidates && !candidates.length"
           :image="simpleImage"
@@ -90,6 +105,10 @@ const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 const reason = ref('')
 const targetSlotId = ref<number | undefined>()
 const candidates = ref<TaskSwitchCandidate[]>([])
+// 夜跑被作废后不会自动恢复（求解器不产出夜跑标记），确认前必须让操作者看到代价。
+const cancelledNightRuns = computed(
+  () => candidates.value.find(item => item.slot_id === targetSlotId.value)?.cancelled_night_runs ?? [],
+)
 const isLoadingCandidates = ref(false)
 const isSubmitting = ref(false)
 
@@ -165,8 +184,8 @@ function close() {
   if (!isSubmitting.value) emit('update:open', false)
 }
 
-function formatWindow(candidate: TaskSwitchCandidate) {
-  return `${dayjs(candidate.plan_start).format('MM-DD HH:mm')}–${dayjs(candidate.plan_end).format('MM-DD HH:mm')}`
+function formatWindow(window: { plan_start: string; plan_end: string }) {
+  return `${dayjs(window.plan_start).format('MM-DD HH:mm')}–${dayjs(window.plan_end).format('MM-DD HH:mm')}`
 }
 </script>
 
@@ -188,6 +207,15 @@ function formatWindow(candidate: TaskSwitchCandidate) {
 
 .pause-candidate-empty {
   margin: 12px 0 0;
+}
+
+.pause-night-run-alert {
+  margin: 12px 0 0;
+}
+
+.pause-night-run-hint {
+  margin-top: 6px;
+  opacity: 0.75;
 }
 
 .pause-task-actions {

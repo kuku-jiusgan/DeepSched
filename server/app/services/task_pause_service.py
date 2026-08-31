@@ -48,7 +48,7 @@ def list_switch_candidates(db, source_slot_id: int) -> list[dict]:
         if task.requires_human and task.assignee_id is None:
             continue
         seen_task_ids.add(task.id)
-        candidates.append(_candidate_out(slot, task))
+        candidates.append(_candidate_out(slot, task, _cancelled_night_runs(db, source_slot, slot)))
     return candidates
 
 
@@ -315,7 +315,35 @@ def _elapsed_execution_minutes(
     return max(0, int(hours * 60))
 
 
-def _candidate_out(slot: TimeSlot, task: Task) -> dict:
+def _cancelled_night_runs(db, source_slot: TimeSlot, target_slot: TimeSlot) -> list[dict]:
+    """切到这个目标会被一并作废的夜间运行。
+
+    暂停切换会把尚未发生的时间槽全部推翻重排，其中的夜跑槽被作废后不会自动
+    恢复——求解器不产出夜跑标记。取消本身是合理的（仪器已经让给别的项目，
+    今晚这台机器跑不了原来的活），但不能悄无声息，得在确认前摆出来。
+    """
+    from app.services.task_pause_switch_context_service import build_pause_switch_context
+
+    try:
+        context = build_pause_switch_context(db, source_slot, target_slot, datetime.now())
+    except Exception:  # 预览用途，算不出来就不提示，绝不能挡住候选列表
+        return []
+    runs = []
+    for slot in context.replaceable_slots:
+        if not slot.is_night_run or slot.task is None:
+            continue
+        project = slot.task.project
+        runs.append({
+            "project_code": project.code if project else "-",
+            "task_name": slot.task.name,
+            "assignee_name": slot.task.assignee_name,
+            "plan_start": slot.plan_start,
+            "plan_end": slot.plan_end,
+        })
+    return runs
+
+
+def _candidate_out(slot: TimeSlot, task: Task, cancelled_night_runs: list[dict]) -> dict:
     project = task.project
     return {
         "slot_id": slot.id,
@@ -327,4 +355,5 @@ def _candidate_out(slot: TimeSlot, task: Task) -> dict:
         "plan_start": slot.plan_start,
         "plan_end": slot.plan_end,
         "is_paused": task.status == "paused",
+        "cancelled_night_runs": cancelled_night_runs,
     }

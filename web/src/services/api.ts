@@ -335,6 +335,14 @@ export const completeTask = (
 export const interruptTask = (slotId: number): Promise<{ status: string }> =>
   api.post(`/schedules/timeslots/${slotId}/interrupt`).then(r => r.data);
 
+export interface CancelledNightRun {
+  project_code: string
+  task_name: string
+  assignee_name: string | null
+  plan_start: string
+  plan_end: string
+}
+
 export interface TaskSwitchCandidate {
   slot_id: number
   task_id: number
@@ -345,6 +353,8 @@ export interface TaskSwitchCandidate {
   plan_start: string
   plan_end: string
   is_paused: boolean
+  /** 切到这个目标会被一并作废的夜间运行，取消后需要重新登记。 */
+  cancelled_night_runs: CancelledNightRun[]
 }
 
 export const getTaskSwitchCandidates = (slotId: number): Promise<TaskSwitchCandidate[]> =>
