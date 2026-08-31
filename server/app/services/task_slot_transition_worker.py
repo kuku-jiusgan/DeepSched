@@ -68,7 +68,9 @@ def advance_running_tasks(db, now: datetime) -> int:
                 slot.actual_end = slot.actual_end or max(slot.plan_end, slot.actual_start)
                 changed += 1
         for slot in slots:
-            if slot.status == "running" and slot.actual_start is None:
+            # 必须卡住"计划开始时刻已到"，否则会给未来的时间槽写上未来的实际
+            # 开始时间，等于宣称一件还没发生的事已经发生。
+            if slot.status == "running" and slot.actual_start is None and slot.plan_start <= now:
                 slot.actual_start = slot.plan_start
                 changed += 1
         current = next((slot for slot in slots if slot.plan_start <= now < slot.plan_end), None)

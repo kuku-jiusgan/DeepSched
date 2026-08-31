@@ -121,7 +121,11 @@ def _merge_or_create_night_slot(
         plan_end=end_time,
         is_night_run=True,
         tier=slot.tier,
-        status=slot.status,
+        # 夜跑往往是给今晚登记的，开始时刻还没到。直接继承源槽的 running，
+        # 会让一个尚未发生的时间槽以「运行中」入库，随后被时间槽推进器填上
+        # 一个未来的实际开始时间，暂停切换再想作废它就会撞上"已发生时间槽
+        # 不可被替代"。到点后由推进器负责翻成运行中。
+        status=slot.status if start_time <= datetime.now() else "scheduled",
     )
     db.add(night_slot)
     db.flush()
