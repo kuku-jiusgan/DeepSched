@@ -165,17 +165,18 @@ def _project_item(project, leaf_actual_hours: dict[int, float], slots_by_task: d
 def _night_run_hours_by_task(slots_by_task: dict[int, list]) -> dict[int, float]:
     """每个任务的夜间运行小时数。
 
-    只统计未作废的夜跑时间槽——作废的槽属于被推翻的旧计划，计进来会重复。
-    这里用时间槽的自然时长而不是有效工时：夜跑整段都在工作时段之外，按工作
-    日历折算的话恒为 0，而我们要的正是这段被排除在工时口径之外的占用时长。
+    传进来的已经是现行时间槽（_slots_by_task 统一过滤掉了作废的），这里不再
+    重复判断，避免两处口径将来各改各的。
+
+    用时间槽的自然时长而不是有效工时：夜跑整段都在工作时段之外，按工作日历
+    折算恒为 0，而我们要的正是这段被排除在工时口径之外的仪器占用时长。
     """
     result: dict[int, float] = {}
     for task_id, slots in slots_by_task.items():
         hours = sum(
             (slot.plan_end - slot.plan_start).total_seconds() / 3600
             for slot in slots
-            if slot.is_night_run and slot.lifecycle_status == "active"
-            and slot.plan_start and slot.plan_end
+            if slot.is_night_run and slot.plan_start and slot.plan_end
         )
         if hours:
             result[task_id] = hours
@@ -183,10 +184,22 @@ def _night_run_hours_by_task(slots_by_task: dict[int, list]) -> dict[int, float]
 
 
 def _slots_by_task(db, task_ids: set[int]) -> dict[int, list]:
+    """任务的现行时间槽。
+
+    必须排除已作废的槽。报表的计划开始／计划结束是对这批槽取最早开始和最晚
+    结束，把历次被推翻的版本混进来，得到的就不是某一版计划，而是所有版本的
+    并集——头取自一个版本、尾取自另一个版本，这个区间从未真实存在过，还会
+    让系统判定被旧版本宽松的结束时间掩盖成「正常」。仪器编号同理会列出旧版本
+    才用到的仪器。甘特图、首页和仪器占用判定用的都是这个条件。
+    """
     result: dict[int, list] = {}
     if not task_ids:
         return result
-    for slot in db.query(TimeSlot).filter(TimeSlot.task_id.in_(task_ids)).all():
+    slots = db.query(TimeSlot).filter(
+        TimeSlot.task_id.in_(task_ids),
+        TimeSlot.lifecycle_status == "active",
+    ).all()
+    for slot in slots:
         result.setdefault(slot.task_id, []).append(slot)
     return result
 

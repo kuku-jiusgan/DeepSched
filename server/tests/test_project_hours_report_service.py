@@ -36,6 +36,49 @@ class ProjectHoursReportServiceTest(unittest.TestCase):
         self.db.close()
 
     @patch("app.services.project_hours_report_service.task_actual_hours_map", return_value={})
+    def test_superseded_slots_do_not_widen_the_planned_window(self, _actual_hours_map):
+        """计划开始／结束只看现行时间槽。
+
+        任务被反复重排后会留下大量作废槽。若把它们一起取极值，得到的是历次
+        版本的并集——开始取自一个版本、结束取自另一个版本，这个区间从未真实
+        存在过，还会用旧版本宽松的结束时间把系统判定掩盖成「正常」。
+        """
+        from datetime import datetime
+        self.db.add_all([
+            TimeSlot(id=10, task_id=3, plan_start=datetime(2026, 8, 28, 13, 0),
+                     plan_end=datetime(2026, 8, 28, 14, 0), instrument_id=None,
+                     status="cancelled", lifecycle_status="superseded"),
+            TimeSlot(id=11, task_id=3, plan_start=datetime(2026, 8, 28, 15, 30),
+                     plan_end=datetime(2026, 8, 28, 16, 30), instrument_id=None,
+                     status="scheduled", lifecycle_status="active"),
+            TimeSlot(id=12, task_id=3, plan_start=datetime(2026, 9, 28, 18, 0),
+                     plan_end=datetime(2026, 9, 28, 18, 30), instrument_id=None,
+                     status="cancelled", lifecycle_status="superseded"),
+        ])
+        self.db.commit()
+
+        task = {t.task_name: t for t in build_project_hours_report(self.db, self.user).items[0].tasks}["方法验证"]
+
+        self.assertEqual(datetime(2026, 8, 28, 15, 30), task.planned_start)
+        self.assertEqual(datetime(2026, 8, 28, 16, 30), task.planned_end)
+
+    @patch("app.services.project_hours_report_service.task_actual_hours_map", return_value={})
+    def test_task_with_only_superseded_slots_has_no_planned_window(self, _actual_hours_map):
+        """时间槽全部作废的任务当前没有排程，计划时间留空而不是回退到旧版本。"""
+        from datetime import datetime
+        self.db.add(TimeSlot(
+            id=20, task_id=2, plan_start=datetime(2026, 8, 21, 15, 30),
+            plan_end=datetime(2026, 8, 31, 16, 0),
+            status="cancelled", lifecycle_status="superseded",
+        ))
+        self.db.commit()
+
+        task = {t.task_name: t for t in build_project_hours_report(self.db, self.user).items[0].tasks}["方案撰写"]
+
+        self.assertIsNone(task.planned_start)
+        self.assertIsNone(task.planned_end)
+
+    @patch("app.services.project_hours_report_service.task_actual_hours_map", return_value={})
     def test_night_run_hours_sum_per_task_and_roll_up(self, _actual_hours_map):
         """夜间运行小时数取时间槽自然时长，作废的槽不计，父任务按子任务汇总。"""
         from datetime import datetime
