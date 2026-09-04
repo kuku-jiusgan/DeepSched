@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from heapq import heappop, heappush
-from itertools import combinations
 from time import monotonic
 from app.models import Project
 from app.services.schedule_snapshot import SimulationContext
@@ -34,35 +33,21 @@ def enumerate_verified_date_adjustments(
     if not can_help:
         return []
     results: list[dict] = []
-    search_order = _search_order(project_ids, original_deadlines)
-    for size in range(1, len(project_ids) + 1):
-        for selected in combinations(search_order, size):
-            if monotonic() >= search_deadline:
-                return _sort_results(results)
-            if any(set(item["projects"]) < set(selected) for item in results):
-                continue
-            adjustment = _first_verified_adjustment(
-                db, scheduler, selected, candidates, generate_kwargs, search_deadline,
-                simulation_context,
-            )
-            if adjustment:
-                results.append(_format_adjustment(
-                    adjustment, original_deadlines, project_labels or {}, priorities,
-                ))
-                if len(results) >= MAX_RECOMMENDATIONS:
-                    return _sort_results(results)
-                if size > 1:
-                    # 多项目档拿到一个方案就收工，不再穷举同档其余组合。实测一次
-                    # 搜索：单项目档 306 次试解全部不可行（约 35 秒），两项目档第
-                    # 1 次试解就成了，之后 836 次全是白跑，白白吃掉 85 秒预算，
-                    # 一个备选也没凑出来。单项目档仍然逐个项目试完——"单独延 A"
-                    # 和"单独延 B"是两个真正可选的方案，值得都摆出来。
-                    break
-        # 改一个项目的合同日永远优于改两个，前端也把多项目方案标成"需要一起
-        # 调整"的退让选项。这一档已经有方案，再往下搜只会得到更差的组合，却要
-        # 把用户晾在"计算中"里等满整个预算。
-        if results:
+    # 每个项目单独出一套方案：只动它一个，其余项目原地不动，求它最短要延几天。
+    # 方案之间互相独立，不存在"这 2 个项目需要一起调整"的组合方案——那种方案
+    # 看不出每个项目为什么被牵进来，业务上也没法执行。扫到求解视界仍找不到可行
+    # 日期的项目，直接不出方案。
+    for project_id in _search_order(project_ids, original_deadlines):
+        if monotonic() >= search_deadline:
             break
+        adjustment = _first_verified_adjustment(
+            db, scheduler, (project_id,), candidates, generate_kwargs, search_deadline,
+            simulation_context,
+        )
+        if adjustment:
+            results.append(_format_adjustment(
+                adjustment, original_deadlines, project_labels or {}, priorities,
+            ))
     return _sort_results(results)
 
 
@@ -211,11 +196,13 @@ def _format_adjustment(
 
 
 def _sort_results(results: list[dict]) -> list[dict]:
+    """按延期天数从小到大排。
+
+    天数相同时，优先推低优先级的项目——同样延 2 天，动三级项目比动一级项目
+    代价小。最后按项目号兜底，保证同样的输入永远给出同样的顺序。
+    """
     return sorted(results, key=lambda item: (
-        tuple(sorted(
-            (-next(change["project_priority"] for change in item["changes"] if change["project_id"] == project_id), project_id)
-            for project_id in item["projects"]
-        )),
-        len(item["projects"]), sum(change["delay_days"] for change in item["changes"]),
-        tuple(change["suggested_deadline"] for change in item["changes"]),
+        sum(change["delay_days"] for change in item["changes"]),
+        -max(change["project_priority"] for change in item["changes"]),
+        tuple(item["projects"]),
     ))[:MAX_RECOMMENDATIONS]

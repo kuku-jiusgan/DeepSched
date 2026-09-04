@@ -45,7 +45,12 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
         self.assertTrue(all(result["verified"] for result in results))
         self.assertEqual(2, results[0]["changes"][0]["delay_days"])
 
-    def test_returns_combination_when_single_adjustment_cannot_succeed(self):
+    def test_no_plan_when_no_single_project_alone_can_succeed(self):
+        """只有"两个一起延"才可行时，不输出任何方案。
+
+        组合方案看不出每个项目为什么被牵进来，业务上也没法执行——宁可告诉人
+        单独延谁都不行，也不给一张各延一天的表。
+        """
         results = self.enumerate_with(
             lambda _db, _scheduler, changes, _kwargs: (
                 set(changes) == {1, 2}
@@ -53,12 +58,10 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(1, len(results))
-        self.assertEqual([1, 2], results[0]["projects"])
-        self.assertEqual(3, sum(change["delay_days"] for change in results[0]["changes"]))
+        self.assertEqual([], results)
 
-    def test_excludes_superset_of_successful_single_adjustment(self):
-        """有了单项目方案就不再搜多项目组合——改一个合同日永远优于改两个。"""
+    def test_never_probes_a_multi_project_combination(self):
+        """除了开头那次"最宽松"预检，绝不试多项目组合。"""
         calls = []
 
         def validator(_db, _scheduler, changes, _kwargs):
@@ -68,7 +71,19 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
         results = self.enumerate_with(validator)
 
         self.assertEqual([[1]], [result["projects"] for result in results])
-        self.assertNotIn([1, 2], calls[1:])      # calls[0] 是预检，之后不再试组合
+        self.assertTrue(all(len(item) == 1 for item in calls[1:]), calls)
+
+    def test_plans_are_sorted_by_delay_days(self):
+        """项目 2 只要延 1 天，项目 1 要延 3 天——先给代价小的那个。"""
+        results = self.enumerate_with(
+            lambda _db, _scheduler, changes, _kwargs: all(
+                (date.date() - self.deadline.date()).days >= (3 if project_id == 1 else 1)
+                for project_id, date in changes.items()
+            )
+        )
+
+        self.assertEqual([[2], [1]], [result["projects"] for result in results])
+        self.assertEqual([1, 3], [result["changes"][0]["delay_days"] for result in results])
 
     def test_returns_empty_when_horizon_contains_no_solution(self):
         results = self.enumerate_with(

@@ -161,4 +161,3 @@
 /* 调整方案里的卡片嵌在方案框内，标题下留出间距，且不与右上角的「求解器已验证」
    挤在一起。 */
 .schedule-failure-recommendation .impact-card { margin-top: 8px; background: #fff; }
-.schedule-failure-recommendation-note { margin: 3px 0 0; }

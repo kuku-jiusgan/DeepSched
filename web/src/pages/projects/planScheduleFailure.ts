@@ -71,11 +71,9 @@ function occupancyTable(rows: ScheduleFailureOccupancy[]) {
 function recommendationBody(row: ScheduleFailureRecommendation) {
   const changes = row.changes ?? []
   if (!changes.length) return [h('p', row.description)]
+  // 每套方案只调整一个项目，方案之间互相独立——后端不再产出"几个项目一起调整"
+  // 的组合方案，那种方案看不出每个项目为什么被牵进来，业务上也没法执行。
   return [
-    // 搜索是从"只改一个项目"开始试的，能给出多项目方案说明单改一个排不下。
-    ...(changes.length > 1
-      ? [h('p', { class: 'schedule-failure-recommendation-note' }, `这 ${changes.length} 个项目需要一起调整。`)]
-      : []),
     ...changes.map(change => impactCard(change.project_label, [
       { label: '原结题日', value: change.original_deadline },
       { label: '建议结题日', value: change.suggested_deadline },
