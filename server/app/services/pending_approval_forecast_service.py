@@ -11,10 +11,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+
+from sqlalchemy.orm import joinedload
 
 from app.models import Project, Task, TaskDependency, TimeSlot
-from app.services.schedule_working_time_service import working_time_chunks
+from app.services.instrument_working_time_service import load_working_time_context
+from app.services.schedule_working_time_service import (
+    _CHUNK_DAYS as CHUNK_WINDOW_DAYS,
+    working_time_chunks,
+)
 from app.services.task_progress_service import remaining_task_minutes
 
 
@@ -30,6 +36,15 @@ def pending_approval_segments(db) -> list[dict]:
         instrument_id for _task, instrument_id in tasks
     })
     branch_ends = _branch_schedule_ends(db, [task for task, _i in tasks])
+    # 十几个任务共用一份工作时间上下文。逐个任务各建一份的话，每份都要重查排程
+    # 规则、全部仪器和工作日历。范围从最早的锚点起铺满一个切段窗口，走出去的
+    # 任务由 working_time_chunks 自己重建。
+    earliest = min(
+        [*(value for value in anchors.values() if value), *branch_ends.values(), datetime.now()]
+    )
+    working_context = load_working_time_context(
+        db, earliest, earliest + timedelta(days=CHUNK_WINDOW_DAYS * 2),
+    )
     segments = []
     for instrument_id, items in _group_by_instrument(tasks).items():
         cursor = anchors.get(instrument_id) or datetime.now()
@@ -44,7 +59,7 @@ def pending_approval_segments(db) -> list[dict]:
                 continue
             # 按工作日切段：一整段画过去会盖住周末和夜间，而排程本身也是按
             # 工作日切成多个时间槽的，预测不切段就跟真实排程长得不一样。
-            chunks = working_time_chunks(db, cursor, hours, instrument_id)
+            chunks = working_time_chunks(db, cursor, hours, instrument_id, working_context)
             if not chunks:
                 continue
             for index, (chunk_start, chunk_end) in enumerate(chunks):
@@ -88,7 +103,10 @@ def _unscheduled_downstream_tasks(db) -> list[tuple[Task, int]]:
     # 只对已经进入排程的项目做预测。一个连方法开发都还没排的项目，谈不上
     # "签批后接着做"，把它的方法验证画到时间轴上会挤在别人前面、误导判断。
     planned_projects = _projects_with_active_slots(db)
-    tasks_by_id = {task.id: task for task in db.query(Task).filter(Task.id.in_(
+    # 铺排时每段都要读 task.project 的编号和名称，不预加载就是每个任务一次查询。
+    tasks_by_id = {task.id: task for task in db.query(Task).options(
+        joinedload(Task.project),
+    ).filter(Task.id.in_(
         task_ids | _neighbour_ids(task_ids, successors, predecessors),
     )).all()}
     result = []

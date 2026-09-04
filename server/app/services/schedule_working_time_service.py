@@ -133,6 +133,7 @@ def working_time_chunks(
     start: datetime,
     hours: float,
     instrument_id: int | None = None,
+    context=None,
 ) -> list[tuple[datetime, datetime]]:
     """把 hours 个有效工时按天切成若干段，每段落在当天的工作时段内。
 
@@ -148,12 +149,19 @@ def working_time_chunks(
     walked_days = 0
     while walked_days < MAX_ADVANCE_DAYS and remaining_seconds > 0:
         chunk_end = cursor + timedelta(days=_CHUNK_DAYS)
-        context = load_working_time_context(db, cursor, chunk_end)
-        policy = context.policy_for(instrument_id)
+        # 调用方可以传一份共用的上下文进来，省掉"每个任务重查一遍排程规则、
+        # 全部仪器和工作日历"——待签批预测一次要为十几个任务铺工时，实测那一处
+        # 占掉接口 439 毫秒里的大半。只有当它确实覆盖到本次要走的窗口时才复用，
+        # 走出范围就照常重建，避免拿不全的日历算出错误的工作日。
+        active = (
+            context if context is not None and chunk_end <= context.horizon_end
+            else load_working_time_context(db, cursor, chunk_end)
+        )
+        policy = active.policy_for(instrument_id)
         for _ in range(_CHUNK_DAYS):
             if remaining_seconds <= 0:
                 return chunks
-            window_start, window_end = _day_window(cursor, policy, context.calendar_days)
+            window_start, window_end = _day_window(cursor, policy, active.calendar_days)
             if window_end is not None:
                 available = (window_end - window_start).total_seconds()
                 used = min(available, remaining_seconds)
