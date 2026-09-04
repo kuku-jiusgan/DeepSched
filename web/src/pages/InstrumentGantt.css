@@ -199,11 +199,15 @@
   border-left-width: 4px;
   background-image: repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.28) 0 5px, transparent 5px 10px);
 }
-.gantt-bar.is-bridge-reservation.status-scheduled,
-.gantt-bar.is-bridge-reservation.status-paused {
+.gantt-bar.is-bridge-reservation.status-scheduled {
   color: #475569;
   border-left-color: #94a3b8;
   background-color: #f8fafc;
+}
+.gantt-bar.is-bridge-reservation.status-paused {
+  color: #b45309;
+  border-left-color: #d97706;
+  background-color: #fffbeb;
 }
 .gantt-bar.is-bridge-reservation.status-running {
   color: #047857;
@@ -315,11 +319,14 @@
   border: 1px solid #bfdbfe;
   border-left-color: #2563eb;
 }
+/* 暂停用琥珀黄：原先和待执行、已阻塞同为石板灰，三种状态在图上分不出来。
+   取的是仪器「维护」状态标签已经在用的那一组琥珀色，不再往调色盘里引入第二种黄；
+   与延期标记的红、运行中的绿、已完成的蓝也都拉得开。 */
 .status-paused {
-  background: #f8fafc;
-  color: #475569;
-  border: 1px solid #cbd5e1;
-  border-left-color: #94a3b8;
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+  border-left-color: #d97706;
 }
 .bar-actual-execution {
   position: absolute;

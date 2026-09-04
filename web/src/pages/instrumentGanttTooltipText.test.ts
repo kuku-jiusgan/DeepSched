@@ -37,7 +37,7 @@ describe('仪器甘特图悬浮框时间文案', () => {
 
   it('任务没完成时实际结束按任务状态给文字，不拿本段结束兜底', () => {
     const item = slot({
-      task_actual_end: null,
+      task_actual_end: undefined,
       actual_end: '2026-09-03T04:00:00',
       task_status: 'paused',
     })
@@ -52,9 +52,9 @@ describe('仪器甘特图悬浮框时间文案', () => {
   })
 
   it('本段实际按这一条时间槽算，未开始和进行中各有文案', () => {
-    expect(slotActualRangeText(slot({ actual_start: null, actual_end: null }))).toBe('未开始')
+    expect(slotActualRangeText(slot({ actual_start: undefined, actual_end: undefined }))).toBe('未开始')
     expect(
-      slotActualRangeText(slot({ actual_start: '2026-09-02T08:30:00', actual_end: null })),
+      slotActualRangeText(slot({ actual_start: '2026-09-02T08:30:00', actual_end: undefined })),
     ).toBe('09-02 08:30 – 进行中')
     expect(
       slotActualRangeText(
