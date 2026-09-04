@@ -48,7 +48,13 @@ def rebuild_instrument_bridge_reservations(db, schedule_run_id: str | None = Non
 
 
 def valid_bridge_reservations(db, query) -> list[InstrumentBridgeReservation]:
-    return [reservation for reservation in query.all() if _is_current(db, reservation)]
+    # 逐条判定都要走一遍 _bridge_for_manual_task，而它内部按负责人全库扫描。
+    # 一次请求里共用同一份缓存，同一负责人只扫一次。
+    cache: dict = {}
+    return [
+        reservation for reservation in query.all()
+        if _is_current(db, reservation, cache)
+    ]
 
 
 def historical_bridge_reservations(db, start_date=None, end_date=None) -> list[dict]:
@@ -117,7 +123,11 @@ def stale_bridge_reservation_ids(
     query = db.query(InstrumentBridgeReservation)
     if schedule_run_id is not None:
         query = query.filter(InstrumentBridgeReservation.schedule_run_id == schedule_run_id)
-    return [reservation.id for reservation in query.all() if not _is_current(db, reservation)]
+    cache: dict = {}
+    return [
+        reservation.id for reservation in query.all()
+        if not _is_current(db, reservation, cache)
+    ]
 
 
 def invalidate_task_bridge_reservations(db, task_id: int) -> int:
@@ -179,7 +189,7 @@ def _bridge_for_manual_task(db, slot: TimeSlot, cache: dict | None = None) -> tu
     return previous, following
 
 
-def _is_current(db, reservation: InstrumentBridgeReservation) -> bool:
+def _is_current(db, reservation: InstrumentBridgeReservation, cache: dict | None = None) -> bool:
     source = db.query(TimeSlot).filter(
         TimeSlot.task_id == reservation.task_id,
         TimeSlot.instrument_id.is_(None),
@@ -190,7 +200,7 @@ def _is_current(db, reservation: InstrumentBridgeReservation) -> bool:
     ).first()
     if source is None:
         return False
-    bridge = _bridge_for_manual_task(db, source)
+    bridge = _bridge_for_manual_task(db, source, cache)
     return bool(
         bridge
         and bridge[0].task_id == reservation.previous_task_id

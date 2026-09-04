@@ -321,6 +321,13 @@ class TaskNightRun(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
+    __table_args__ = (
+        # 审计表原先只有主键。按目标查影响快照（仪器故障）、按动作查最近的暂停
+        # 切换和延期上报，都要在几千行上全表扫描，而且是逐条对象各扫一次——
+        # 仪器故障接口 7 条数据就要 289 毫秒。
+        Index("ix_audit_log_target", "target_type", "target_id", "action"),
+        Index("ix_audit_log_action_time", "action", "created_at"),
+    )
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_name = Column(String(100), nullable=False)
     action = Column(String(50), nullable=False)

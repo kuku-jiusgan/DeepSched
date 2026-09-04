@@ -86,6 +86,18 @@ def ensure_runtime_schema(engine) -> None:
                 connection.execute(text("ALTER TABLE task ADD COLUMN plan_order INTEGER NOT NULL DEFAULT 0"))
             if "schedule_dirty" not in task_columns:
                 connection.execute(text("ALTER TABLE task ADD COLUMN schedule_dirty BOOLEAN DEFAULT 0"))
+    if "audit_log" in table_names:
+        existing = {index["name"] for index in inspector.get_indexes("audit_log")}
+        with engine.begin() as connection:
+            if "ix_audit_log_target" not in existing:
+                connection.execute(text(
+                    "CREATE INDEX ix_audit_log_target ON audit_log "
+                    "(target_type, target_id, action)"
+                ))
+            if "ix_audit_log_action_time" not in existing:
+                connection.execute(text(
+                    "CREATE INDEX ix_audit_log_action_time ON audit_log (action, created_at)"
+                ))
     if "task_dependency" in table_names:
         dependency_columns = {column["name"] for column in inspector.get_columns("task_dependency")}
         with engine.begin() as connection:
