@@ -148,3 +148,49 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BinarySearchOverCandidateDatesTest(unittest.TestCase):
+    """按候选日期二分，而不是逐天顺序试。
+
+    延后结题日是单调放松：某天可行则更晚的天必然可行。逐天扫的代价全压在
+    「其实没有解」的项目上——必须一路试到求解视界才能断言单独延它不行。实测
+    一次搜索里三个这样的项目吃掉了 227 次试解。
+    """
+
+    def setUp(self):
+        self.deadline = datetime(2026, 9, 1, 23, 59)
+        self.originals = {1: self.deadline}
+        self.horizon_end = self.deadline + timedelta(days=64)   # 64 个候选日期
+        self.calls = []
+
+    def enumerate_with(self, first_feasible_offset):
+        def probe(_db, _scheduler, changes, _kwargs):
+            self.calls.append(changes)
+            offset = (next(iter(changes.values())).date() - self.deadline.date()).days
+            if first_feasible_offset is None:
+                # 全程超时：预检不是"证明不可行"，所以搜索会照常往下走，
+                # 二分要自己把整个候选区间收完才能断言没有方案。
+                return UNDETERMINED
+            return FEASIBLE if offset >= first_feasible_offset else INFEASIBLE
+
+        with patch(
+            "app.services.scheduler_deadline_recommendation._probe_deadlines",
+            side_effect=probe,
+        ):
+            return enumerate_verified_date_adjustments(
+                object(), object(), [1], self.originals, self.horizon_end, {}, {1: "项目一"},
+            )
+
+    def test_finds_the_smallest_feasible_delay(self):
+        results = self.enumerate_with(first_feasible_offset=37)
+
+        self.assertEqual(1, len(results))
+        self.assertEqual(37, results[0]["changes"][0]["delay_days"])
+
+    def test_proves_no_solution_within_logarithmic_probes(self):
+        results = self.enumerate_with(first_feasible_offset=None)
+
+        self.assertEqual([], results)
+        # 64 个候选：二分 7 次足够，加上开头那次最宽松预检。逐天扫要 64 次。
+        self.assertLessEqual(len(self.calls), 9, len(self.calls))

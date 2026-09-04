@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from heapq import heappop, heappush
 from time import monotonic
 from app.models import Project
 from app.services.schedule_snapshot import SimulationContext
@@ -41,7 +40,7 @@ def enumerate_verified_date_adjustments(
         if monotonic() >= search_deadline:
             break
         adjustment = _first_verified_adjustment(
-            db, scheduler, (project_id,), candidates, generate_kwargs, search_deadline,
+            db, scheduler, project_id, candidates, generate_kwargs, search_deadline,
             simulation_context,
         )
         if adjustment:
@@ -97,39 +96,40 @@ def _search_order(project_ids: list[int], original_deadlines: dict[int, datetime
 
 
 def _first_verified_adjustment(
-    db, scheduler, selected, candidates, generate_kwargs, search_deadline,
+    db, scheduler, project_id: int, candidates, generate_kwargs, search_deadline,
     simulation_context: SimulationContext | None = None,
 ):
-    if any(not candidates[project_id] for project_id in selected):
-        return None
-    initial = tuple(0 for _ in selected)
-    queue = [(len(selected), initial)]
-    visited = {initial}
-    while queue:
+    """二分找这个项目最短要延几天，找不到返回 None。
+
+    延后结题日只放宽任务的完工上界，是单调放松：某个日期可行，则更晚的日期必然
+    可行。于是候选序列上"前面全不可行、后面全可行"，可以二分。
+
+    逐天顺序试的代价全压在「其实没有解」的项目上——必须一路试到求解视界才能断言
+    单独延它不行。实测一次搜索里三个这样的项目吃掉了 227 次试解，二分每个 7 次
+    就能得到同样结论。
+
+    5 秒没算出结论的（undetermined）当作"尚未证明可行"往右找。这样返回的日期
+    仍然是求解器验证过可行的，只是真正的最小值那天恰好超时时会比它晚一点——
+    逐天扫也有同样的问题，只是每次只跳一天。
+    """
+    dates = candidates.get(project_id) or []
+    low, high = 0, len(dates) - 1
+    found = None
+    while low <= high:
         if monotonic() >= search_deadline:
-            return None
-        _cost, indexes = heappop(queue)
-        adjustment = {
-            project_id: candidates[project_id][indexes[index]]
-            for index, project_id in enumerate(selected)
-        }
+            break
+        middle = (low + high) // 2
+        adjustment = {project_id: dates[middle]}
         if simulation_context is None:
             status = _probe_deadlines(db, scheduler, adjustment, generate_kwargs)
         else:
             status = _probe_deadlines(db, scheduler, adjustment, generate_kwargs, simulation_context)
         if status == FEASIBLE:
-            return adjustment
-        for index, project_id in enumerate(selected):
-            next_indexes = list(indexes)
-            next_indexes[index] += 1
-            candidate_indexes = tuple(next_indexes)
-            if (
-                candidate_indexes not in visited
-                and next_indexes[index] < len(candidates[project_id])
-            ):
-                visited.add(candidate_indexes)
-                heappush(queue, (sum(item + 1 for item in candidate_indexes), candidate_indexes))
-    return None
+            found = middle
+            high = middle - 1
+        else:
+            low = middle + 1
+    return {project_id: dates[found]} if found is not None else None
 
 
 def _load_project_priorities(db, project_ids: list[int]) -> dict[int, int]:
