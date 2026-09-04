@@ -414,3 +414,32 @@ class SchedulerFixedSlotsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SnapshotBridgeReservationRangeTest(unittest.TestCase):
+    """快照适配出来的桥接预留必须走"计划区间"那条分支。
+
+    桥接预留没有 status / actual_*，占用区间就是计划区间。原先靠
+    isinstance(InstrumentBridgeReservation) 判断，而快照适配出来的是
+    SimpleNamespace，过不了这道判断就掉进时间槽分支去读 slot.status，
+    整个方案搜索作业当场 AttributeError 失败——前台则一直停在"计算中"。
+    """
+
+    def test_snapshot_bridge_reservation_uses_planned_range(self):
+        from app.services.schedule_snapshot import BridgeReservationSnapshot
+        from app.services.scheduler_fixed_slots import (
+            _fixed_slot_range,
+            snapshot_bridge_reservations,
+        )
+
+        start = datetime(2026, 9, 10, 8, 30)
+        end = datetime(2026, 9, 10, 12, 30)
+        rows = snapshot_bridge_reservations([
+            BridgeReservationSnapshot(
+                id=1, task_id=2, instrument_id=3,
+                previous_task_id=None, following_task_id=None,
+                plan_start=start, plan_end=end,
+            ),
+        ])
+
+        self.assertEqual((start, end), _fixed_slot_range(rows[0]))

@@ -34,7 +34,9 @@ def snapshot_fixed_slots(snapshot_slots) -> list:
 
 
 def _fixed_slot_range(slot: TimeSlot | InstrumentBridgeReservation) -> tuple[datetime, datetime]:
-    if isinstance(slot, InstrumentBridgeReservation):
+    if isinstance(slot, InstrumentBridgeReservation) or getattr(
+        slot, "is_bridge_reservation", False,
+    ):
         return slot.plan_start, slot.plan_end
     if slot.status == "completed":
         return slot.actual_start, slot.actual_end
@@ -144,6 +146,10 @@ def snapshot_bridge_reservations(rows) -> list:
             id=row.id, task_id=row.task_id, instrument_id=row.instrument_id,
             previous_task_id=row.previous_task_id, following_task_id=row.following_task_id,
             plan_start=row.plan_start, plan_end=row.plan_end,
+            # 桥接预留没有 status/actual_*，占用区间就是计划区间。快照适配出来的
+            # 是 SimpleNamespace，过不了 isinstance(InstrumentBridgeReservation)
+            # 那道判断，会掉进时间槽分支去读 slot.status 而报 AttributeError。
+            is_bridge_reservation=True,
         )
         for row in rows
     ]
