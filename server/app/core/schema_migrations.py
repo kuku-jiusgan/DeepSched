@@ -89,29 +89,18 @@ def ensure_runtime_schema(engine) -> None:
     if "task_dependency" in table_names:
         dependency_columns = {column["name"] for column in inspector.get_columns("task_dependency")}
         with engine.begin() as connection:
+            # 回填只在刚加出这一列时做一次。此前它每次启动都无条件跑，用的规则还
+            # 比权威判定松（不看父分组、允许方法开发→撰写报告这种交叉配对），会把
+            # 写入时刚按规则算对的普通前置又改回连续后续。
             if "dependency_type" not in dependency_columns:
                 connection.execute(text(
                     "ALTER TABLE task_dependency ADD COLUMN dependency_type VARCHAR(30) "
                     "NOT NULL DEFAULT 'predecessor'"
                 ))
-            if engine.dialect.name == "mysql":
-                connection.execute(text(
-                    "UPDATE task_dependency AS dependency "
-                    "JOIN task AS child ON child.id = dependency.task_id "
-                    "JOIN task AS parent ON parent.id = dependency.predecessor_id "
-                    "SET dependency.dependency_type = 'continuous_successor' "
-                    "WHERE child.task_type IN ('QCFA_001', 'ZXBG_001') "
-                    "AND parent.task_type IN ('FFKF_001', 'FFYZ_001')"
-                ))
-            else:
-                connection.execute(text(
-                    "UPDATE task_dependency SET dependency_type = 'continuous_successor' "
-                    "WHERE task_id IN (SELECT child.id FROM task child "
-                    "JOIN task parent ON parent.id = task_dependency.predecessor_id "
-                    "WHERE child.task_type IN ('QCFA_001', 'ZXBG_001') "
-                    "AND parent.task_type IN ('FFKF_001', 'FFYZ_001'))"
-                ))
+                _backfill_continuous_successor_types(connection, engine.dialect.name)
+            if engine.dialect.name != "mysql":
                 connection.execute(text("UPDATE task SET schedule_dirty = 0 WHERE schedule_dirty IS NULL"))
+
             if "delay_status" not in task_columns:
                 connection.execute(text(
                     "ALTER TABLE task ADD COLUMN delay_status VARCHAR(20) DEFAULT 'not_delayed'"
@@ -330,3 +319,33 @@ def ensure_runtime_schema(engine) -> None:
                 "WHERE task.project_id = project.id AND time_slot.actual_start IS NOT NULL"
                 ")"
             ))
+
+
+def _backfill_continuous_successor_types(connection, dialect_name: str) -> None:
+    """给刚建出来的 dependency_type 回填一次连续后续。
+
+    条件与 task_dependency_service.is_valid_continuous_successor 一致：同项目、
+    同一个父分组、且类型正好是（方法开发→起草方案）或（方法验证→撰写报告）。
+    松于这个规则会造出消费方运行时又要丢弃的关系。
+    """
+    pairs = "(parent.task_type, child.task_type) IN (('FFKF_001', 'QCFA_001'), ('FFYZ_001', 'ZXBG_001'))"
+    shared_group = (
+        "parent.project_id = child.project_id "
+        "AND parent.parent_id IS NOT NULL AND parent.parent_id = child.parent_id"
+    )
+    if dialect_name == "mysql":
+        connection.execute(text(
+            "UPDATE task_dependency AS dependency "
+            "JOIN task AS child ON child.id = dependency.task_id "
+            "JOIN task AS parent ON parent.id = dependency.predecessor_id "
+            "SET dependency.dependency_type = 'continuous_successor' "
+            f"WHERE {shared_group} AND {pairs}"
+        ))
+        return
+    connection.execute(text(
+        "UPDATE task_dependency SET dependency_type = 'continuous_successor' "
+        "WHERE EXISTS (SELECT 1 FROM task child JOIN task parent "
+        "ON parent.id = task_dependency.predecessor_id "
+        "WHERE child.id = task_dependency.task_id "
+        f"AND {shared_group} AND {pairs})"
+    ))

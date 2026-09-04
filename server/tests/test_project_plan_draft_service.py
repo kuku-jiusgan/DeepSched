@@ -109,6 +109,93 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
         self.assertEqual("客户方案签批", updated.name)
         self.assertEqual(self.gate_owner.id, updated.assignee_id)
 
+    def test_commit_marks_continuous_successor_inside_one_group(self):
+        """手工建任务命中规则时，保存当下就记成连续后续，不用等启动脚本回填。"""
+        data = ProjectPlanDraftCommitIn(tasks=[
+            self._task(-1, "标准计划", "group", None),
+            self._task(-2, "方法开发", "FFKF_001", 10, parent_id=-1, instrument_ids=[1]),
+            self._task(-3, "方案撰写", "QCFA_001", 2, predecessors=[-2], parent_id=-1),
+            self._task(-4, "方法验证", "FFYZ_001", 8, parent_id=-1, instrument_ids=[1]),
+            self._task(-5, "报告撰写", "ZXBG_001", 2, predecessors=[-4], parent_id=-1),
+        ])
+
+        commit_project_plan_drafts(self.db, 1, data, self.manager)
+
+        by_name = {
+            task.name: task
+            for task in self.db.query(Task).filter(Task.project_id == 1).all()
+        }
+        types = {
+            (item.predecessor_id, item.task_id): item.dependency_type
+            for item in self.db.query(TaskDependency).all()
+        }
+        self.assertEqual(
+            "continuous_successor",
+            types[(by_name["方法开发"].id, by_name["方案撰写"].id)],
+        )
+        self.assertEqual(
+            "continuous_successor",
+            types[(by_name["方法验证"].id, by_name["报告撰写"].id)],
+        )
+
+    def test_commit_keeps_plain_predecessor_when_rule_does_not_hold(self):
+        """顶级任务之间、以及交叉配对，都只记成普通前置。"""
+        data = ProjectPlanDraftCommitIn(tasks=[
+            self._task(-1, "标准计划", "group", None),
+            self._task(-2, "方法开发", "FFKF_001", 10, parent_id=-1, instrument_ids=[1]),
+            # 同一分组但配对不对：方法开发 → 撰写报告不成立。
+            self._task(-3, "报告撰写", "ZXBG_001", 2, predecessors=[-2], parent_id=-1),
+            # 类型配对对，但两个都是顶级任务，没有父分组。
+            self._task(-4, "顶层方法验证", "FFYZ_001", 8, instrument_ids=[1]),
+            self._task(-5, "顶层报告撰写", "ZXBG_001", 2, predecessors=[-4]),
+        ])
+
+        commit_project_plan_drafts(self.db, 1, data, self.manager)
+
+        by_name = {
+            task.name: task
+            for task in self.db.query(Task).filter(Task.project_id == 1).all()
+        }
+        types = {
+            (item.predecessor_id, item.task_id): item.dependency_type
+            for item in self.db.query(TaskDependency).all()
+        }
+        self.assertEqual(
+            "predecessor", types[(by_name["方法开发"].id, by_name["报告撰写"].id)],
+        )
+        self.assertEqual(
+            "predecessor",
+            types[(by_name["顶层方法验证"].id, by_name["顶层报告撰写"].id)],
+        )
+
+    def test_task_plan_edit_upgrades_plain_predecessor_when_rule_holds(self):
+        """规则新成立时要升级。此前只降级不升级，手工连的关系永远补不上。"""
+        parent = Task(project_id=self.project.id, name="标准计划", task_type="group")
+        method = Task(
+            project_id=self.project.id, parent=parent, name="方法开发",
+            task_type="FFKF_001", status="scheduled",
+        )
+        scheme = Task(
+            project_id=self.project.id, parent=parent, name="方案撰写",
+            task_type="QCFA_001", status="scheduled",
+        )
+        self.db.add_all([parent, method, scheme])
+        self.db.flush()
+        self.db.add(TaskDependency(
+            task_id=scheme.id, predecessor_id=method.id, dependency_type="predecessor",
+        ))
+        self.db.commit()
+
+        update_task_plan(
+            self.db, scheme.id, TaskUpdate(predecessor_ids=[method.id]),
+        )
+
+        dependency = self.db.query(TaskDependency).filter(
+            TaskDependency.task_id == scheme.id,
+            TaskDependency.predecessor_id == method.id,
+        ).one()
+        self.assertEqual("continuous_successor", dependency.dependency_type)
+
     def test_task_plan_edit_preserves_continuous_successor_dependency_type(self):
         parent = Task(
             project_id=self.project.id, name="标准计划", task_type="group",

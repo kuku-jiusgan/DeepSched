@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.models import AuditLog, Instrument, Project, Task, TaskDependency, TaskTypeConfig, User
+from app.services.task_dependency_service import resolve_dependency_type
 from app.schemas.project_plan_draft_schemas import (
     ProjectPlanDraftCommitIn,
     ProjectPlanDraftCommitOut,
@@ -100,13 +101,22 @@ def commit_project_plan_drafts(
         id_map[item.client_id] = task.id
         created_by_client_id[item.client_id] = task
 
+    # 先把父子层级全部落定，再判前置关系的类型。连续后续要求两个任务在同一个父
+    # 分组下，同一批里作为前置的那个任务如果排在后面，此刻它的父任务还没赋值，
+    # 混在一个循环里会把本该成立的关系判成普通前置。
+    for item in data.tasks:
+        created_by_client_id[item.client_id].parent_id = _resolve_id(item.parent_id, id_map)
+    db.flush()
     for item in data.tasks:
         task = created_by_client_id[item.client_id]
-        task.parent_id = _resolve_id(item.parent_id, id_map)
         for predecessor_id in sorted(set(item.predecessor_ids)):
+            resolved_id = _resolve_id(predecessor_id, id_map)
             db.add(TaskDependency(
                 task_id=task.id,
-                predecessor_id=_resolve_id(predecessor_id, id_map),
+                predecessor_id=resolved_id,
+                dependency_type=resolve_dependency_type(
+                    db.query(Task).filter(Task.id == resolved_id).first(), task,
+                ),
             ))
     db.flush()
     for item in data.tasks:

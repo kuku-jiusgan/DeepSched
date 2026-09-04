@@ -28,7 +28,7 @@ from app.services.project_date_service import (
     normalize_project_start,
     validate_project_window,
 )
-from app.services.task_dependency_service import is_valid_continuous_successor
+from app.services.task_dependency_service import resolve_dependency_type
 from app.services.project_reference_validation_service import (
     ProjectReferenceInvalidError,
     validate_task_references,
@@ -438,24 +438,15 @@ def _downstream_tasks(db, task: Task) -> list[Task]:
 
 def _replace_dependencies(db, task_id: int, predecessor_ids: list[int]) -> None:
     task = db.query(Task).filter(Task.id == task_id).first()
-    existing_types = {
-        dependency.predecessor_id: dependency.dependency_type
-        for dependency in db.query(TaskDependency).filter(
-            TaskDependency.task_id == task_id,
-        ).all()
-    }
     db.query(TaskDependency).filter(TaskDependency.task_id == task_id).delete()
     for predecessor_id in sorted(set(predecessor_ids)):
-        dependency_type = existing_types.get(predecessor_id, "predecessor")
+        # 按规则重算而不是沿用旧类型：改父分组、改任务类型都会让一条关系从成立变
+        # 不成立，反过来也一样。此前只降级不升级，规则新成立的关系永远补不上。
         predecessor = db.query(Task).filter(Task.id == predecessor_id).first()
-        if dependency_type == "continuous_successor" and (
-            not task or not predecessor or not is_valid_continuous_successor(predecessor, task)
-        ):
-            dependency_type = "predecessor"
         db.add(TaskDependency(
             task_id=task_id,
             predecessor_id=predecessor_id,
-            dependency_type=dependency_type,
+            dependency_type=resolve_dependency_type(predecessor, task),
         ))
 
 
