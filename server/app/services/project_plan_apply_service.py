@@ -17,6 +17,7 @@ from app.services.project_plan_apply_helpers import (
     load_approval_resource_queue_tasks,
     plan_fingerprint,
 )
+from app.services.scheduler_persistence import ACTIVE_EXECUTION_STATUSES
 from app.services.task_delay_status_service import reset_task_delay
 from app.services.schedule_priority_dependency_service import build_schedule_priority_dependencies
 from app.services.schedule_slot_protection_service import task_has_immovable_slot
@@ -218,8 +219,15 @@ def _execute_replan(
     # 的任务，工时会被记进预测工时列，仪器占用凭空变成 0。先留一份快照。
     released_slots = _released_slot_intervals(db, replan_task_ids)
     _delete_movable_slots(db, replan_task_ids)
+    # 顺延这些任务的时间是对的，改它们的执行状态不是。暂停/进行中的任务原本也允许
+    # 被顺延（候选筛选特意放行了 paused），但这里一路重置成 pending、求解后又落成
+    # scheduled，别人项目的一次保存并排程就把这个任务的暂停状态和暂停原因抹掉了。
+    preserved_status_task_ids = {
+        task.id for task in replan_tasks if task.status in ACTIVE_EXECUTION_STATUSES
+    }
     for task in replan_tasks:
-        task.status = "pending"
+        if task.id not in preserved_status_task_ids:
+            task.status = "pending"
         reset_task_delay(task)
     db.flush()
 
@@ -246,6 +254,7 @@ def _execute_replan(
         current_project_id=project.id,
         rollback_on_conflict=rollback_on_failure and not use_savepoint,
         released_slot_intervals=released_slots,
+        preserved_status_task_ids=preserved_status_task_ids,
     )
     if solver_result.get("status") != "ok":
         if savepoint:

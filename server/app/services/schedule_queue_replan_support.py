@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from sqlalchemy import or_
+
 from app.core.config import get_settings
 from app.models import Task, TimeSlot
 from app.services.scheduler_helpers import natural_day_boundary
@@ -11,13 +13,23 @@ from app.services.task_progress_service import remaining_task_minutes
 from app.services.schedule_replan_closure_service import collect_replan_task_ids
 
 
+FORWARD_SHIFT_TASK_STATUSES = ["pending", "scheduled", "blocked", "waiting_external"]
+
+
 def load_forward_shift_candidates(
     db,
     instrument_id: int | None,
     released_at: datetime,
-    assignee_id: int | None = None,
+    assignee_ids: set[int],
+    extra_task_ids: set[int] | None = None,
 ) -> list[Task]:
-    assignee_ids = _affected_assignee_ids(db, instrument_id, assignee_id, released_at)
+    """资源空出来后可以前移的任务。
+
+    extra_task_ids 用来放行本来不在待排状态、但这次确实该跟着前移的任务：仪器
+    故障暂停的任务在维修完成时就是这种情况——它是暂停态，可它停下来的原因刚好
+    是这次被解除的那个，剩余工时必须按真实的维修完成时间前移，而不是留在按预计
+    维修时间排出来的位置上。等样品之类的人工暂停不在这个名单里，不受影响。
+    """
     resource_filter = _resource_filter(instrument_id, assignee_ids)
     if resource_filter is None:
         return []
@@ -41,7 +53,7 @@ def load_forward_shift_candidates(
         .join(TimeSlot, TimeSlot.task_id == Task.id)
         .filter(
             Task.id.in_(closure_ids),
-            Task.status.in_(["pending", "scheduled", "blocked", "waiting_external"]),
+            _candidate_status_filter(extra_task_ids),
             TimeSlot.status == "scheduled",
             TimeSlot.plan_end > released_at,
             TimeSlot.actual_start.is_(None),
@@ -58,7 +70,7 @@ def load_forward_shift_candidates(
     return sorted(tasks.values(), key=lambda task: (first_starts[task.id], task.id))
 
 
-def _affected_assignee_ids(db, instrument_id: int | None, assignee_id: int | None, released_at: datetime) -> set[int]:
+def affected_assignee_ids(db, instrument_id: int | None, assignee_id: int | None, released_at: datetime) -> set[int]:
     assignee_ids = {assignee_id} if assignee_id is not None else set()
     if instrument_id is None:
         return assignee_ids
@@ -86,13 +98,29 @@ def _resource_filter(instrument_id: int | None, assignee_ids: set[int]):
     return None
 
 
+def _candidate_status_filter(extra_task_ids: set[int] | None):
+    allowed = Task.status.in_(FORWARD_SHIFT_TASK_STATUSES)
+    if not extra_task_ids:
+        return allowed
+    return or_(allowed, Task.id.in_(extra_task_ids))
+
+
 def is_movable_task(
     db,
     task: Task,
     instrument_id: int | None,
     released_at: datetime,
-    assignee_id: int | None = None,
+    assignee_ids: set[int],
 ) -> bool:
+    """这个任务能不能整体跟着前移。
+
+    判定用的资源范围必须与挑候选时的一模一样。候选是按"槽在这台仪器上，或者
+    任务的负责人在受影响的负责人里"挑出来的，而这里一度只认调用方显式传进来的
+    那一个负责人：仪器故障提前修好时根本没传，于是被负责人牵连进来的纯人工任务
+    （方案撰写这类不占仪器的活）永远判不movable。队列又是"遇到第一个不能动的
+    就停"，队首恰好是这种任务时，整条队列一个都不前移——现象就是故障顺延了后面
+    的任务，提前修好却没有任何任务回来。
+    """
     frozen = db.query(TimeSlot.id).filter(
         TimeSlot.task_id == task.id,
         TimeSlot.status == "scheduled",
@@ -110,8 +138,17 @@ def is_movable_task(
     ).all()
     return bool(slots) and all(
         (instrument_id is not None and slot.instrument_id == instrument_id)
-        or (assignee_id is not None and task.assignee_id == assignee_id)
+        or _belongs_to_affected_assignee(task, assignee_ids)
         for slot in slots
+    )
+
+
+def _belongs_to_affected_assignee(task: Task, assignee_ids: set[int]) -> bool:
+    """与 _resource_filter 的负责人分支保持逐字一致，两边不能各判各的。"""
+    return bool(
+        task.requires_human
+        and task.assignee_id is not None
+        and task.assignee_id in assignee_ids
     )
 
 

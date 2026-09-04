@@ -432,6 +432,9 @@ def _enrich_slot(
 
 
 def _slot_execution_status(slot: TimeSlot, task: Task | None) -> str:
+    # 口径统一：时间槽的显示状态跟着任务当前状态走，历史段不按各自结果单独显示。
+    # 曾经把"被暂停打断的那一段"固定成暂停，但同样跑过的、正常做到收工的段仍然
+    # 跟着任务显示运行中，两种历史段一冻一跟，反而不一致。
     if task and task.status == "running":
         return "running"
     if slot.status == "running" and slot.actual_start is not None and slot.actual_end is None:

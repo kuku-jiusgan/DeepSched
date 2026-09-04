@@ -20,8 +20,11 @@ def load_scheduler_data(
     # 剔出求解——签批哪天通过没有依据，不给它们钉具体位置，改为收窄所在项目的
     # 完工上界（见 scheduler_pending_approval）。等其他外部事件的任务不受影响，
     # 照常参与求解。外部签批节点本身始终排除，它不占用仪器与人员。
+    # 暂停和中断的任务也要载入求解：它们只是现在没在做，位置照样该参与重排，
+    # 不载入的话它们的时间槽就钉死在原地，别的任务只能绕着排。状态由
+    # scheduler_persistence 保住，不会被改写成待排。
     schedulable_status = or_(
-        Task.status.in_(["pending", "ready"]),
+        Task.status.in_(["pending", "ready", "paused", "interrupted"]),
         and_(
             Task.status == "waiting_external",
             Task.predecessors.any(),

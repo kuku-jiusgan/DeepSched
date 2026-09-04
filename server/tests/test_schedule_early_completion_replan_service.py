@@ -11,6 +11,11 @@ from app.models import Instrument, Project, Task, TimeSlot, User
 from app.services.schedule_early_completion_replan_service import (
     replan_released_resource_queue,
 )
+from app.services.schedule_queue_replan_support import (
+    affected_assignee_ids,
+    is_movable_task,
+    load_forward_shift_candidates,
+)
 
 
 class EarlyCompletionReplanServiceTest(unittest.TestCase):
@@ -129,6 +134,47 @@ class EarlyCompletionReplanServiceTest(unittest.TestCase):
         self.assertEqual("error", result["status"])
         self.assertEqual(0, result["moved_tasks"])
         self.assertEqual([], result["moved_task_details"])
+
+    def test_human_task_pulled_in_by_assignee_can_still_move(self):
+        """被负责人牵连进来的纯人工任务也要判成可前移。
+
+        队列是"遇到第一个不能动的就停"。方案撰写这类不占仪器的活是靠负责人进的
+        候选，如果判定时只认显式传进来的那个负责人（仪器故障提前修好时根本不传），
+        它永远不能动，恰好排在队首就把整条队列卡死——故障顺延了后面的任务，提前
+        修好却一个都不回来。
+        """
+        instrument_task = self._task("后续仪器任务", 2, requires_instrument=True)
+        self._slot(
+            instrument_task,
+            datetime(2026, 8, 26, 14, 0),
+            datetime(2026, 8, 26, 16, 0),
+        )
+        writing = self._task("方案撰写", 2, requires_instrument=False)
+        self.db.add(TimeSlot(
+            task=writing,
+            instrument_id=None,
+            plan_start=datetime(2026, 8, 26, 10, 0),
+            plan_end=datetime(2026, 8, 26, 11, 0),
+            status="scheduled",
+        ))
+        self.db.commit()
+        released_at = datetime(2026, 8, 26, 8, 30)
+
+        assignee_ids = affected_assignee_ids(
+            self.db, self.instrument.id, None, released_at,
+        )
+        candidates = load_forward_shift_candidates(
+            self.db, self.instrument.id, released_at, assignee_ids,
+        )
+
+        self.assertEqual(
+            [writing.id, instrument_task.id], [task.id for task in candidates],
+        )
+        self.assertTrue(
+            is_movable_task(
+                self.db, writing, self.instrument.id, released_at, assignee_ids,
+            )
+        )
 
     def _task(self, name, project_number, requires_instrument):
         project = self.first_project if project_number == 1 else self.next_project

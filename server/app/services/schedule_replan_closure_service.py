@@ -8,6 +8,11 @@ from app.models import Task, TaskDependency, TimeSlot
 _ACTIVE_SLOT_STATUSES = ("scheduled", "running", "paused", "blocked", "interrupted")
 
 
+# 暂停和中断的任务也要进重排闭包：它们只是现在没在做，位置照样该跟着让路。
+# 把它们挡在闭包外面，时间槽就钉死在原地，别的任务只能绕着排。
+MOVABLE_TASK_STATUSES = ("pending", "scheduled", "blocked", "waiting_external", "paused", "interrupted")
+
+
 def collect_replan_task_ids(
     db,
     seed_task_ids: set[int],
@@ -36,7 +41,7 @@ def collect_replan_task_ids(
             task_id
             for task_id, in db.query(Task.id).filter(
                 Task.id.in_(dependency_task_ids),
-                Task.status.in_(("pending", "scheduled", "blocked", "waiting_external")),
+                Task.status.in_(MOVABLE_TASK_STATUSES),
             ).all()
         }
         task_ids.update(movable_dependency_ids)
@@ -67,7 +72,7 @@ def _resource_task_ids(db, instrument_ids: set[int], assignee_ids: set[int], rel
         resource_filter = human_filter if resource_filter is None else resource_filter | human_filter
     rows = db.query(Task.id).join(TimeSlot, TimeSlot.task_id == Task.id).filter(
         resource_filter,
-        Task.status.in_(("pending", "scheduled", "blocked", "waiting_external")),
+        Task.status.in_(MOVABLE_TASK_STATUSES),
         TimeSlot.status.in_(_ACTIVE_SLOT_STATUSES),
         TimeSlot.lifecycle_status == "active",
         TimeSlot.plan_end > released_at,

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from app.models import Task, TimeSlot
 from app.services.resource_replan_service import replan_resource_closure
 from app.services.schedule_queue_replan_support import (
+    affected_assignee_ids,
     cross_project_setup_minutes,
     is_movable_task,
     load_forward_shift_candidates,
@@ -21,14 +22,18 @@ def replan_released_resource_queue(
     released_at: datetime,
     assignee_id: int | None = None,
     previous_project_id: int | None = None,
+    extra_task_ids: set[int] | None = None,
 ) -> dict:
     """Replan only movable work after an early completion releases capacity."""
+    # 挑候选和判能不能动，必须用同一个资源范围，否则被负责人牵连进来的人工任务
+    # 会进了候选却永远判不能动，把整条队列卡死。
+    assignee_ids = affected_assignee_ids(db, instrument_id, assignee_id, released_at)
     all_candidates = load_forward_shift_candidates(
-        db, instrument_id, released_at, assignee_id,
+        db, instrument_id, released_at, assignee_ids, extra_task_ids,
     )
     candidates = []
     for candidate in all_candidates:
-        if not is_movable_task(db, candidate, instrument_id, released_at, assignee_id):
+        if not is_movable_task(db, candidate, instrument_id, released_at, assignee_ids):
             # Only a contiguous movable queue prefix may advance. Skipping a
             # fixed task would let later work jump ahead of its queue position.
             break

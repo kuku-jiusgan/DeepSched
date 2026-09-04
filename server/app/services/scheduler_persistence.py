@@ -15,7 +15,12 @@ from app.services.scheduler_helpers import (
 from app.services.schedule_slot_change_log_service import record_slot_created
 from app.services.instrument_working_time_service import WorkingTimeContext
 
-ACTIVE_EXECUTION_STATUSES = {"running", "paused", "interrupted"}
+# 正在跑的任务位置不能动：它此刻真的在仪器上跑着，挪它等于篡改正在发生的事实。
+IMMOVABLE_EXECUTION_STATUSES = {"running"}
+# 暂停/中断只是"现在没在做"，位置照样要参与重排——后面的活要让路时它得跟着动。
+# 必须保住的只是状态，不能被改写成待执行。
+STATUS_PRESERVED_EXECUTION_STATUSES = {"paused", "interrupted"}
+ACTIVE_EXECUTION_STATUSES = IMMOVABLE_EXECUTION_STATUSES | STATUS_PRESERVED_EXECUTION_STATUSES
 
 
 class ScheduleSlotPersistError(DomainConflictError):
@@ -57,8 +62,11 @@ def persist_slots(
             continue
         # Active execution slots are managed by task execution services; a new
         # schedule run must not replace their state with scheduled slots.
-        is_preserved = task.id in preserved_status_task_ids
-        if task.status in ACTIVE_EXECUTION_STATUSES and not is_preserved:
+        is_preserved = (
+            task.id in preserved_status_task_ids
+            or task.status in STATUS_PRESERVED_EXECUTION_STATUSES
+        )
+        if task.status in IMMOVABLE_EXECUTION_STATUSES and not is_preserved:
             continue
         assigned_instrument = _assigned_instrument(task, instruments, solver, presences)
         if task.requires_instrument and assigned_instrument is None:

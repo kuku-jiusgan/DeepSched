@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from app.schemas.schemas import ProjectPlanApplyResponse
 from app.services.project_plan_apply_service import (
+    _execute_replan,
     _has_approved_gate_predecessor,
     _preview_plan_insert,
     apply_project_plan,
@@ -47,6 +48,53 @@ class ProjectPlanApplyTransactionTest(unittest.TestCase):
                 [development.id, writing.id],
                 [task.id for task in result],
             )
+        finally:
+            db.close()
+
+    def test_replan_keeps_paused_task_status(self):
+        """顺延暂停中的任务可以，把它的执行状态一并改掉不行。
+
+        暂停任务本来就允许被顺延（候选筛选放行了 paused），但重排前一路重置成
+        pending、求解后落成 scheduled，别人项目的一次保存并排程就把这个任务的
+        暂停状态和暂停原因抹掉了。
+        """
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        try:
+            project = Project(code="P-PAUSE", name="暂停保护项目", priority=3)
+            db.add(project)
+            db.flush()
+            paused = Task(
+                project_id=project.id, name="方法开发", task_type="test",
+                status="paused", est_duration_hours=4,
+            )
+            waiting = Task(
+                project_id=project.id, name="方案撰写", task_type="manual",
+                status="scheduled", est_duration_hours=1,
+            )
+            db.add_all([paused, waiting])
+            db.commit()
+
+            solver = MagicMock()
+            solver.return_value.generate.return_value = {"status": "ok", "schedule_run_id": "run-1"}
+            with patch("app.services.scheduler.SchedulerService", solver), \
+                 patch("app.services.project_plan_apply_service._project_completions", return_value={}), \
+                 patch("app.services.project_plan_apply_service._pending_approval_workload", return_value={}), \
+                 patch("app.services.project_plan_apply_service.recalculate_project_parent_hours"), \
+                 patch("app.services.project_plan_apply_service.validate_project_estimated_hours"):
+                _execute_replan(
+                    db, project, [waiting], [paused], commit=False,
+                )
+
+            db.refresh(paused)
+            db.refresh(waiting)
+            self.assertEqual("paused", paused.status)
+            self.assertEqual("pending", waiting.status)
+            preserved = solver.return_value.generate.call_args.kwargs[
+                "preserved_status_task_ids"
+            ]
+            self.assertEqual({paused.id}, preserved)
         finally:
             db.close()
 

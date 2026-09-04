@@ -39,7 +39,10 @@ def supersede_replaceable_slots(
         TimeSlot.actual_start.is_(None),
         TimeSlot.actual_end.is_(None),
         TimeSlot.tier != "frozen",
-        TimeSlot.status.in_(("scheduled", "running")),
+        # 暂停任务未开始的时间槽同样可以被重排替换。只认 scheduled/running 的话，
+        # 这些槽永远不会被作废，位置就钉死在原地，别的任务只能绕开它排——上面
+        # 已经限定 actual_start 为空，真正跑过又被打断的那一段不会被动到。
+        TimeSlot.status.in_(("scheduled", "running", "paused", "interrupted")),
     ).all()
     if replaceable_after is not None:
         # A slot crossing the replan boundary still reserves future capacity.
