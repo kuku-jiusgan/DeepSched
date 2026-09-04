@@ -20,6 +20,17 @@ export function taskTreeHasCompletedTask(task: Task): boolean {
     || Boolean(task.children?.some(taskTreeHasCompletedTask))
 }
 
+export function canAddChildTask(task: Task): boolean {
+  // 已经开工或做完的任务不能再挂子任务。挂上去它就从叶子变成任务组，而排程只排
+  // 叶子任务：它自己那些时间槽会脱离排程管理（不再被重排、顺延，故障也挪不动），
+  // 预计工时被子任务汇总覆盖，工时统计里它自己已经做出来的工时也会被子任务之和顶掉。
+  return task.status !== 'running' && !isTaskCompleted(task.status)
+}
+
+export function addChildDisabledReason(task: Task): string {
+  return canAddChildTask(task) ? '添加子任务' : '任务已开始或已完成，不能再添加子任务'
+}
+
 export function gateStatusMeta(status?: string | null) {
   const metadata: Record<string, { label: string; color: string }> = {
     not_submitted: { label: '待提交', color: 'default' },

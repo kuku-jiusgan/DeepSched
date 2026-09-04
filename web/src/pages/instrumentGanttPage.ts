@@ -10,6 +10,7 @@ import { useGanttAutoScroll } from './kanban/useGanttAutoScroll'
 import { useInstrumentGanttData, type InstrumentGanttViewMode } from './useInstrumentGanttData'
 import { buildTrailingDelayRanges } from './instrumentGanttDelayRanges'
 import { displayStartForNonCompletedSlot } from './instrumentGanttSlotTiming'
+import { mergeContinuousSlots } from './instrumentGanttSlotMerge'
 
 const LEFT_WIDTH = 250
 const HEADER_HEIGHT = 50
@@ -246,7 +247,10 @@ const taskDelayRangesMap = computed(() => {
 })
 
 const displaySlots = computed<GanttSlot[]>(() =>
-  mergeContinuousSlots(splitSlotsAroundExecutedOccupancy(toDisplaySlots([...slots.value, ...faultDisplaySlots.value, ...bridgeDisplaySlots.value])))
+  mergeContinuousSlots(
+    splitSlotsAroundExecutedOccupancy(toDisplaySlots([...slots.value, ...faultDisplaySlots.value, ...bridgeDisplaySlots.value])),
+    hasDelay,
+  )
     .filter(slot =>
       dayjs(slot.plan_end).isAfter(dayjs(slot.plan_start))
       || (slot.status === 'running' && slot.actual_start && !slot.actual_end),
@@ -827,42 +831,6 @@ function splitSlotsAroundExecutedOccupancy(sourceSlots: GanttSlot[]): GanttSlot[
     }
     return fragments.length ? fragments : [slot]
   })
-}
-
-function mergeContinuousSlots(sourceSlots: TimeSlot[]): GanttSlot[] {
-  const sortedSlots = sourceSlots.filter((slot): slot is TimeSlot & { instrument_id: number } => slot.instrument_id !== null).sort((a, b) => {
-    if (a.instrument_id !== b.instrument_id) return a.instrument_id - b.instrument_id
-    const startDiff = dayjs(a.plan_start).valueOf() - dayjs(b.plan_start).valueOf()
-    if (startDiff !== 0) return startDiff
-    return a.id - b.id
-  })
-
-  const merged: GanttSlot[] = []
-  for (const slot of sortedSlots) {
-    const lastSlot = merged[merged.length - 1]
-    if (lastSlot && canMergeSlots(lastSlot, slot)) {
-      lastSlot.plan_end = slot.plan_end
-      lastSlot.actual_end = slot.actual_end || lastSlot.actual_end
-      lastSlot.mergedSlotIds = [...(lastSlot.mergedSlotIds || [lastSlot.id]), slot.id]
-      continue
-    }
-    merged.push({ ...slot, mergedSlotIds: [slot.id] })
-  }
-  return merged
-}
-
-function canMergeSlots(current: GanttSlot, next: TimeSlot) {
-  const nextSlot = next as GanttSlot
-  if (current.isBridgeReservation || nextSlot.isBridgeReservation) return false
-  return current.instrument_id === next.instrument_id
-    && current.task_id === next.task_id
-    && current.status === next.status
-    && current.tier === next.tier
-    && !current.isOverdueDisplay
-    && !nextSlot.isOverdueDisplay
-    && !hasDelay(current)
-    && !hasDelay(next)
-    && dayjs(current.plan_end).isSame(dayjs(next.plan_start))
 }
 
 async function switchView(mode: 'day' | 'week' | 'month') {

@@ -122,7 +122,9 @@
               </span>
             </a-space>
             <a-space v-else :size="0">
-              <a-button v-operation="'create_task'" type="link" size="small" @click="openAddTask(record.id)" title="添加子任务"><PlusOutlined /></a-button>
+              <a-tooltip :title="addChildDisabledReason(record)">
+                <a-button v-operation="'create_task'" type="link" size="small" :disabled="!canAddChildTask(record)" @click="openAddTask(record.id)"><PlusOutlined /></a-button>
+              </a-tooltip>
               <a-button v-operation="'edit_task'" type="link" size="small" @click="openEditTask(record)"><EditOutlined /></a-button>
               <span v-operation="'delete_task'">
                 <a-popconfirm :disabled="!canDeleteTask(record)" title="确定删除该任务及其所有子任务？" @confirm="handleDeleteTask(record.id)">
@@ -225,7 +227,7 @@ import { taskStatusLabel } from '@/utils/statusMeta'
 import {
   buildTaskTree, countLeafTasks, gateDateText, gateStatusMeta, getTaskTypeColor,
   localDraftDependsOnTask, parentTaskIds, priorityColor, priorityLabel, sumTaskHours, taskActualHoursText, taskTreeIds,
-  taskInstrumentIds, taskTreeHasCompletedTask,
+  taskInstrumentIds, taskTreeHasCompletedTask, canAddChildTask, addChildDisabledReason,
 } from './planBreakdownUtils'
 import { buildStandardPlanDrafts } from './standardPlanDrafts'
 import { buildLocalTask, type LocalTaskPayload } from './planLocalTaskFactory'

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { Task } from '@/types'
-import { localDraftDependsOnTask, taskTreeIds } from './planBreakdownUtils'
+import {
+  addChildDisabledReason,
+  canAddChildTask,
+  localDraftDependsOnTask,
+  taskTreeIds,
+} from './planBreakdownUtils'
 
 function task(overrides: Partial<Task>): Task {
   const base: Task = {
@@ -52,5 +57,21 @@ describe('本地草稿关联保护', () => {
     ]
 
     expect(taskTreeIds(tasks, 10)).toEqual(new Set([10, 11, -1]))
+  })
+})
+
+describe('已开工任务不能再挂子任务', () => {
+  it('运行中和已完成的任务禁用添加子任务', () => {
+    expect(canAddChildTask(task({ status: 'running' }))).toBe(false)
+    expect(canAddChildTask(task({ status: 'completed' }))).toBe(false)
+    expect(canAddChildTask(task({ status: 'done' }))).toBe(false)
+    expect(addChildDisabledReason(task({ status: 'running' }))).toBe('任务已开始或已完成，不能再添加子任务')
+  })
+
+  it('待排和暂停的任务仍然可以挂子任务', () => {
+    expect(canAddChildTask(task({ status: 'scheduled' }))).toBe(true)
+    expect(canAddChildTask(task({ status: 'pending' }))).toBe(true)
+    expect(canAddChildTask(task({ status: 'paused' }))).toBe(true)
+    expect(addChildDisabledReason(task({ status: 'scheduled' }))).toBe('添加子任务')
   })
 })
