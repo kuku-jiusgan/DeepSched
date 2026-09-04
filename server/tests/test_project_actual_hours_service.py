@@ -48,7 +48,7 @@ class ProjectActualHoursServiceTest(unittest.TestCase):
         self.assertEqual(1.0, project_actual_hours_map(self.db, [self.project])[self.project.id])
         self.assertEqual(1.0, task_actual_hours_map(self.db, [self.task.id])[self.task.id])
 
-    def test_adds_registered_night_run_hours(self):
+    def test_excludes_registered_night_run_hours(self):
         self.db.add(TaskNightRun(
             task_id=self.task.id,
             slot_id=self.slot.id,
@@ -58,7 +58,7 @@ class ProjectActualHoursServiceTest(unittest.TestCase):
         ))
         self.db.commit()
 
-        self.assertEqual(3.0, project_actual_hours_map(self.db, [self.project])[self.project.id])
+        self.assertEqual(1.0, project_actual_hours_map(self.db, [self.project])[self.project.id])
 
     def test_does_not_add_slot_time_when_execution_segment_exists(self):
         self.slot.actual_start = datetime(2026, 7, 31, 19, 0)

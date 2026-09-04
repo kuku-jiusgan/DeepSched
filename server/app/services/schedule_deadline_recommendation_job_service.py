@@ -9,6 +9,11 @@ from app.core.database import SessionLocal
 from app.models import Project, ScheduleDeadlineRecommendationJob, Task
 from app.repositories.worker_lease_repository import acquire_worker_lease
 from app.services.project_plan_apply_helpers import plan_fingerprint
+from app.services.schedule_run_lock_service import (
+    DEADLINE_RECOMMENDATION,
+    ScheduleBusyError,
+    schedule_run_lock,
+)
 from app.services.scheduler_deadline_recommendation import enumerate_verified_date_adjustments
 
 
@@ -39,7 +44,14 @@ def enqueue_deadline_recommendation(
         int(project_id) for project_id in (generate_kwargs.get("project_ids") or [])
         if int(project_id) != project.id
     }
-    candidate_ids = sorted({project.id, *conflict_ids, *scheduled_project_ids})
+    # 候选项目原先只从仪器占用清单取，卡住排程的若是纯人工任务（报告撰写、
+    # 方案撰写这类不占仪器的），它所在的项目根本进不了搜索范围——而被顶到
+    # 结题日之外的恰恰常常是它，于是搜索注定无解。本次重排涉及的任务，其所属
+    # 项目的结题日都是可能的硬边界，一律纳入候选。
+    replan_project_ids = {task.project_id for task in tasks}
+    candidate_ids = sorted({
+        project.id, *conflict_ids, *scheduled_project_ids, *replan_project_ids,
+    })
     project_rows = db.query(Project).filter(Project.id.in_(candidate_ids)).all()
     job = ScheduleDeadlineRecommendationJob(
         id=str(uuid.uuid4()),
@@ -184,6 +196,17 @@ def _process_next_job(db) -> None:
     ).order_by(ScheduleDeadlineRecommendationJob.created_at).first()
     if not job:
         return
+    try:
+        # 整个搜索期间持锁：它反复改写这批任务的状态，中途插进来的排程只会
+        # 撞上行锁干等。用户的排程优先，抢不到锁就把作业留在 pending，
+        # 下一轮（1 秒后）再捡起来，不占用户的道。
+        with schedule_run_lock(DEADLINE_RECOMMENDATION):
+            _run_job(db, job)
+    except ScheduleBusyError:
+        _logger.info("排程正忙，调整方案作业稍后重试 job_id=%s", job.id)
+
+
+def _run_job(db, job) -> None:
     job.status = "running"
     job.started_at = datetime.now()
     db.commit()

@@ -29,6 +29,7 @@ class ProjectHoursTaskOut(BaseModel):
 
 class ProjectHoursItemOut(BaseModel):
     project_id: int
+    project_kind: str
     project_code: str
     project_name: str
     client_name: str | None = None

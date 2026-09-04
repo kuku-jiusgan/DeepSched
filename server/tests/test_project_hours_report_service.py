@@ -126,8 +126,9 @@ class ProjectHoursReportServiceTest(unittest.TestCase):
         workbook = load_workbook(export_project_hours_report(report))
 
         self.assertEqual(["项目汇总", "任务明细"], workbook.sheetnames)
-        self.assertEqual("P-001", workbook["项目汇总"]["A2"].value)
-        self.assertEqual("LCMS方法开发", workbook["任务明细"]["C2"].value)
+        self.assertEqual("项目", workbook["项目汇总"]["A2"].value)
+        self.assertEqual("P-001", workbook["项目汇总"]["B2"].value)
+        self.assertEqual("LCMS方法开发", workbook["任务明细"]["D2"].value)
 
     @patch("app.services.project_hours_report_service.task_actual_hours_map", return_value={2: 3.5, 3: 6.0})
     def test_filters_projects_by_keyword(self, _actual_hours_map):

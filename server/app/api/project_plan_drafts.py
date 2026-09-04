@@ -20,6 +20,7 @@ from app.services.project_plan_draft_service import (
 from app.services.schedule_deadline_recommendation_job_service import (
     get_deadline_recommendation_job,
 )
+from app.services.schedule_run_lock_service import ScheduleBusyError
 
 
 router = APIRouter(prefix="/api/v1/projects", tags=["project-plan-drafts"])
@@ -35,6 +36,9 @@ def save_and_schedule(project_id: int, data: ProjectPlanSaveAndScheduleRequest, 
     except ProjectPlanDraftPermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except ProjectPlanDraftInvalidError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ScheduleBusyError as exc:
+        db.rollback()
         raise HTTPException(status_code=409, detail=str(exc))
     except Exception:
         db.rollback()

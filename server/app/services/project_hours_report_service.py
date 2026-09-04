@@ -11,6 +11,7 @@ from app.schemas.project_hours_report_schemas import (
     ProjectHoursReportOut,
     ProjectHoursTaskOut,
 )
+from app.services.detection_task_service import list_detection_tasks
 from app.services.project_access_service import list_visible_projects
 from app.services.project_actual_hours_service import task_actual_hours_map
 from app.services.project_status_service import calculate_project_status
@@ -26,7 +27,7 @@ def build_project_hours_report(
     statuses: set[str] | None = None,
 ) -> ProjectHoursReportOut:
     projects = _filter_projects(
-        list_visible_projects(db, user),
+        _reportable_projects(db, user),
         start_date,
         end_date,
         keyword,
@@ -54,28 +55,40 @@ def build_project_hours_report(
     )
 
 
+def _reportable_projects(db, user) -> list:
+    """报表覆盖的对象：正式项目，加上检测任务。
+
+    一个检测任务在业务上就相当于一个项目——它本身也是一条 Project 记录，
+    只是下面固定挂一个任务，所以在报表里同样按一行项目展示、汇总进合计。
+
+    两类记录各有各的可见范围（检测任务允许执行人看自己的），因此分别走各自
+    模块的可见性函数，而不是在这里放宽成同一套角色判断。
+    """
+    return list_visible_projects(db, user) + list_detection_tasks(db, user)
+
+
 def export_project_hours_report(report: ProjectHoursReportOut) -> BytesIO:
     workbook = Workbook()
     summary = workbook.active
     summary.title = "项目汇总"
-    _append_header(summary, ["项目编号", "项目名称", "客户", "负责人", "项目开始时间", "项目结束时间", "项目状态", "任务数", "预计工时(h)", "实际工时(h)", "工时差异(h)"])
+    _append_header(summary, ["类型", "项目编号", "项目名称", "客户", "负责人", "项目开始时间", "项目结束时间", "项目状态", "任务数", "预计工时(h)", "实际工时(h)", "工时差异(h)"])
     for item in report.items:
         summary.append([
-            item.project_code, item.project_name, item.client_name or "", item.manager_name or "",
+            _project_kind_label(item.project_kind), item.project_code, item.project_name, item.client_name or "", item.manager_name or "",
             item.start_date, item.end_date, _project_status_label(item.project_status), item.task_count, item.planned_hours, item.actual_hours, item.variance_hours,
         ])
     detail = workbook.create_sheet("任务明细")
-    _append_header(detail, ["项目编号", "项目名称", "任务名称", "层级", "负责人", "仪器编号", "计划开始", "计划结束", "实际开始", "实际完成", "任务状态", "预计工时(h)", "实际工时(h)", "系统判定", "延期小时数", "夜间运行小时数", "暂停次数", "延期/暂停原因"])
+    _append_header(detail, ["类型", "项目编号", "项目名称", "任务名称", "层级", "负责人", "仪器编号", "计划开始", "计划结束", "实际开始", "实际完成", "任务状态", "预计工时(h)", "实际工时(h)", "系统判定", "延期小时数", "夜间运行小时数", "暂停次数", "延期/暂停原因"])
     for item in report.items:
         for task in item.tasks:
             detail.append([
-                item.project_code, item.project_name, f"{'  ' * task.depth}{task.task_name}", task.depth + 1,
+                _project_kind_label(item.project_kind), item.project_code, item.project_name, f"{'  ' * task.depth}{task.task_name}", task.depth + 1,
                 task.assignee_name or "", "、".join(task.instrument_codes), task.planned_start, task.planned_end,
                 task.actual_start, task.actual_end, _task_status_label(task.status), task.planned_hours, task.actual_hours,
                 task.schedule_judgement, task.delay_hours, task.night_run_hours, task.pause_count, "；".join(task.pause_reasons),
             ])
-    _format_sheet(summary, [16, 24, 20, 16, 20, 20, 14, 10, 14, 14, 14])
-    _format_sheet(detail, [16, 24, 32, 10, 16, 16, 18, 18, 18, 18, 14, 14, 14, 12, 10, 14, 10, 30])
+    _format_sheet(summary, [10, 16, 24, 20, 16, 20, 20, 14, 10, 14, 14, 14])
+    _format_sheet(detail, [10, 16, 24, 32, 10, 16, 16, 18, 18, 18, 18, 14, 14, 14, 12, 10, 14, 10, 30])
     output = BytesIO()
     workbook.save(output)
     output.seek(0)
@@ -147,6 +160,7 @@ def _project_item(project, leaf_actual_hours: dict[int, float], slots_by_task: d
     actual = round(sum(actual_hours(task) for task in top_tasks), 2)
     return ProjectHoursItemOut(
         project_id=project.id,
+        project_kind=project.project_kind,
         project_code=project.code,
         project_name=project.name,
         client_name=project.client_name,
@@ -272,6 +286,13 @@ def _task_status_label(status: str) -> str:
         "waiting_external": "等待外部签批", "waiting_approval": "等待签批",
     }
     return labels.get(status, "未知状态")
+
+
+PROJECT_KIND_LABELS = {"project": "项目", "detection": "检测任务"}
+
+
+def _project_kind_label(kind: str) -> str:
+    return PROJECT_KIND_LABELS.get(kind, "项目")
 
 
 PROJECT_STATUS_LABELS = {"pending": "未开始", "active": "进行中", "completed": "已完成"}

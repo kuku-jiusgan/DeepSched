@@ -19,7 +19,8 @@ from app.services.scheduler import (
 
 class ReplanRequestReplayTest(unittest.TestCase):
     def _parameter_names(self) -> set[str]:
-        return set(inspect.signature(SchedulerService.generate).parameters) - {"self"}
+        # 公开的 generate 现在只是排程互斥锁的外壳，真实形参表在 _generate 上。
+        return set(inspect.signature(SchedulerService._generate).parameters) - {"self"}
 
     def test_every_parameter_is_either_replayed_or_deliberately_excluded(self):
         """新增求解参数时必须明确表态：要么回放，要么写进排除表。

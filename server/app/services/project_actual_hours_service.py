@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 
-from app.models import TaskExecutionSegment, TaskNightRun, TimeSlot
+from app.models import TaskExecutionSegment, TimeSlot
 from app.services.instrument_working_time_service import load_working_time_context
 from app.services.scheduler_helpers import is_allowed_calendar_day
 
@@ -37,10 +37,6 @@ def task_actual_hours_map(db, task_ids) -> dict[int, float]:
         return totals
     segments = db.query(TaskExecutionSegment).filter(TaskExecutionSegment.task_id.in_(task_ids)).all()
     slots = db.query(TimeSlot).filter(TimeSlot.task_id.in_(task_ids)).all()
-    night_runs = db.query(TaskNightRun).filter(
-        TaskNightRun.task_id.in_(task_ids),
-        TaskNightRun.lifecycle_status == "active",
-    ).all()
     ranges_by_task = _actual_ranges_by_task(task_ids, segments, slots)
     all_ranges = [item for ranges in ranges_by_task.values() for item in ranges]
     if not all_ranges:
@@ -50,7 +46,6 @@ def task_actual_hours_map(db, task_ids) -> dict[int, float]:
     overall_end = max(end for _, end, _ in all_ranges)
     context = load_working_time_context(db, overall_start, overall_end)
     working_ranges: dict[int | None, list[TimeRange]] = {}
-    night_ranges_by_task = _night_ranges_by_task(night_runs)
     for task_id, actual_ranges in ranges_by_task.items():
         hours = 0.0
         for start, end, instrument_id in actual_ranges:
@@ -58,8 +53,7 @@ def task_actual_hours_map(db, task_ids) -> dict[int, float]:
                 working_ranges[instrument_id] = _working_ranges(
                     context, overall_start, overall_end, instrument_id,
                 )
-            allowed_ranges = working_ranges[instrument_id] + night_ranges_by_task.get(task_id, [])
-            hours += _hours_within([(start, end)], allowed_ranges)
+            hours += _hours_within([(start, end)], working_ranges[instrument_id])
         totals[task_id] = hours
     return {task_id: round(hours, 2) for task_id, hours in totals.items()}
 
@@ -84,13 +78,6 @@ def _actual_ranges_by_task(task_ids, segments, slots) -> dict[int, list[Resource
         end = slot.actual_end or now
         if end > start:
             result[slot.task_id].append((start, end, slot.instrument_id))
-    return result
-
-
-def _night_ranges_by_task(night_runs) -> dict[int, list[TimeRange]]:
-    result: dict[int, list[TimeRange]] = {}
-    for night_run in night_runs:
-        result.setdefault(night_run.task_id, []).append((night_run.started_at, night_run.ended_at))
     return result
 
 

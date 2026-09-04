@@ -21,6 +21,7 @@ from app.services.access_control_service import (
     require_project_editor,
 )
 from app.services.schedule_conflict_service import ScheduleConflictError
+from app.services.schedule_run_lock_service import ScheduleBusyError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,9 @@ def apply_saved_project_plan(
     except ScheduleConflictError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=f"排程失败：{exc}")
+    except ScheduleBusyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
     except Exception:
         db.rollback()
         logger.exception("项目计划排程失败 project_id=%s", data.project_id)
@@ -66,6 +70,9 @@ def confirm_saved_project_plan_insert(
     except ScheduleConflictError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=f"排程失败：{exc}")
+    except ScheduleBusyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
     except Exception:
         db.rollback()
         logger.exception("项目计划确认插单失败 project_id=%s", data.project_id)

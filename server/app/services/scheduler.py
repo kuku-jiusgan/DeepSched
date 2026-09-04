@@ -33,6 +33,7 @@ from app.services.scheduler_cross_project_setup import (
     add_cross_project_switch_constraints,
     cross_project_setup_units,
 )
+from app.services.schedule_run_lock_service import SCHEDULE_RUN, schedule_run_lock
 from app.services.scheduler_failure_response import build_failure_response
 from app.services.scheduler_pending_approval import pending_approval_end_bounds
 from app.services.scheduler_preflight import (
@@ -80,7 +81,7 @@ def replayable_kwargs(scope: dict) -> dict:
 
     必须在任何形参被重新赋值之前调用。
     """
-    names = set(inspect.signature(SchedulerService.generate).parameters) - {"self"}
+    names = set(inspect.signature(SchedulerService._generate).parameters) - {"self"}
     return {
         name: scope[name]
         for name in sorted(names - _REPLAY_EXCLUDED_KWARGS)
@@ -105,7 +106,18 @@ class SchedulerService:
             self._prepared[key] = build()
         return self._prepared[key]
 
-    def generate(
+    def generate(self, *args, **kwargs) -> dict:
+        """排程入口：全局互斥，同一时刻只允许一次排程计算。
+
+        两次排程都要删改同一批任务和时间槽，撞在一起时原先只能靠数据库行锁被动
+        等待，等满 50 秒才报错。这里改成抢不到锁就当场退回，让调用方能明确区分
+        "正忙，请稍后重试"和"真的排不下"。锁按线程可重入，后台方案搜索在自己的
+        锁里反复调用求解器不受影响。
+        """
+        with schedule_run_lock(SCHEDULE_RUN):
+            return self._generate(*args, **kwargs)
+
+    def _generate(
         self,
         project_ids: Optional[List[int]] = None,
         mode: str = "normal",

@@ -61,6 +61,8 @@ export interface ProjectHoursTask {
 
 export interface ProjectHoursItem {
   project_id: number;
+  /** project=正式项目，detection=检测任务（业务上一个检测任务就相当于一个项目）。 */
+  project_kind: string;
   project_code: string;
   project_name: string;
   client_name: string | null;

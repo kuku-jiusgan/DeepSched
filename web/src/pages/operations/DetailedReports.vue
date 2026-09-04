@@ -10,7 +10,7 @@
       <a-input
         v-model:value="keywordInput"
         class="keyword-input"
-        placeholder="项目编号、名称、客户或负责人"
+        placeholder="项目/检测任务编号、名称、客户或负责人"
         allow-clear
         @press-enter="searchReport"
       >
@@ -44,7 +44,7 @@
     <a-spin :spinning="loading">
       <section class="metric-strip" aria-label="工时汇总">
         <div class="metric-item">
-          <span>项目数</span>
+          <span>项目/检测任务数</span>
           <strong>{{ report?.project_count ?? 0 }}</strong>
         </div>
         <div class="metric-item">
@@ -65,15 +65,18 @@
         class="project-hours-table"
         :columns="projectColumns"
         :data-source="report?.items ?? []"
-        :pagination="{ pageSize: 10, showSizeChanger: true, showTotal: (total: number) => `共 ${total} 个项目` }"
+        :pagination="{ pageSize: 10, showSizeChanger: true, showTotal: (total: number) => `共 ${total} 个项目/检测任务` }"
         row-key="project_id"
         size="middle"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'project'">
             <div class="project-identity">
-              <strong>{{ record.project_code }}</strong>
-              <span>{{ record.project_name }}</span>
+              <span class="project-code-line">
+                <strong>{{ record.project_code }}</strong>
+                <a-tag v-if="record.project_kind === 'detection'" color="purple">检测</a-tag>
+              </span>
+              <span class="project-title">{{ record.project_name }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'planned_hours'">
@@ -137,7 +140,7 @@
         </template>
 
         <template #emptyText>
-          <a-empty description="当前筛选条件下暂无项目工时数据" />
+          <a-empty description="当前筛选条件下暂无工时数据" />
         </template>
       </a-table>
     </a-spin>
@@ -317,7 +320,9 @@ onMounted(loadReport)
 .metric-item strong { display: block; margin-top: 6px; color: #172033; font-size: 22px; font-weight: 650; }
 .project-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .project-identity strong { color: #1d4ed8; font-size: 13px; }
-.project-identity span { overflow: hidden; color: #344054; text-overflow: ellipsis; white-space: nowrap; }
+.project-code-line { display: flex; align-items: center; gap: 6px; }
+.project-code-line :deep(.ant-tag) { margin-inline-end: 0; }
+.project-title { overflow: hidden; color: #344054; text-overflow: ellipsis; white-space: nowrap; }
 .project-hours-table :deep(.ant-table-thead > tr > th),
 .project-hours-table :deep(.ant-table-tbody > tr > td) { white-space: nowrap; }
 .project-hours-table :deep(.ant-table-cell) { word-break: keep-all; }

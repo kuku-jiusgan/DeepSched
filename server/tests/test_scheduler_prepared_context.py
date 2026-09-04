@@ -48,7 +48,7 @@ class FeasibilityOnlyTest(unittest.TestCase):
     """交期验证必须带 feasibility_only，否则每次探测都会白落地一次排程再回滚。"""
 
     def test_deadline_search_asks_only_for_feasibility(self):
-        from app.services.scheduler_deadline_recommendation import _validate_deadlines
+        from app.services.scheduler_deadline_recommendation import FEASIBLE, _probe_deadlines
 
         class _Scheduler:
             kwargs = None
@@ -64,7 +64,7 @@ class FeasibilityOnlyTest(unittest.TestCase):
             def flush(self):
                 pass
 
-        self.assertTrue(_validate_deadlines(_Db(), _Scheduler(), {}, {"project_ids": [1]}))
+        self.assertEqual(FEASIBLE, _probe_deadlines(_Db(), _Scheduler(), {}, {"project_ids": [1]}))
         self.assertTrue(_Scheduler.kwargs["feasibility_only"])
         self.assertFalse(_Scheduler.kwargs["include_failure_diagnostics"])
         self.assertFalse(_Scheduler.kwargs["commit"])
