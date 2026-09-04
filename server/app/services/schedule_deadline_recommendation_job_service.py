@@ -28,6 +28,7 @@ _wake_event = threading.Event()
 _stop_event = threading.Event()
 _worker_thread: threading.Thread | None = None
 _worker_owner_id = uuid.uuid4().hex
+_startup_reclaim_done = False
 _logger = logging.getLogger(__name__)
 
 
@@ -154,12 +155,20 @@ def stop_deadline_recommendation_worker() -> None:
 
 
 def _worker_loop() -> None:
+    global _startup_reclaim_done
     while not _stop_event.is_set():
         _wake_event.wait(JOB_POLL_SECONDS)
         _wake_event.clear()
         db = SessionLocal()
         try:
             if acquire_worker_lease(db, JOB_LEASE_NAME, _worker_owner_id, JOB_LEASE_SECONDS):
+                if not _startup_reclaim_done:
+                    # 进程刚起来，任何还挂在 running 的作业都不可能是本进程的，
+                    # 只能是上一次进程被重启/崩溃时掐断的。等 15 分钟超时才回收，
+                    # 前端就要对着"正在计算中"干等 15 分钟——实测用户等了 7 分钟
+                    # 放弃。拿到 worker 租约后立刻回收，几秒内就能给出失败提示。
+                    _reclaim_stale_jobs(db, all_running=True)
+                    _startup_reclaim_done = True
                 _reclaim_stale_jobs(db)
                 _process_next_job(db)
         except Exception:
@@ -169,18 +178,23 @@ def _worker_loop() -> None:
             db.close()
 
 
-def _reclaim_stale_jobs(db) -> None:
+def _reclaim_stale_jobs(db, all_running: bool = False) -> None:
     """把被进程重启掐断、永远卡在 running 的作业标记为失败。
 
     不退回 pending：作业若是因为自身原因崩的，退回会让它反复重跑。标记失败后
     前端至少能提示"暂未生成，请重试"，而不是一直显示计算中。
+
+    all_running 供进程启动后的第一次回收使用：那一刻还挂在 running 的作业一定
+    是上一次进程留下的，不必等超时。
     """
-    cutoff = datetime.now() - timedelta(minutes=STALE_JOB_MINUTES)
-    stale = db.query(ScheduleDeadlineRecommendationJob).filter(
+    query = db.query(ScheduleDeadlineRecommendationJob).filter(
         ScheduleDeadlineRecommendationJob.status == "running",
         ScheduleDeadlineRecommendationJob.completed_at.is_(None),
-        ScheduleDeadlineRecommendationJob.started_at < cutoff,
-    ).all()
+    )
+    if not all_running:
+        cutoff = datetime.now() - timedelta(minutes=STALE_JOB_MINUTES)
+        query = query.filter(ScheduleDeadlineRecommendationJob.started_at < cutoff)
+    stale = query.all()
     if not stale:
         return
     for job in stale:

@@ -3,6 +3,10 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.core.database import Base
 from app.services.schedule_deadline_recommendation_job_service import (
     enqueue_deadline_recommendation,
 )
@@ -95,3 +99,53 @@ class DeadlineRecommendationCandidatesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReclaimInterruptedJobTest(unittest.TestCase):
+    """进程重启掐断的作业要在 worker 起来后立刻回收。
+
+    等 15 分钟超时才回收的话，前端要对着"正在计算中"干等 15 分钟——实测用户
+    等了 7 分钟就放弃了，而那个作业永远不会有结果。
+    """
+
+    def setUp(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+
+    def tearDown(self):
+        self.db.close()
+
+    def _running_job(self, started_at):
+        from app.models import ScheduleDeadlineRecommendationJob
+
+        job = ScheduleDeadlineRecommendationJob(
+            id="job-1", project_id=1, plan_fingerprint="fp", payload={},
+            status="running", created_at=started_at, started_at=started_at,
+            updated_at=started_at,
+        )
+        self.db.add(job)
+        self.db.commit()
+        return job
+
+    def test_startup_reclaims_a_job_regardless_of_age(self):
+        from app.services.schedule_deadline_recommendation_job_service import _reclaim_stale_jobs
+
+        job = self._running_job(datetime.now())
+
+        _reclaim_stale_jobs(self.db, all_running=True)
+
+        self.db.refresh(job)
+        self.assertEqual("failed", job.status)
+        self.assertEqual("计算被中断", job.error_message)
+        self.assertIsNotNone(job.completed_at)
+
+    def test_routine_pass_leaves_a_fresh_job_alone(self):
+        from app.services.schedule_deadline_recommendation_job_service import _reclaim_stale_jobs
+
+        job = self._running_job(datetime.now())
+
+        _reclaim_stale_jobs(self.db)
+
+        self.db.refresh(job)
+        self.assertEqual("running", job.status)

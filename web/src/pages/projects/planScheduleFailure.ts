@@ -84,7 +84,17 @@ function recommendationBody(row: ScheduleFailureRecommendation) {
 
 function recommendations(diagnostic: ScheduleFailureDiagnostic) {
   const rows = diagnostic.recommendations ?? []
-  const isSearching = ['pending', 'running'].includes(diagnostic.recommendation_job?.status || '')
+  const jobStatus = diagnostic.recommendation_job?.status || ''
+  const isSearching = ['pending', 'running'].includes(jobStatus)
+  // 计算失败必须说成失败。此前 failed 会落进"没有可行方案"那句话，等于把
+  // "算挂了"说成"确实没有解"——两者的处置完全不同：前者该重试，后者该改计划。
+  const emptyText = isSearching
+    ? '正在通过完整排程约束计算可行调整方案，通常需要 1–2 分钟，完成后显示在这里。'
+    : jobStatus === 'failed'
+      ? '调整方案计算失败，请重新排程再试；若反复失败请联系管理员。'
+      : jobStatus === 'stale'
+        ? '计划在计算期间已变更，调整方案已作废，请重新排程。'
+        : '当前搜索范围内没有能使排程成功的日期调整方案。'
   return h('section', { class: 'schedule-failure-section schedule-failure-recommendations' }, [
     h('h3', '调整方案'),
     ...(rows.length
@@ -93,9 +103,7 @@ function recommendations(diagnostic: ScheduleFailureDiagnostic) {
           ...recommendationBody(row),
           h('span', { class: 'is-verified' }, '求解器已验证'),
         ]))
-      : [h('div', { class: 'schedule-failure-empty' }, isSearching
-          ? '正在通过完整排程约束计算可行调整方案，通常需要 1–2 分钟，完成后显示在这里。'
-          : '当前搜索范围内没有能使排程成功的日期调整方案。')]),
+      : [h('div', { class: 'schedule-failure-empty' }, emptyText)]),
   ])
 }
 
