@@ -12,6 +12,9 @@ from app.services.instrument_fault_notification_service import (
     notify_fault_schedule_risks,
 )
 from app.services.fault_replan_context_service import build_fault_replan_context
+from app.services.instrument_fault_interruption_service import (
+    interrupt_running_tasks_on_instrument,
+)
 from app.services.fault_replan_result_service import build_fault_impact_details
 from app.services.resource_replan_service import replan_resource_closure
 from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
@@ -50,6 +53,11 @@ def shift_faulted_instrument_slots(
     reported_at: datetime,
     estimated_resolved_at: datetime,
 ) -> dict:
+    # 先把这台仪器上正在做的活停掉：故障重排只搬时间槽，搬完仍挂着"进行中"的
+    # 任务会变成没有时间槽的幽灵，仪器上同时显示两个任务在跑。
+    interrupt_running_tasks_on_instrument(
+        db, instrument.id, reported_at, _interrupt_reason(instrument),
+    )
     affected_slots = _affected_slots(db, instrument.id, reported_at)
     if not affected_slots:
         return _impact([], 0, 0, 0, 0)
@@ -134,6 +142,11 @@ def shift_faulted_instrument_slots(
         f"仪器“{instrument.name}”故障",
     )
     return _impact(details, len(movable_slots), len(details), notified_users, risk_count)
+
+
+def _interrupt_reason(instrument: Instrument) -> str:
+    label = " ".join(value for value in [instrument.code, instrument.name] if value)
+    return f"仪器【{label}】故障"
 
 
 def _can_use_cp_sat_fault_replan(
@@ -277,6 +290,11 @@ def evaluate_fault_impact(
     reported_at: datetime,
     estimated_resolved_at: datetime,
 ) -> dict:
+    # 先把这台仪器上正在做的活停掉：故障重排只搬时间槽，搬完仍挂着"进行中"的
+    # 任务会变成没有时间槽的幽灵，仪器上同时显示两个任务在跑。
+    interrupt_running_tasks_on_instrument(
+        db, instrument.id, reported_at, _interrupt_reason(instrument),
+    )
     affected_slots = _affected_slots(db, instrument.id, reported_at)
     if not affected_slots:
         return _impact([], 0, 0, 0, 0)

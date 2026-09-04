@@ -446,7 +446,7 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         self.assertFalse(impact["affected_task_details"][0]["can_shift"])
         self.assertIn("超期风险", impact["affected_task_details"][0]["reason"])
 
-    def test_fault_keeps_running_status_with_open_execution_segment(self):
+    def test_fault_pauses_running_task_between_slots(self):
         project = Project(name="运行中故障项目", code="FAULT-RUNNING")
         instrument = Instrument(code="ZBYY-002-0001", name="故障仪器")
         task = Task(
@@ -455,6 +455,7 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
             task_type="test",
             status="running",
             requires_instrument=True,
+            est_duration_hours=12,
         )
         self.db.add_all([project, instrument, task])
         self.db.flush()
@@ -463,14 +464,16 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
             instrument_id=instrument.id,
             plan_start=datetime(2026, 8, 12, 8, 30),
             plan_end=datetime(2026, 8, 12, 12, 0),
-            status="running",
+            actual_start=datetime(2026, 8, 12, 8, 30),
+            actual_end=datetime(2026, 8, 12, 12, 0),
+            status="completed",
         )
         future_slot = TimeSlot(
             task_id=task.id,
             instrument_id=instrument.id,
             plan_start=datetime(2026, 8, 13, 8, 30),
             plan_end=datetime(2026, 8, 13, 10, 30),
-            status="running",
+            status="scheduled",
         )
         self.db.add_all([executed_slot, future_slot])
         self.db.flush()
@@ -485,7 +488,162 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         self._shift(instrument, datetime(2026, 8, 13, 8, 0), datetime(2026, 8, 14, 8, 0))
 
         self.db.refresh(task)
-        self.assertEqual("running", task.status)
+        segment = self.db.query(TaskExecutionSegment).filter(
+            TaskExecutionSegment.task_id == task.id,
+        ).one()
+        self.assertEqual("paused", task.status)
+        self.assertEqual(datetime(2026, 8, 13, 8, 0), segment.ended_at)
+        self.assertEqual("instrument_fault", segment.end_reason)
+        self.assertGreater(task.executed_minutes, 0)
+        shifted = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == task.id,
+            TimeSlot.lifecycle_status == "active",
+            TimeSlot.actual_start.is_(None),
+        ).all()
+        self.assertEqual(1, len(shifted))
+        self.assertGreaterEqual(shifted[0].plan_start, datetime(2026, 8, 14, 8, 0))
+
+    def test_fault_pauses_and_keeps_unworked_remainder_of_running_slot(self):
+        project = Project(name="故障打断项目", code="FAULT-CUT")
+        instrument = Instrument(code="ZBYY-002-0002", name="故障仪器")
+        task = Task(
+            project=project,
+            name="方法开发",
+            task_type="test",
+            status="running",
+            requires_instrument=True,
+            est_duration_hours=8,
+        )
+        self.db.add_all([project, instrument, task])
+        self.db.flush()
+        running_slot = TimeSlot(
+            task_id=task.id,
+            instrument_id=instrument.id,
+            plan_start=datetime(2026, 8, 12, 8, 30),
+            plan_end=datetime(2026, 8, 12, 16, 30),
+            actual_start=datetime(2026, 8, 12, 8, 30),
+            status="running",
+        )
+        self.db.add(running_slot)
+        self.db.flush()
+        self.db.add(TaskExecutionSegment(
+            task_id=task.id,
+            slot_id=running_slot.id,
+            instrument_id=instrument.id,
+            started_at=datetime(2026, 8, 12, 8, 30),
+        ))
+        self.db.commit()
+
+        self._shift(instrument, datetime(2026, 8, 12, 10, 10), datetime(2026, 8, 13, 9, 0))
+
+        self.db.refresh(task)
+        self.db.refresh(running_slot)
+        self.assertEqual("paused", task.status)
+        self.assertEqual(datetime(2026, 8, 12, 10, 10), running_slot.actual_end)
+        self.assertEqual(datetime(2026, 8, 12, 10, 30), running_slot.plan_end)
+        self.assertEqual("completed", running_slot.status)
+        remainder = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == task.id,
+            TimeSlot.lifecycle_status == "active",
+            TimeSlot.actual_start.is_(None),
+        ).all()
+        self.assertEqual(1, len(remainder))
+        self.assertEqual(
+            timedelta(hours=6),
+            remainder[0].plan_end - remainder[0].plan_start,
+        )
+        self.assertGreaterEqual(remainder[0].plan_start, datetime(2026, 8, 13, 9, 0))
+
+    def test_resolve_fault_resumes_interrupted_task_and_replans_it(self):
+        # 维修比预计提前完成，走的是"资源提前释放"那条重排。
+        reported_at = datetime.now() - timedelta(hours=2)
+        project = Project(name="维修完成项目", code="FAULT-RESUME")
+        instrument = Instrument(code="ZBYY-002-0003", name="故障仪器", status="fault")
+        interrupted = Task(
+            project=project,
+            name="方法开发",
+            task_type="test",
+            status="paused",
+            requires_instrument=True,
+        )
+        waiting_for_sample = Task(
+            project=project,
+            name="方法验证",
+            task_type="test",
+            status="paused",
+            requires_instrument=True,
+        )
+        self.db.add_all([project, instrument, interrupted, waiting_for_sample])
+        self.db.flush()
+        fault = InstrumentFault(
+            instrument_id=instrument.id,
+            description="信号不稳定",
+            reported_at=reported_at,
+            estimated_resolved_at=datetime.now() + timedelta(days=1),
+            status="open",
+        )
+        self.db.add(fault)
+        self.db.flush()
+        worked_slot = TimeSlot(
+            task_id=interrupted.id,
+            instrument_id=instrument.id,
+            plan_start=reported_at - timedelta(hours=2),
+            plan_end=reported_at,
+            actual_start=reported_at - timedelta(hours=2),
+            actual_end=reported_at,
+            status="completed",
+        )
+        remaining_slot = TimeSlot(
+            task_id=interrupted.id,
+            instrument_id=instrument.id,
+            plan_start=datetime.now() + timedelta(days=1),
+            plan_end=datetime.now() + timedelta(days=1, hours=2),
+            status="scheduled",
+        )
+        self.db.add_all([worked_slot, remaining_slot])
+        self.db.flush()
+        self.db.add_all([
+            TaskExecutionSegment(
+                task_id=interrupted.id,
+                slot_id=worked_slot.id,
+                instrument_id=instrument.id,
+                started_at=reported_at - timedelta(hours=2),
+                ended_at=reported_at,
+                end_reason="instrument_fault",
+                pause_reason="仪器【ZBYY-002-0003 故障仪器】故障",
+            ),
+            TaskExecutionSegment(
+                task_id=waiting_for_sample.id,
+                slot_id=worked_slot.id,
+                instrument_id=instrument.id,
+                started_at=reported_at - timedelta(days=1),
+                ended_at=reported_at - timedelta(days=1) + timedelta(hours=1),
+                end_reason="paused",
+                pause_reason="等待客户寄样",
+            ),
+        ])
+        self.db.commit()
+
+        with patch(
+            "app.services.instrument_fault_service.replan_released_resource_queue",
+        ) as replan:
+            resolve_fault(self.db, instrument.id, fault.id)
+
+        self.db.refresh(interrupted)
+        self.db.refresh(waiting_for_sample)
+        # 仪器修好了，这次故障暂停的任务自动接着干；等样品那个不属于这次故障，不动。
+        self.assertEqual("running", interrupted.status)
+        self.assertEqual("paused", waiting_for_sample.status)
+        self.assertTrue(
+            any(
+                segment.ended_at is None
+                for segment in interrupted.execution_segments
+            )
+        )
+        # 剩余工时也要跟着按真实维修完成时间前移。
+        self.assertEqual(
+            {interrupted.id}, replan.call_args.kwargs["extra_task_ids"],
+        )
 
     def test_resolve_fault_shifts_slots_when_actual_resolution_is_late(self):
         project = Project(name="延期维修项目", code="FAULT-LATE")

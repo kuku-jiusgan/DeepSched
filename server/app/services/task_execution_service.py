@@ -4,7 +4,7 @@ from datetime import datetime
 
 from app.models import Instrument, Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_status_service import mark_instrument_running
-from app.services.instrument_occupancy_service import current_occupying_slot
+from app.services.instrument_occupancy_service import current_occupying_task
 from app.services.task_delay_status_service import mark_task_delayed
 from app.domain.errors import DomainConflictError, DomainNotFoundError
 
@@ -162,14 +162,14 @@ def _ensure_can_start(db, task: Task, slot: TimeSlot, allow_queue_insert: bool =
         )
     if not allow_queue_insert:
         _ensure_earlier_instrument_tasks_completed(db, task, slot)
-    occupying_slot = current_occupying_slot(
+    occupying_task = current_occupying_task(
         db,
         slot.instrument_id,
         excluded_task_id=task.id,
     )
-    if occupying_slot and occupying_slot.task:
+    if occupying_task:
         raise TaskExecutionInvalidError(
-            f"仪器当前任务【{occupying_slot.task.name}】尚未结束，不能启动【{task.name}】"
+            f"仪器当前任务【{occupying_task.name}】尚未结束，不能启动【{task.name}】"
         )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from app.models import AuditLog, Instrument, InstrumentFault
@@ -8,6 +9,14 @@ from app.services.instrument_fault_schedule_service import (
     fault_affected_tasks,
     shift_faulted_instrument_slots,
 )
+from app.services.instrument_fault_interruption_service import (
+    fault_interrupted_task_ids,
+    resume_fault_interrupted_tasks,
+)
+from app.services.schedule_early_completion_replan_service import replan_released_resource_queue
+
+
+_logger = logging.getLogger(__name__)
 
 
 class InstrumentFaultInvalidError(Exception):
@@ -124,7 +133,7 @@ def _record_fault_impact(db, fault_id: int, impact: dict) -> None:
     ))
 
 
-def resolve_fault(db, instrument_id: int, fault_id: int):
+def resolve_fault(db, instrument_id: int, fault_id: int, operator_id: int | None = None):
     fault = db.query(InstrumentFault).filter(
         InstrumentFault.id == fault_id,
         InstrumentFault.instrument_id == instrument_id,
@@ -139,6 +148,9 @@ def resolve_fault(db, instrument_id: int, fault_id: int):
     if instrument:
         instrument.status = "idle"
     db.flush()
+    # 这次故障暂停的任务，剩余工时先跟着下面的重排走到真实的维修完成时间上，
+    # 再自动恢复为进行中——不能留在按预计维修时间排出来的位置，也不该让人再点一次继续。
+    interrupted_task_ids = fault_interrupted_task_ids(db, instrument_id, fault.reported_at)
     if fault.estimated_resolved_at and resolved_at > fault.estimated_resolved_at:
         if instrument:
             try:
@@ -150,6 +162,18 @@ def resolve_fault(db, instrument_id: int, fault_id: int):
                 )
             except InstrumentFaultScheduleConflict as exc:
                 raise InstrumentFaultConflictError(str(exc), exc.impact) from exc
+    elif fault.estimated_resolved_at and resolved_at < fault.estimated_resolved_at and instrument:
+        try:
+            replan_released_resource_queue(
+                db, instrument.id, resolved_at, extra_task_ids=interrupted_task_ids,
+            )
+        except Exception:
+            _logger.exception(
+                "early_fault_resolution_replan_failed instrument_id=%s fault_id=%s",
+                instrument.id,
+                fault.id,
+            )
+    resume_fault_interrupted_tasks(db, interrupted_task_ids, resolved_at, operator_id)
     db.commit()
     db.refresh(fault)
     return fault

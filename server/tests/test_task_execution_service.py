@@ -5,7 +5,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Instrument, Project, Task, TaskDependency, TimeSlot
+from app.models import (
+    Instrument,
+    Project,
+    Task,
+    TaskDependency,
+    TaskExecutionSegment,
+    TimeSlot,
+)
 from app.services.task_execution_service import (
     TaskExecutionInvalidError,
     start_task_execution,
@@ -221,6 +228,45 @@ class TaskExecutionServiceTest(unittest.TestCase):
         self.db.commit()
 
         with self.assertRaisesRegex(TaskExecutionInvalidError, "延期中的方法开发.*不能启动"):
+            start_task_execution(self.db, self.slot.id)
+
+    def test_cannot_start_while_another_task_is_between_its_slots(self):
+        """仪器上的任务跨时间段还没做完时，别的任务不能在空档里开起来。
+
+        任务被按天切成多段，上一段按计划边界结束、下一段还没到，中间没有任何
+        在跑的时间槽，但执行流水没结束，仪器仍被它占着。
+        """
+        self.predecessor.status = "done"
+        occupying_task = Task(
+            id=3,
+            project_id=1,
+            name="跨天的方法开发",
+            task_type="FFKF_001",
+            requires_instrument=True,
+            status="running",
+        )
+        occupying_slot = TimeSlot(
+            id=2,
+            task_id=3,
+            instrument_id=1,
+            plan_start=datetime.now() - timedelta(days=1, hours=2),
+            plan_end=datetime.now() - timedelta(days=1),
+            actual_start=datetime.now() - timedelta(days=1, hours=2),
+            actual_end=datetime.now() - timedelta(days=1),
+            status="completed",
+            tier="confirmed",
+        )
+        self.db.add_all([occupying_task, occupying_slot])
+        self.db.flush()
+        self.db.add(TaskExecutionSegment(
+            task_id=3,
+            slot_id=2,
+            instrument_id=1,
+            started_at=datetime.now() - timedelta(days=1, hours=2),
+        ))
+        self.db.commit()
+
+        with self.assertRaisesRegex(TaskExecutionInvalidError, "跨天的方法开发.*不能启动"):
             start_task_execution(self.db, self.slot.id)
 
     def test_predecessor_is_checked_before_early_start_rule(self):
