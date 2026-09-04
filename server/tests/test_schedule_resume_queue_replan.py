@@ -59,7 +59,7 @@ class ScheduleResumeQueueReplanTest(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def test_early_completion_resumes_source_and_replans_following_queue(self):
+    def test_early_completion_keeps_source_paused_and_replans_following_queue(self):
         operator = User(username="tech", display_name="技术员", role="技术员")
         instrument = Instrument(code="LCMS-01", name="液质联用仪")
         source_project = Project(code="DETECT", name="样品检测")
@@ -140,6 +140,7 @@ class ScheduleResumeQueueReplanTest(unittest.TestCase):
                 },
             ),
         ])
+        following_slot_original_start = following_slot.plan_start
         self.db.commit()
 
         working_options = {
@@ -166,13 +167,17 @@ class ScheduleResumeQueueReplanTest(unittest.TestCase):
             TimeSlot.task_id == following.id,
             TimeSlot.lifecycle_status == "active",
         ).one()
-        self.assertEqual(source.id, result["resumed_task_id"])
-        self.assertEqual(1, result["moved_tasks"])
-        self.assertEqual(FixedDatetime.now(), recovery_slot.plan_start)
-        self.assertEqual(
-            recovery_slot.plan_end + timedelta(minutes=30),
-            active_following.plan_start,
-        )
+        # 接替任务做完不替人开工：原任务保持暂停，恢复时段也不会被提到此刻。
+        self.assertNotIn("resumed_task_id", result)
+        self.assertEqual("paused", source.status)
+        self.assertIn("仍处于暂停", result["message"])
+        self.assertFalse([
+            slot for slot in source.time_slots
+            if slot.actual_start is not None and slot.actual_end is None
+        ])
+        # 释放出来的资源仍然照常让后面的队列前移。
+        self.assertGreaterEqual(result["moved_tasks"], 1)
+        self.assertLess(active_following.plan_start, following_slot_original_start)
         self.assertEqual(
             120,
             int((active_following.plan_end - active_following.plan_start).total_seconds() / 60),

@@ -606,8 +606,13 @@ class TaskPauseServiceTest(unittest.TestCase):
     def _total_minutes(slots: list[TimeSlot]) -> int:
         return sum(int((slot.plan_end - slot.plan_start).total_seconds() / 60) for slot in slots)
 
-    def test_completing_replacement_resumes_paused_source_task(self):
+    def test_completing_replacement_leaves_source_task_paused(self):
+        """接替任务做完不替人开工，原任务保持暂停，只在提示里说明。
 
+        暂停切换会按前置关系把接替任务的连续后续任务（方案撰写、撰写报告）一起
+        排进队列。接替任务一完成就自动恢复原任务，等于跳过了那些还没开始的后续
+        任务，人该干哪个也说不清。
+        """
         pause_and_switch_task(
             self.db,
             self.source_slot.id,
@@ -627,23 +632,15 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.db.commit()
 
         self.assertEqual("ok", result["status"])
-        self.assertEqual(self.source_task.id, result["resumed_task_id"])
-        self.assertEqual("running", self.source_task.status)
-        self.assertIsNotNone(self.source_slot.actual_end)
-        resumed_slots = [
+        self.assertNotIn("resumed_task_id", result)
+        self.assertEqual("paused", self.source_task.status)
+        self.assertIn(self.source_task.name, result["message"])
+        self.assertIn("仍处于暂停", result["message"])
+        self.assertFalse([
             slot for slot in self.source_task.time_slots
             if slot.status == "running" and slot.actual_start is not None
-        ]
-        self.assertEqual(1, len(resumed_slots))
-        # 恢复后的计划落在工作时段内，且不早于实际开始时刻。工作时间恢复时两者
-        # 相等；非工作时间恢复时计划落到下一个工作时段，实际开始仍记真实时刻——
-        # 那段时间的执行按规则不计入进度，但记录完整保留。
-        resumed = resumed_slots[0]
-        self.assertGreaterEqual(resumed.plan_start, resumed.actual_start)
-        self.assertLess(resumed.plan_start.weekday(), 5)
-        self.assertGreaterEqual(resumed.plan_start.hour, 8)
-        self.assertLess(resumed.plan_start.hour, 20)
-        self.assertIsNotNone(self.source_slot.actual_end)
+            and slot.actual_end is None
+        ])
         self.assertEqual("completed", self.target_task.status)
 
     def test_candidate_with_paused_predecessor_is_excluded(self):

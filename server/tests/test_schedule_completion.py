@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.models import (
+    AuditLog,
     Instrument,
     InstrumentFault,
     Notification,
@@ -19,6 +20,7 @@ from app.models import (
 )
 from app.services.schedule_completion_service import (
     _forward_shift_instrument_queue,
+    _paused_switch_source_hint,
     _mark_task_slots_completed,
     _select_completed_slot,
     complete_task_and_shift,
@@ -146,6 +148,65 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.assertEqual("error", result["status"])
         self.assertIn("已经完成", result["message"])
 
+    def test_completing_the_switch_target_does_not_restart_the_paused_task(self):
+        """接替任务完成后不替人开工，只提示原任务还停着。
+
+        暂停切换会把接替任务的连续后续任务一起排进队列，接替任务一完成就自动
+        恢复原任务，等于跳过了那些还没开始的后续任务。
+        """
+        source = Task(project_id=1, name="方法验证", task_type="test", status="paused")
+        target = Task(project_id=1, name="NDMA检测", task_type="test", status="running")
+        self.db.add_all([source, target])
+        self.db.flush()
+        self.db.add_all([
+            TimeSlot(
+                task_id=source.id, instrument_id=1,
+                plan_start=datetime(2026, 7, 21, 8, 30),
+                plan_end=datetime(2026, 7, 21, 12, 0),
+                status="paused",
+            ),
+            TimeSlot(
+                task_id=target.id, instrument_id=1,
+                plan_start=datetime(2026, 7, 20, 8, 30),
+                plan_end=datetime(2026, 7, 20, 10, 30),
+                actual_start=datetime(2026, 7, 20, 8, 30), status="running",
+            ),
+            AuditLog(
+                user_name="王福芳", action="task_paused", target_type="task",
+                target_id=source.id,
+                detail={"source_task_id": source.id, "target_task_id": target.id},
+            ),
+        ])
+        self.db.commit()
+
+        with patch(
+            "app.services.schedule_completion_service._forward_shift_instrument_queue",
+            return_value={"status": "ok", "message": "任务已完成", "moved_tasks": 0},
+        ):
+            result = complete_task_and_shift(
+                self.db, target.id, actual_end_time=datetime(2026, 7, 20, 10, 0),
+            )
+
+        self.db.refresh(source)
+        self.assertEqual("ok", result["status"])
+        self.assertEqual("paused", source.status)
+        self.assertIn("方法验证", result["message"])
+        self.assertIn("仍处于暂停", result["message"])
+
+    def test_paused_switch_source_hint_ignores_already_resumed_task(self):
+        source = Task(project_id=1, name="方法验证", task_type="test", status="running")
+        target = Task(project_id=1, name="NDMA检测", task_type="test", status="completed")
+        self.db.add_all([source, target])
+        self.db.flush()
+        self.db.add(AuditLog(
+            user_name="王福芳", action="task_paused", target_type="task",
+            target_id=source.id,
+            detail={"source_task_id": source.id, "target_task_id": target.id},
+        ))
+        self.db.commit()
+
+        self.assertIsNone(_paused_switch_source_hint(self.db, target.id))
+
     def test_complete_succeeds_when_paused_source_cannot_resume(self):
         task = Task(project_id=1, name="current", task_type="test", status="running")
         self.db.add(task)
@@ -160,8 +221,8 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.db.commit()
 
         with patch(
-            "app.services.schedule_completion_service._resume_paused_source_task",
-            return_value=(None, "原暂停任务【source】未恢复：任务没有可恢复的未来活动时间槽，请重新排程后再启动"),
+            "app.services.schedule_completion_service._paused_switch_source_hint",
+            return_value="原暂停任务【source】仍处于暂停，请在工作台上手动继续",
         ), patch(
             "app.services.schedule_completion_service._forward_shift_instrument_queue",
             return_value={"status": "ok", "message": "任务已完成，后续队列无需调整", "moved_tasks": 0},
@@ -172,7 +233,7 @@ class ScheduleCompletionTest(unittest.TestCase):
 
         self.assertEqual("ok", result["status"])
         self.assertEqual("completed", task.status)
-        self.assertIn("原暂停任务【source】未恢复", result["message"])
+        self.assertIn("原暂停任务【source】仍处于暂停", result["message"])
 
     def test_early_completion_uses_resource_queue_not_project_reschedule(self):
         task = Task(
