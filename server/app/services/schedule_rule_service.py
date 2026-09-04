@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from types import SimpleNamespace
 
 from app.models import ScheduleRule
 from app.services.scheduler_helpers import (
@@ -245,6 +246,19 @@ def get_solver_constraints(db: Any) -> dict[str, ScheduleRule]:
         for rule in db.query(ScheduleRule).filter(
             ScheduleRule.category == "constraint"
         ).all()
+    }
+
+
+def solver_constraints_from_snapshot(
+    rule_params: dict[str, dict], rule_enabled: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    """Build the minimal rule interface required by the in-memory solver."""
+    return {
+        code: SimpleNamespace(
+            code=code, is_enabled=(rule_enabled or {}).get(code, True),
+            params=dict(params or {}),
+        )
+        for code, params in rule_params.items()
     }
 
 

@@ -20,21 +20,26 @@ def pending_approval_end_bounds(
     global_prefix_sum,
     horizon_start,
     total_units: int,
+    project_end_date_overrides: dict[int, object] | None = None,
 ) -> dict[int, int]:
     """项目 → 收窄后的完工上界（时间单元）。"""
     pending_units: dict[int, int] = {}
     projects: dict[int, object] = {}
     for task in forecast_tasks:
-        if not task.project or not task.project.end_date:
+        deadline = (project_end_date_overrides or {}).get(
+            task.project_id,
+            task.project.end_date if task.project else None,
+        )
+        if not task.project or not deadline:
             continue
         pending_units[task.project_id] = (
             pending_units.get(task.project_id, 0) + task_duration_units(task)
         )
-        projects[task.project_id] = task.project
+        projects[task.project_id] = deadline
     return {
         project_id: _pull_back(
             global_prefix_sum,
-            min(total_units, datetime_to_units(projects[project_id].end_date, horizon_start)),
+            min(total_units, datetime_to_units(projects[project_id], horizon_start)),
             units,
         )
         for project_id, units in pending_units.items()

@@ -37,14 +37,22 @@ def load_working_time_context(
     horizon_start: datetime,
     horizon_end: datetime | None = None,
     instruments: list[Instrument] | None = None,
+    calendar_days: dict | None = None,
+    rule_params: dict | None = None,
+    rule_enabled: bool | None = None,
 ) -> WorkingTimeContext:
-    constraints = get_solver_constraints(db)
-    rule = constraints["working_hours"]
-    params = rule.params or {}
+    if rule_params is None:
+        constraints = get_solver_constraints(db)
+        rule = constraints["working_hours"]
+        params = rule.params or {}
+        enabled = rule.is_enabled
+    else:
+        params = dict(rule_params)
+        enabled = True if rule_enabled is None else rule_enabled
     day_start, day_end = working_time_bounds(params)
     include_weekends = bool(params.get("include_weekends", False))
     include_holidays = bool(params.get("include_holidays", False))
-    if not rule.is_enabled:
+    if not enabled:
         day_start, day_end = 0, 24 * 60
         include_weekends, include_holidays = True, True
     global_policy = WorkingTimePolicy(
@@ -53,7 +61,7 @@ def load_working_time_context(
     rows = instruments if instruments is not None else db.query(Instrument).all()
     policies = {
         instrument.id: (
-            global_policy if not rule.is_enabled else WorkingTimePolicy(
+            global_policy if not enabled else WorkingTimePolicy(
                 _time_to_minutes(instrument.effective_work_start),
                 _time_to_minutes(instrument.effective_work_end),
                 include_weekends,
@@ -67,7 +75,8 @@ def load_working_time_context(
     return WorkingTimeContext(
         global_policy=global_policy,
         instrument_policies=policies,
-        calendar_days=load_calendar_days(db, horizon_start, horizon_end),
+        calendar_days=(calendar_days if calendar_days is not None
+                       else load_calendar_days(db, horizon_start, horizon_end)),
         horizon_end=horizon_end,
     )
 

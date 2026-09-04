@@ -15,6 +15,7 @@ from app.services.schedule_run_lock_service import (
     schedule_run_lock,
 )
 from app.services.scheduler_deadline_recommendation import enumerate_verified_date_adjustments
+from app.services.schedule_snapshot import SimulationContext, capture_schedule_snapshot
 
 
 JOB_POLL_SECONDS = 1
@@ -230,6 +231,13 @@ def _calculate_job(db, job) -> dict | None:
     if plan_fingerprint(db, project, tasks) != job.plan_fingerprint:
         job.status = "stale"
         return None
+    snapshot = capture_schedule_snapshot(
+        db,
+        {int(item) for item in payload.get("project_ids", [project.id])},
+        {int(item) for item in payload.get("task_ids", [])},
+    )
+    snapshot_fingerprint = snapshot.fingerprint()
+    simulation_context = SimulationContext(snapshot, {})
     from app.services.scheduler import SchedulerService
 
     generate_kwargs = _deserialize_generate_kwargs(payload["generate_kwargs"])
@@ -243,10 +251,20 @@ def _calculate_job(db, job) -> dict | None:
         int(project_id): value
         for project_id, value in payload.get("project_labels", {}).items()
     }
-    return enumerate_verified_date_adjustments(
+    result = enumerate_verified_date_adjustments(
         db, SchedulerService(db, reuse_prepared_context=True), project_ids, deadlines,
         datetime.fromisoformat(payload["horizon_end"]), generate_kwargs, labels,
+        simulation_context=simulation_context,
     )
+    current_snapshot = capture_schedule_snapshot(
+        db,
+        set(project_ids),
+        {int(item) for item in payload.get("task_ids", [])},
+    )
+    if current_snapshot.fingerprint() != snapshot_fingerprint:
+        job.status = "stale"
+        return None
+    return result
 
 
 def _project_label(project) -> str:

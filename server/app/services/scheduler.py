@@ -6,12 +6,14 @@ from datetime import datetime
 from typing import List, Optional
 from ortools.sat.python import cp_model
 from app.core.config import get_settings
-from app.services.schedule_rule_service import get_solver_constraints
+from app.services.schedule_rule_service import get_solver_constraints, solver_constraints_from_snapshot
 from app.services.scheduler_fixed_slots import (
     add_human_capacity_constraints,
     add_instrument_capacity_constraints,
     load_fixed_bridge_reservations,
     load_fixed_slots,
+    snapshot_fixed_slots,
+    snapshot_bridge_reservations,
 )
 from app.services.scheduler_objective import add_scheduler_objective
 from app.services.scheduler_instrument_bridging import add_instrument_bridge_intervals
@@ -22,6 +24,7 @@ from app.services.scheduler_helpers import (
     build_dependencies,
     build_maintenance_windows,
     time_horizon,
+    datetime_to_units,
 )
 from app.services.approval_gate_service import unapproved_gate_context
 from app.services.schedule_advance_notification_service import (
@@ -52,9 +55,23 @@ from app.services.scheduler_soft_constraints import (
     sibling_cohesion_weight,
 )
 from app.services.scheduler_result_service import persist_schedule_result
+from app.services.schedule_snapshot import SimulationContext
 
 
 _logger = logging.getLogger(__name__)
+
+
+def _missing_calendar_days(calendar_days: dict, start, end) -> list:
+    """快照日历在求解视界内缺哪些天。"""
+    from datetime import timedelta
+
+    missing = []
+    day = start
+    while day <= end:
+        if day not in calendar_days:
+            missing.append(day.isoformat())
+        day += timedelta(days=1)
+    return missing
 
 
 # 交期建议的职责是"把刚才失败的那道题换个结题日再跑一遍"，参数少带一个，解的
@@ -73,6 +90,7 @@ _REPLAY_EXCLUDED_KWARGS = frozenset({
     "current_project_id",           # 由作业按候选项目设置
     "released_slot_intervals",      # 只服务于失败诊断
     "original_schedule_windows",    # 只影响目标函数的稳定性惩罚，不影响可行性
+    "simulation_context",
 })
 
 
@@ -113,7 +131,13 @@ class SchedulerService:
         等待，等满 50 秒才报错。这里改成抢不到锁就当场退回，让调用方能明确区分
         "正忙，请稍后重试"和"真的排不下"。锁按线程可重入，后台方案搜索在自己的
         锁里反复调用求解器不受影响。
+
+        模拟求解不持这把锁：它只读、不落库、不发通知，与真实排程没有互斥关系，
+        而且方案搜索要并发跑几百次候选，持锁会让它们互相排队，也会把真实排程
+        挡在后面。真实排程仍然独占。
         """
+        if kwargs.get("simulation_context") is not None:
+            return self._generate(*args, **kwargs)
         with schedule_run_lock(SCHEDULE_RUN):
             return self._generate(*args, **kwargs)
 
@@ -149,7 +173,14 @@ class SchedulerService:
         additional_dependency_gaps: dict[tuple[int, int], int] | None = None,
         released_slot_intervals: dict[int, list[tuple]] | None = None,
         feasibility_only: bool = False,
+        project_end_date_overrides: dict[int, datetime] | None = None,
+        simulation_context: SimulationContext | None = None,
     ) -> dict:
+        if simulation_context is not None:
+            if commit or emit_advance_notifications or not feasibility_only:
+                return {"status": "error", "message": "模拟排程禁止持久化或发送通知"}
+            project_end_date_overrides = simulation_context.deadline_overrides
+            solver_time_limit = simulation_context.solver_time_limit
         replan_request = replayable_kwargs(locals())
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
@@ -185,12 +216,45 @@ class SchedulerService:
         if preflight_error:
             return preflight_error
 
-        constraints = get_solver_constraints(self.db)
+        constraints = (
+            solver_constraints_from_snapshot(
+                simulation_context.snapshot.rule_params,
+                simulation_context.snapshot.rule_enabled,
+            )
+            if simulation_context is not None
+            else get_solver_constraints(self.db)
+        )
         horizon_start, horizon_end, total_units = time_horizon(
             planning_start_at,
             planning_end_at,
         )
-        ensure_calendar_range(self.db, horizon_start.date(), horizon_end.date())
+        snapshot_calendar = None
+        if simulation_context is None:
+            ensure_calendar_range(self.db, horizon_start.date(), horizon_end.date())
+        else:
+            # 模拟不补日历也不查库：日历就在快照里，缺不缺按快照自己核对。
+            # 此前这里查 SysCalendar 计数，既多一次库读，缺日历时报出来的又是
+            # "模拟排程所需工作日历不完整"——真实排程会自动补齐，模拟却因为一件
+            # 与方案无关的事整批失败，排查时完全指错方向。
+            snapshot_calendar = {
+                item.day: {
+                    "is_working_day": item.is_working_day,
+                    "day_type": item.day_type,
+                    "holiday_name": item.holiday_name,
+                }
+                for item in simulation_context.snapshot.calendar_days
+            }
+            missing = _missing_calendar_days(
+                snapshot_calendar, horizon_start.date(), horizon_end.date(),
+            )
+            if missing:
+                return {
+                    "status": "error",
+                    "message": (
+                        f"模拟排程的工作日历快照缺 {len(missing)} 天"
+                        f"（{missing[0]} 起），请重新抓取快照"
+                    ),
+                }
         approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
         forecast_tasks = [task for task in tasks if task.id in forecast_task_ids]
         if forecast_tasks:
@@ -232,11 +296,20 @@ class SchedulerService:
         queue_task_deps = sorted(set(additional_dependencies or []))
         task_deps = sorted(set(business_task_deps) | set(queue_task_deps))
         maintenance_rule = constraints["maintenance_avoidance"]
-        maint_windows = (
-            build_maintenance_windows(instruments, horizon_start)
-            if maintenance_rule.is_enabled
-            else []
-        )
+        if maintenance_rule.is_enabled and simulation_context is not None:
+            maint_windows = [
+                (item.instrument_id, (
+                    max(0, datetime_to_units(item.start_time, horizon_start)),
+                    datetime_to_units(item.end_time, horizon_start),
+                ))
+                for item in simulation_context.snapshot.maintenance_windows
+                if datetime_to_units(item.end_time, horizon_start) > 0
+            ]
+        else:
+            maint_windows = (
+                build_maintenance_windows(instruments, horizon_start)
+                if maintenance_rule.is_enabled else []
+            )
         working_calendar = self._prepare(
             (
                 "working_calendar", horizon_start, horizon_end, total_units,
@@ -251,6 +324,9 @@ class SchedulerService:
                 horizon_end=horizon_end,
                 total_units=total_units,
                 maint_windows=maint_windows,
+                calendar_days=snapshot_calendar,
+                rule_params=(constraints["working_hours"].params if simulation_context is not None else None),
+                rule_enabled=(constraints["working_hours"].is_enabled if simulation_context is not None else None),
             ),
         )
         working_context = working_calendar.context
@@ -261,6 +337,7 @@ class SchedulerService:
 
         project_end_bounds = pending_approval_end_bounds(
             forecast_tasks, global_prefix_sum, horizon_start, total_units,
+            project_end_date_overrides=project_end_date_overrides,
         )
 
         relevant_instrument_ids = {
@@ -285,6 +362,14 @@ class SchedulerService:
                 relevant_assignee_ids,
             ),
         )
+        if simulation_context is not None:
+            fixed_slots = load_fixed_slots(
+                self.db,
+                {task.id for task in tasks},
+                relevant_instrument_ids,
+                relevant_assignee_ids,
+                slot_rows=snapshot_fixed_slots(simulation_context.snapshot.time_slots),
+            )
         # A preserved running slot remains the execution anchor. It must not
         # be loaded again as a fixed interval while the same task is being
         # re-solved, otherwise a zero-length/frozen anchor can suppress all
@@ -299,6 +384,10 @@ class SchedulerService:
             {task.id for task in tasks},
             relevant_instrument_ids,
         )
+        if simulation_context is not None:
+            fixed_bridge_reservations = snapshot_bridge_reservations(
+                simulation_context.snapshot.bridge_reservations,
+            )
 
         model = cp_model.CpModel()
 
@@ -316,6 +405,7 @@ class SchedulerService:
             fixed_slots=fixed_slots,
             remaining_duration_minutes=remaining_duration_minutes,
             project_end_bounds=project_end_bounds,
+            project_end_date_overrides=project_end_date_overrides,
         )
         if variable_error:
             return variable_error

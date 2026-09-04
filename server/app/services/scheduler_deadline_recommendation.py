@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from heapq import heappop, heappush
 from itertools import combinations
 from time import monotonic
-
-from app.models import Project, Task
+from app.models import Project
+from app.services.schedule_snapshot import SimulationContext
 
 MAX_RECOMMENDATIONS = 20
 SEARCH_TIME_LIMIT_SECONDS = 120
@@ -18,13 +18,20 @@ UNDETERMINED = "undetermined"  # 求解超时，什么也没证明
 def enumerate_verified_date_adjustments(
     db, scheduler, project_ids: list[int], original_deadlines: dict[int, datetime],
     horizon_end: datetime, generate_kwargs: dict, project_labels: dict[int, str] | None = None,
+    simulation_context: SimulationContext | None = None,
 ) -> list[dict]:
     """Enumerate minimal project-deadline adjustments verified by the solver."""
     project_ids = [project_id for project_id in project_ids if project_id in original_deadlines]
     priorities = _load_project_priorities(db, project_ids)
     candidates = _candidate_deadlines(project_ids, original_deadlines, horizon_end)
     search_deadline = monotonic() + SEARCH_TIME_LIMIT_SECONDS
-    if not _any_adjustment_can_help(db, scheduler, project_ids, candidates, generate_kwargs):
+    if simulation_context is None:
+        can_help = _any_adjustment_can_help(db, scheduler, project_ids, candidates, generate_kwargs)
+    else:
+        can_help = _any_adjustment_can_help(
+            db, scheduler, project_ids, candidates, generate_kwargs, simulation_context,
+        )
+    if not can_help:
         return []
     results: list[dict] = []
     search_order = _search_order(project_ids, original_deadlines)
@@ -36,6 +43,7 @@ def enumerate_verified_date_adjustments(
                 continue
             adjustment = _first_verified_adjustment(
                 db, scheduler, selected, candidates, generate_kwargs, search_deadline,
+                simulation_context,
             )
             if adjustment:
                 results.append(_format_adjustment(
@@ -43,6 +51,13 @@ def enumerate_verified_date_adjustments(
                 ))
                 if len(results) >= MAX_RECOMMENDATIONS:
                     return _sort_results(results)
+                if size > 1:
+                    # 多项目档拿到一个方案就收工，不再穷举同档其余组合。实测一次
+                    # 搜索：单项目档 306 次试解全部不可行（约 35 秒），两项目档第
+                    # 1 次试解就成了，之后 836 次全是白跑，白白吃掉 85 秒预算，
+                    # 一个备选也没凑出来。单项目档仍然逐个项目试完——"单独延 A"
+                    # 和"单独延 B"是两个真正可选的方案，值得都摆出来。
+                    break
         # 改一个项目的合同日永远优于改两个，前端也把多项目方案标成"需要一起
         # 调整"的退让选项。这一档已经有方案，再往下搜只会得到更差的组合，却要
         # 把用户晾在"计算中"里等满整个预算。
@@ -64,7 +79,7 @@ def _candidate_deadlines(
     }
 
 
-def _any_adjustment_can_help(db, scheduler, project_ids, candidates, generate_kwargs) -> bool:
+def _any_adjustment_can_help(db, scheduler, project_ids, candidates, generate_kwargs, simulation_context=None) -> bool:
     """一次求解判断"延期"这条路在候选范围内是否走得通。
 
     延后结题日只放宽任务的完工上界，是单调放松：把每个候选项目都推到最远的候选
@@ -81,7 +96,9 @@ def _any_adjustment_can_help(db, scheduler, project_ids, candidates, generate_kw
     }
     if not extreme:
         return False
-    return _probe_deadlines(db, scheduler, extreme, generate_kwargs) != INFEASIBLE
+    if simulation_context is None:
+        return _probe_deadlines(db, scheduler, extreme, generate_kwargs) != INFEASIBLE
+    return _probe_deadlines(db, scheduler, extreme, generate_kwargs, simulation_context) != INFEASIBLE
 
 
 def _search_order(project_ids: list[int], original_deadlines: dict[int, datetime]) -> list[int]:
@@ -96,6 +113,7 @@ def _search_order(project_ids: list[int], original_deadlines: dict[int, datetime
 
 def _first_verified_adjustment(
     db, scheduler, selected, candidates, generate_kwargs, search_deadline,
+    simulation_context: SimulationContext | None = None,
 ):
     if any(not candidates[project_id] for project_id in selected):
         return None
@@ -110,7 +128,11 @@ def _first_verified_adjustment(
             project_id: candidates[project_id][indexes[index]]
             for index, project_id in enumerate(selected)
         }
-        if _probe_deadlines(db, scheduler, adjustment, generate_kwargs) == FEASIBLE:
+        if simulation_context is None:
+            status = _probe_deadlines(db, scheduler, adjustment, generate_kwargs)
+        else:
+            status = _probe_deadlines(db, scheduler, adjustment, generate_kwargs, simulation_context)
+        if status == FEASIBLE:
             return adjustment
         for index, project_id in enumerate(selected):
             next_indexes = list(indexes)
@@ -135,43 +157,24 @@ def _load_project_priorities(db, project_ids: list[int]) -> dict[int, int]:
     }
 
 
-def _release_replan_tasks(db, task_ids) -> None:
-    """把待重排任务恢复成"待排"，与真实重排的前置处理保持一致。
-
-    _execute_replan 在求解前会把这些任务置为 pending 再释放时间槽。验证若不做
-    这一步，任务仍挂着 scheduled，求解器当它们已经定死不能动——于是"延期另一个
-    项目给本项目腾时间"这类方案会被系统性误判为不可行，无论延多久都排不下，
-    用户因此拿不到本来可选的方案，搜索也要把候选日期全部白跑一遍。
-    """
-    if not task_ids:
-        return
-    db.query(Task).filter(
-        Task.id.in_(list(task_ids)),
-        Task.status.in_(["scheduled", "blocked", "interrupted"]),
-    ).update({"status": "pending"}, synchronize_session=False)
-
-
-def _probe_deadlines(db, scheduler, deadlines: dict[int, datetime], generate_kwargs: dict) -> str:
+def _probe_deadlines(
+    db, scheduler, deadlines: dict[int, datetime], generate_kwargs: dict,
+    simulation_context: SimulationContext | None = None,
+) -> str:
     """在给定的一组结题日下试解一次，返回三态判定。
 
     必须把"求解器证明了排不下"和"5 秒内没算出来"分开：后者什么都没证明。
     最宽松那次探测放开了全部结题日上界，模型反而更难收敛，实测就会超时返回
     UNKNOWN——若把它当成排不下，本来存在的调整方案会被整批丢掉。
     """
-    savepoint = db.begin_nested()
-    try:
-        for project_id, deadline in deadlines.items():
-            project = db.query(Project).filter(Project.id == project_id).one()
-            project.end_date = deadline
-        _release_replan_tasks(db, generate_kwargs.get("task_ids"))
-        db.flush()
-        result = scheduler.generate(
-            **generate_kwargs, commit=False, emit_advance_notifications=False,
-            include_failure_diagnostics=False, solver_time_limit=5.0,
-            feasibility_only=True,
-        )
-    finally:
-        savepoint.rollback()
+    if simulation_context is not None:
+        generate_kwargs = dict(generate_kwargs)
+        generate_kwargs["simulation_context"] = simulation_context.fork(deadlines)
+    result = scheduler.generate(
+        **generate_kwargs, commit=False, emit_advance_notifications=False,
+        include_failure_diagnostics=False, solver_time_limit=5.0,
+        feasibility_only=True, project_end_date_overrides=deadlines,
+    )
     if result.get("status") == "ok":
         return FEASIBLE
     return INFEASIBLE if result.get("solver_status") == "INFEASIBLE" else UNDETERMINED

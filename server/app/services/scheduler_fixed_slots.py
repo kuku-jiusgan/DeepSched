@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+from types import SimpleNamespace
 
 from ortools.sat.python import cp_model
 
@@ -12,6 +13,24 @@ from app.services.scheduler_helpers import datetime_to_units
 
 
 FIXED_SLOT_STATUSES = ["scheduled", "running", "completed", "paused", "blocked", "interrupted"]
+
+
+def snapshot_fixed_slots(snapshot_slots) -> list:
+    """Adapt immutable snapshot rows to the minimal slot/task interface."""
+    return [
+        SimpleNamespace(
+            id=row.id, task_id=row.task_id, instrument_id=row.instrument_id,
+            plan_start=row.plan_start, plan_end=row.plan_end,
+            actual_start=row.actual_start, actual_end=row.actual_end,
+            tier=row.tier, status=row.status, lifecycle_status=row.lifecycle_status,
+            task=SimpleNamespace(
+                requires_human=row.task_requires_human,
+                assignee_id=row.task_assignee_id,
+            ),
+        )
+        for row in snapshot_slots
+        if row.status in FIXED_SLOT_STATUSES and row.lifecycle_status == "active"
+    ]
 
 
 def _fixed_slot_range(slot: TimeSlot | InstrumentBridgeReservation) -> tuple[datetime, datetime]:
@@ -51,14 +70,18 @@ def load_fixed_slots(
     excluded_task_ids: set[int] | None = None,
     relevant_instrument_ids: set[int] | None = None,
     relevant_assignee_ids: set[int] | None = None,
+    slot_rows: list[TimeSlot] | None = None,
 ) -> list[TimeSlot]:
     # 下面按 slot.task.requires_human / assignee_id 过滤，不预加载的话每个时间槽
     # 都会触发一次单独的 task 查询——实测一次排程里仅此一处就发了 142 条 SQL。
-    query = db.query(TimeSlot).options(joinedload(TimeSlot.task)).filter(
+    if slot_rows is not None:
+        slots = list(slot_rows)
+    else:
+        query = db.query(TimeSlot).options(joinedload(TimeSlot.task)).filter(
         TimeSlot.status.in_(FIXED_SLOT_STATUSES),
         TimeSlot.lifecycle_status == "active",
-    )
-    slots = query.order_by(TimeSlot.instrument_id, TimeSlot.plan_start, TimeSlot.id).all()
+        )
+        slots = query.order_by(TimeSlot.instrument_id, TimeSlot.plan_start, TimeSlot.id).all()
     fixed_slots = [
         slot for slot in slots
         if (slot.status != "completed" or (slot.actual_start and slot.actual_end))
@@ -86,9 +109,13 @@ def load_fixed_slots(
         slot for slot in fixed_slots
         if slot.instrument_id in instrument_ids
         or (
-            slot.task
+            getattr(slot, "task", None) is not None
             and slot.task.requires_human
             and slot.task.assignee_id in assignee_ids
+        )
+        or (
+            getattr(slot, "task_requires_human", False)
+            and getattr(slot, "task_assignee_id", None) in assignee_ids
         )
     ]
 
@@ -108,6 +135,18 @@ def load_fixed_bridge_reservations(
         InstrumentBridgeReservation.plan_start,
         InstrumentBridgeReservation.id,
     ).all()
+
+
+def snapshot_bridge_reservations(rows) -> list:
+    """Adapt immutable bridge snapshots to the constraint interface."""
+    return [
+        SimpleNamespace(
+            id=row.id, task_id=row.task_id, instrument_id=row.instrument_id,
+            previous_task_id=row.previous_task_id, following_task_id=row.following_task_id,
+            plan_start=row.plan_start, plan_end=row.plan_end,
+        )
+        for row in rows
+    ]
 
 
 def add_human_capacity_constraints(

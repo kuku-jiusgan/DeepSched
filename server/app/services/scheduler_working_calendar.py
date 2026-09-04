@@ -36,11 +36,15 @@ def build_working_calendar(
     horizon_end,
     total_units: int,
     maint_windows,
+    calendar_days=None,
+    rule_params=None,
+    rule_enabled=None,
 ) -> WorkingCalendar:
     working_rule = constraints["working_hours"]
     working_params = working_rule.params or {}
     working_context = load_working_time_context(
-        db, horizon_start, horizon_end, instruments,
+        db, horizon_start, horizon_end, instruments, calendar_days=calendar_days,
+        rule_params=rule_params, rule_enabled=rule_enabled,
     )
     global_policy = working_context.global_policy
     day_start_minutes = global_policy.day_start_minutes
