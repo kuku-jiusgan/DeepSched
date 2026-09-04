@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+
+from sqlalchemy.orm import joinedload, selectinload
 from app.models import InstrumentBridgeReservation, Task, TimeSlot
 
 
@@ -51,7 +53,11 @@ def valid_bridge_reservations(db, query) -> list[InstrumentBridgeReservation]:
 
 def historical_bridge_reservations(db, start_date=None, end_date=None) -> list[dict]:
     """Build read-only bridge intervals from completed manual task execution windows."""
-    slots = db.query(TimeSlot).join(Task).filter(
+    query = db.query(TimeSlot).join(Task).options(
+        # slot.task 和 slot.task.time_slots 在循环里都要用到。不预加载的话每条
+        # 时间槽各触发一次查询——实测 8 个结果发了 145 条 SQL。
+        joinedload(TimeSlot.task).selectinload(Task.time_slots),
+    ).filter(
         TimeSlot.instrument_id.is_(None),
         TimeSlot.lifecycle_status == "active",
         TimeSlot.status.in_(["completed", "done"]),
@@ -61,7 +67,20 @@ def historical_bridge_reservations(db, start_date=None, end_date=None) -> list[d
         Task.status.in_(["completed", "done"]),
         TimeSlot.actual_start.isnot(None),
         TimeSlot.actual_end.isnot(None),
-    ).order_by(TimeSlot.actual_start, TimeSlot.id).all()
+    )
+    # 下面按"任务整体执行窗口"与请求区间是否重叠来过滤。任务窗口取的是它全部
+    # 时间槽实际时间的 min/max，所以"窗口尾 > start"等价于"存在某个槽的实际结束
+    # > start"，"窗口头 < end"同理——可以原样下推到 SQL，不必把全库已完成的人工
+    # 时间槽都取回来再在 Python 里筛。
+    if start_date is not None:
+        query = query.filter(TimeSlot.task_id.in_(
+            db.query(TimeSlot.task_id).filter(TimeSlot.actual_end > start_date)
+        ))
+    if end_date is not None:
+        query = query.filter(TimeSlot.task_id.in_(
+            db.query(TimeSlot.task_id).filter(TimeSlot.actual_start < end_date)
+        ))
+    slots = query.order_by(TimeSlot.actual_start, TimeSlot.id).all()
     result = []
     cache: dict = {}
     for slot in slots:
