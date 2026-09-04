@@ -68,11 +68,14 @@ export function useInstrumentGanttData(options: InstrumentGanttDataOptions) {
     if (!silent) loading.value = true
     try {
       const range = visibleRange(options.viewMode.value, options.cursorDate.value)
-      const [[timeslots, reservations], [instrumentItems, faultItems, types]] = await Promise.all([
+      // 待签批工时段以前是等前面全部返回之后再单独发一次，白白多串一个来回。
+      // 它和其余请求之间没有依赖，一起并发即可。
+      const [[timeslots, reservations], [instrumentItems, faultItems, types], pending] = await Promise.all([
         Promise.all([getTimeslots(range, REQUEST_TIMEOUT_MS), getInstrumentBridgeReservations(range, REQUEST_TIMEOUT_MS)]),
         Promise.all([getInstruments(), getInstrumentFaults(), getTaskTypes()]),
+        getPendingApprovalSegments(),
       ])
-      pendingSegments.value = await getPendingApprovalSegments()
+      pendingSegments.value = pending
       slots.value = timeslots
       bridgeReservations.value = reservations
       instruments.value = instrumentItems

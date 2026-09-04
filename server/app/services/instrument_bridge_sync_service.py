@@ -63,8 +63,9 @@ def historical_bridge_reservations(db, start_date=None, end_date=None) -> list[d
         TimeSlot.actual_end.isnot(None),
     ).order_by(TimeSlot.actual_start, TimeSlot.id).all()
     result = []
+    cache: dict = {}
     for slot in slots:
-        bridge = _bridge_for_manual_task(db, slot)
+        bridge = _bridge_for_manual_task(db, slot, cache)
         if bridge is None:
             continue
         actual_start = min(item.actual_start for item in slot.task.time_slots if item.actual_start)
@@ -108,22 +109,34 @@ def invalidate_task_bridge_reservations(db, task_id: int) -> int:
     ).delete(synchronize_session=False)
 
 
-def _bridge_for_manual_task(db, slot: TimeSlot) -> tuple[TimeSlot, TimeSlot] | None:
-    source_slots = db.query(TimeSlot).filter(
-        TimeSlot.task_id == slot.task_id,
-        TimeSlot.instrument_id.is_(None),
-        TimeSlot.lifecycle_status == "active",
-        TimeSlot.status.in_(BRIDGE_SLOT_STATUSES),
-    ).all()
+def _bridge_for_manual_task(db, slot: TimeSlot, cache: dict | None = None) -> tuple[TimeSlot, TimeSlot] | None:
+    # 候选集只取决于负责人，与具体时间槽无关，但这里是逐槽调用的：一次甘特图
+    # 请求里同一个人的那条全库扫描会被重复几十遍，实测 9 条桥接要 1.2 秒。
+    # cache 按负责人存一次，同一次请求内复用。
+    cache = cache if cache is not None else {}
+    source_slots = cache.setdefault("source", {}).get(slot.task_id)
+    if source_slots is None:
+        source_slots = db.query(TimeSlot).filter(
+            TimeSlot.task_id == slot.task_id,
+            TimeSlot.instrument_id.is_(None),
+            TimeSlot.lifecycle_status == "active",
+            TimeSlot.status.in_(BRIDGE_SLOT_STATUSES),
+        ).all()
+        cache["source"][slot.task_id] = source_slots
+    if not source_slots:
+        return None
     source_start = min(item.plan_start for item in source_slots)
     source_end = max(item.plan_end for item in source_slots)
-    candidates = db.query(TimeSlot).join(Task).filter(
-        TimeSlot.task_id != slot.task_id,
-        TimeSlot.lifecycle_status == "active",
-        TimeSlot.status.in_(BRIDGE_SLOT_STATUSES),
-        Task.requires_human.is_(True),
-        Task.assignee_id == slot.task.assignee_id,
-    ).order_by(TimeSlot.plan_end.desc(), TimeSlot.id.desc()).all()
+    assignee_id = slot.task.assignee_id
+    by_assignee = cache.setdefault("candidates", {})
+    if assignee_id not in by_assignee:
+        by_assignee[assignee_id] = db.query(TimeSlot).join(Task).filter(
+            TimeSlot.lifecycle_status == "active",
+            TimeSlot.status.in_(BRIDGE_SLOT_STATUSES),
+            Task.requires_human.is_(True),
+            Task.assignee_id == assignee_id,
+        ).order_by(TimeSlot.plan_end.desc(), TimeSlot.id.desc()).all()
+    candidates = [item for item in by_assignee[assignee_id] if item.task_id != slot.task_id]
     previous = max(
         (item for item in candidates if (item.actual_end or item.plan_end) <= source_start),
         key=lambda item: (item.actual_end or item.plan_end, item.id),

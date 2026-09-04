@@ -55,6 +55,7 @@ def working_time_spans(
     start: datetime,
     end: datetime,
     instrument_id: int | None = None,
+    context=None,
 ) -> list[tuple[datetime, datetime]]:
     """把一个时间窗口切成落在工作日历内的若干段。
 
@@ -65,7 +66,10 @@ def working_time_spans(
     if end <= start:
         return []
 
-    context = load_working_time_context(db, start, end)
+    # context 由调用方按整批数据一次性建好传进来。不传就自己建——但那会为每一行
+    # 重新查一遍排程规则、全部仪器和工作日历：甘特图一屏 77 个时间槽就是 77 遍，
+    # 实测这一处占掉接口 946 毫秒里的绝大部分。
+    context = context if context is not None else load_working_time_context(db, start, end)
     policy = context.policy_for(instrument_id)
     calendar_days = context.calendar_days
 

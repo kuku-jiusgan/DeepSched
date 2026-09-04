@@ -107,7 +107,28 @@ def list_timeslots(
         q = q.filter(TimeSlot.tier == tier)
     slots = q.order_by(TimeSlot.plan_start).all()
     delay_logs = _load_delay_logs(db, slots)
-    return [_enrich_slot(s, db, delay_logs) for s in slots]
+    working_context = _slots_working_context(db, slots)
+    return [_enrich_slot(s, db, delay_logs, working_context) for s in slots]
+
+
+def _slots_working_context(db: Session, slots: list[TimeSlot]):
+    """整批时间槽共用一份工作时间上下文。
+
+    甘特图要把每个时间槽按工作日历切成显示分段，逐个算的话每次都要重查排程规则、
+    全部仪器和工作日历。范围取这批数据的最早开始到最晚结束，比逐行各建一份既快
+    又完全等价。
+    """
+    if not slots:
+        return None
+    from app.services.instrument_working_time_service import load_working_time_context
+
+    starts = [slot.plan_start for slot in slots if slot.plan_start]
+    ends = [slot.plan_end for slot in slots if slot.plan_end]
+    ends.extend(slot.actual_end for slot in slots if slot.actual_end)
+    starts.extend(slot.actual_start for slot in slots if slot.actual_start)
+    if not starts or not ends:
+        return None
+    return load_working_time_context(db, min(starts), max(ends))
 
 
 @router.get("/instrument-bridge-reservations", response_model=List[InstrumentBridgeReservationOut])
@@ -390,6 +411,7 @@ def _enrich_slot(
     slot: TimeSlot,
     db: Session,
     delay_logs: dict[tuple[str, int], list[tuple[AuditLog, dict]]] | None = None,
+    working_context=None,
 ) -> TimeSlotOut:
     task = slot.task
     inst = slot.instrument
@@ -414,7 +436,7 @@ def _enrich_slot(
         actual_start=actual_start, actual_end=actual_end,
         task_actual_start=task_actual_start, task_actual_end=task_actual_end,
         is_night_run=bool(slot.is_night_run),
-        display_spans=_slot_display_spans(db, slot, actual_start, actual_end),
+        display_spans=_slot_display_spans(db, slot, actual_start, actual_end, working_context),
         tier=slot.tier, status=slot.status, execution_status=_slot_execution_status(slot, task),
         task_name=task.name if task else None,
         task_type=task.task_type if task else None,
@@ -449,6 +471,7 @@ def _slot_display_spans(
     slot: TimeSlot,
     actual_start: datetime | None,
     actual_end: datetime | None,
+    working_context=None,
 ) -> list[tuple[datetime, datetime]]:
     """时间槽在甘特图上应当画出来的分段。
 
@@ -462,7 +485,7 @@ def _slot_display_spans(
         return []
     if slot.is_night_run:
         return [(start, end)]
-    return working_time_spans(db, start, end, slot.instrument_id)
+    return working_time_spans(db, start, end, slot.instrument_id, working_context)
 
 
 def _slot_actual_window(task: Task | None, slot: TimeSlot):
