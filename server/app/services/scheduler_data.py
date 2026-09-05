@@ -167,6 +167,13 @@ def load_diagnostic_resource_tasks(
         # 还会逐层放大。写法照 approval_gate_query_service 里已有的那条。
         selectinload(Task.predecessors).joinedload(TaskDependency.predecessor),
         selectinload(Task.capability_requirements),
+        # 下面这几项是诊断专用的，不预加载就是逐任务发 SQL：占用明细要顺着
+        # task.parent 上溯取顶层任务名、要读负责人姓名、要从任务反向拿项目的
+        # 全量任务集合。排程失败时诊断必须又快又全，不能在这里逐条打点。
+        selectinload(Task.parent).selectinload(Task.parent),
+        selectinload(Task.assignee),
+        selectinload(Task.project).selectinload(Project.tasks).selectinload(Task.children),
+        selectinload(Task.project).selectinload(Project.tasks).selectinload(Task.time_slots),
     )
     if excluded_task_ids:
         query = query.filter(~Task.id.in_(excluded_task_ids))
@@ -191,5 +198,9 @@ def load_bridge_candidate_tasks(db, project_ids: set[int]):
     ).options(
         selectinload(Task.project),
         selectinload(Task.time_slots),
-        selectinload(Task.predecessors),
+        # 依赖要链到前置任务本身，否则 build_dependencies 逐条发 SQL。
+        selectinload(Task.predecessors).joinedload(TaskDependency.predecessor),
+        # 桥接占用要顺着父链取顶层任务。
+        selectinload(Task.parent).selectinload(Task.parent),
+        selectinload(Task.capability_requirements),
     ).all()

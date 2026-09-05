@@ -99,6 +99,107 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class FailureDiagnosticsReadsAreBatchedTest(unittest.TestCase):
+    """排程失败时的诊断取数不能随项目任务数增长。
+
+    诊断要顺着任务反向拿项目的全量叶子任务、上溯父链取顶层任务名、读时间槽和负责人。
+    这些关联原先一个都没预加载，每访问一次就是一条 SQL——项目越大诊断越慢，而这恰恰
+    是最需要它快且完整的时候（排不下时人正等着看缺口在哪）。
+    """
+
+    def _run(self, occupying_tasks: int) -> int:
+        from datetime import datetime as real_datetime
+
+        from ortools.sat.python import cp_model  # noqa: F401  确保求解器已加载
+
+        import app.services.scheduler as scheduler_module
+        import app.services.scheduler_failure_response as failure_module
+        from app.models import Instrument, TaskDependency
+        from app.services.scheduler import SchedulerService
+
+        now = real_datetime(2026, 9, 7, 9, 0)
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine, expire_on_commit=False)()
+        instruments = []
+        for code in ("SCALE-A", "SCALE-B"):
+            instrument = Instrument(code=code, name=code, status="idle",
+                                    availability_status="available",
+                                    effective_work_start="08:30",
+                                    effective_work_end="20:00")
+            db.add(instrument)
+            instruments.append(instrument)
+        db.flush()
+        ids = [item.id for item in instruments]
+        other = Project(code="SCALE-OCC", name="占位项目", priority=5,
+                        start_date=now, end_date=now + timedelta(days=30))
+        db.add(other)
+        db.flush()
+        for index in range(occupying_tasks):
+            task = Task(project_id=other.id, name="占位%d" % index, task_type="test",
+                        status="scheduled", est_duration_hours=3,
+                        requires_instrument=True, requires_human=False,
+                        instrument_ids=[ids[0]])
+            db.add(task)
+            db.flush()
+            db.add(TimeSlot(
+                task_id=task.id, schedule_run_id="seed", instrument_id=ids[0],
+                plan_start=now + timedelta(days=1, hours=index),
+                plan_end=now + timedelta(days=1, hours=index + 1),
+                tier="confirmed", status="scheduled", lifecycle_status="active",
+            ))
+        project = Project(code="SCALE-TIGHT", name="排不下的项目", priority=1,
+                          start_date=now, end_date=now + timedelta(days=4))
+        db.add(project)
+        db.flush()
+        tasks = []
+        for name in ("前序", "后续"):
+            task = Task(project_id=project.id, name=name, task_type="test",
+                        status="pending", est_duration_hours=30,
+                        requires_instrument=True, requires_human=False,
+                        instrument_ids=ids)
+            db.add(task)
+            db.flush()
+            tasks.append(task)
+        db.add(TaskDependency(task_id=tasks[1].id, predecessor_id=tasks[0].id))
+        db.commit()
+
+        counting = {"on": False, "n": 0}
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def record(conn, cursor, statement, parameters, context, executemany):
+            if counting["on"]:
+                counting["n"] += 1
+
+        real = failure_module.build_failure_response
+
+        def _spy(*args, **kwargs):
+            counting["on"] = True
+            try:
+                return real(*args, **kwargs)
+            finally:
+                counting["on"] = False
+
+        scheduler_module.build_failure_response = _spy
+        try:
+            result = SchedulerService(db)._generate(
+                now=now, current_project_id=project.id,
+                commit=False, emit_advance_notifications=False,
+            )
+            self.assertEqual("error", result["status"], "场景必须真的排不下，否则这条测试是空转")
+            self.assertGreater(counting["n"], 0, "没有走到失败诊断")
+            return counting["n"]
+        finally:
+            scheduler_module.build_failure_response = real
+            db.close()
+
+    def test_query_count_does_not_grow_with_project_size(self):
+        few = self._run(2)
+        many = self._run(20)
+
+        self.assertEqual(few, many, "占位任务从 2 个涨到 20 个，诊断 SQL 从 %d 条涨到 %d 条" % (few, many))
+
+
 class SolverTraceReadsAreBatchedTest(unittest.TestCase):
     """求解日志的取数不能随时间槽数量增长。
 

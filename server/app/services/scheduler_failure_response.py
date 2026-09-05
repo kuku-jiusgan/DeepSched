@@ -146,7 +146,9 @@ def _rehydrate(db, tasks):
 
     传进来的已经是实体时原样返回——诊断相关的几个 loader 本来就交实体。
     """
-    from app.models import Task
+    from sqlalchemy.orm import selectinload
+
+    from app.models import Project, Task, TaskDependency
 
     if db is None or not tasks:
         return tasks
@@ -155,7 +157,17 @@ def _rehydrate(db, tasks):
     ordered_ids = [task.id for task in tasks]
     by_id = {
         entity.id: entity
-        for entity in db.query(Task).filter(Task.id.in_(ordered_ids)).all()
+        for entity in db.query(Task).filter(Task.id.in_(ordered_ids)).options(
+            # 换回实体只是第一步；诊断随后要顺着这些关联走，不预加载就是逐任务
+            # 发 SQL——排程失败时的诊断会随项目任务数线性变慢。
+            selectinload(Task.project).selectinload(Project.tasks).selectinload(Task.children),
+            selectinload(Task.project).selectinload(Project.tasks).selectinload(Task.time_slots),
+            selectinload(Task.parent).selectinload(Task.parent),
+            selectinload(Task.assignee),
+            selectinload(Task.time_slots),
+            selectinload(Task.predecessors).joinedload(TaskDependency.predecessor),
+            selectinload(Task.capability_requirements),
+        ).all()
     }
     return [by_id[task_id] for task_id in ordered_ids if task_id in by_id]
 
@@ -166,7 +178,9 @@ def _rehydrate_slots(db, slots):
     诊断要读 slot.task.project.code、slot.task.assignee.display_name，还要顺着
     slot.task.parent 上溯——值对象上只有 project_id / assignee_id，直接 AttributeError。
     """
-    from app.models import TimeSlot
+    from sqlalchemy.orm import joinedload, selectinload
+
+    from app.models import Task, TimeSlot
 
     if db is None or not slots:
         return slots
@@ -175,6 +189,12 @@ def _rehydrate_slots(db, slots):
     ordered_ids = [slot.id for slot in slots]
     by_id = {
         entity.id: entity
-        for entity in db.query(TimeSlot).filter(TimeSlot.id.in_(ordered_ids)).all()
+        for entity in db.query(TimeSlot).filter(TimeSlot.id.in_(ordered_ids)).options(
+            # 诊断要读 slot.task.project.code、slot.task.assignee.display_name，
+            # 还要顺着 slot.task.parent 上溯取顶层任务名。
+            joinedload(TimeSlot.task).selectinload(Task.project),
+            joinedload(TimeSlot.task).selectinload(Task.assignee),
+            joinedload(TimeSlot.task).selectinload(Task.parent).selectinload(Task.parent),
+        ).all()
     }
     return [by_id[slot_id] for slot_id in ordered_ids if slot_id in by_id]
