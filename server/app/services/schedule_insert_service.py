@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.models import Project, Task, TaskDependency, TimeSlot
-from app.services.schedule_slot_protection_service import task_has_immovable_slot
+from app.services.schedule_slot_protection_service import (
+    task_has_immovable_slot,
+    tasks_with_immovable_slot,
+)
 from app.schemas.schemas import (
     InsertOrderImpact,
     InsertOrderPreview,
@@ -410,53 +413,86 @@ def _load_lower_priority_movable_tasks(
         if include_same_priority
         else Project.priority > insert_priority
     )
+    # 资源过滤条件只取决于入参，与具体任务无关，原先在循环里重复拼了 N 遍。
+    # 一个都没有时每个任务都会被 continue 掉，等价于没有候选。
+    resource_filters = []
+    if selected_instrument_ids:
+        resource_filters.append(TimeSlot.instrument_id.in_(selected_instrument_ids))
+    if selected_assignee_ids:
+        resource_filters.append(
+            Task.requires_human.is_(True) & Task.assignee_id.in_(selected_assignee_ids)
+        )
+    if not resource_filters:
+        return []
+
     candidate_tasks = db.query(Task).join(Project).filter(
         priority_filter,
         Task.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
         ~Task.id.in_(excluded_task_ids),
     ).order_by(Project.priority, Task.created_at, Task.id).all()
-    movable = []
-    for task in candidate_tasks:
-        if unstarted_projects_only and _project_has_started(db, task.project_id):
-            continue
-        has_protected_slot = task_has_immovable_slot(db, task.id)
-        resource_filters = []
-        if selected_instrument_ids:
-            resource_filters.append(TimeSlot.instrument_id.in_(selected_instrument_ids))
-        if selected_assignee_ids:
-            resource_filters.append(
-                Task.requires_human.is_(True) & Task.assignee_id.in_(selected_assignee_ids)
-            )
-        if not resource_filters:
-            continue
-        has_future_slot = db.query(TimeSlot.id).join(Task).filter(
-            TimeSlot.task_id == task.id,
+    if not candidate_tasks:
+        return []
+
+    # 下面三项原本都是在循环里逐个任务查的，一次排程光这个函数就发了 40 多条
+    # SQL。判定规则一字未改，只是把"每个任务问一遍"换成"一次问清楚这批任务
+    # 里哪些命中"。
+    candidate_ids = [task.id for task in candidate_tasks]
+    started_project_ids = (
+        _started_project_ids(db, {task.project_id for task in candidate_tasks})
+        if unstarted_projects_only else set()
+    )
+    protected_task_ids = tasks_with_immovable_slot(db, candidate_ids)
+    future_slot_task_ids = {
+        task_id for (task_id,) in db.query(TimeSlot.task_id).join(Task).filter(
+            TimeSlot.task_id.in_(candidate_ids),
             TimeSlot.lifecycle_status == "active",
             TimeSlot.tier.in_(["confirmed", "forecast"]),
             TimeSlot.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
             TimeSlot.plan_end > (minimum_start or datetime.now()),
             (resource_filters[0] if len(resource_filters) == 1 else resource_filters[0] | resource_filters[1]),
-        ).first()
-        if not has_protected_slot and has_future_slot:
-            movable.append(task)
-    return movable
+        ).distinct().all()
+    }
+    return [
+        task for task in candidate_tasks
+        if task.project_id not in started_project_ids
+        and task.id not in protected_task_ids
+        and task.id in future_slot_task_ids
+    ]
+
+
+def _started_project_ids(db, project_ids: set[int]) -> set[int]:
+    """一次查出这批项目里哪些已经开工了。
+
+    "开工"有两种表现：有任务已在跑或已完成，或者有时间槽已经实际开始。原先是
+    逐个项目问两条 SQL，在候选筛选的循环里被放大成 N 倍。
+    """
+    if not project_ids:
+        return set()
+    started = {
+        project_id for (project_id,) in db.query(Task.project_id).filter(
+            Task.project_id.in_(project_ids),
+            Task.status.in_(["running", "completed", "done"]),
+        ).distinct().all()
+    }
+    remaining = project_ids - started
+    if not remaining:
+        return started
+    started.update(
+        project_id for (project_id,) in db.query(Task.project_id).join(
+            TimeSlot, TimeSlot.task_id == Task.id,
+        ).filter(
+            Task.project_id.in_(remaining),
+            (
+                TimeSlot.actual_start.isnot(None)
+                | TimeSlot.status.in_(["running", "completed"])
+            ),
+        ).distinct().all()
+    )
+    return started
 
 
 def _project_has_started(db, project_id: int) -> bool:
-    started_task = db.query(Task.id).filter(
-        Task.project_id == project_id,
-        Task.status.in_(["running", "completed", "done"]),
-    ).first()
-    if started_task:
-        return True
-    started_slot = db.query(TimeSlot.id).join(Task).filter(
-        Task.project_id == project_id,
-        (
-            TimeSlot.actual_start.isnot(None)
-            | TimeSlot.status.in_(["running", "completed"])
-        ),
-    ).first()
-    return started_slot is not None
+    return project_id in _started_project_ids(db, {project_id})
 
 
 def _selected_instrument_ids(tasks: list[Task]) -> set[int]:

@@ -28,8 +28,14 @@ def rebuild_instrument_bridge_reservations(db, schedule_run_id: str | None = Non
         Task.status.notin_(["completed", "done"]),
     ).order_by(TimeSlot.plan_start, TimeSlot.id).all()
     created = 0
+    # 逐槽判定都要走 _bridge_for_manual_task，而它内部按负责人做全库扫描。
+    # 一次重建里同一个负责人会被重复扫几十遍——实测这一个函数占了整次排程
+    # 三成的 SQL。缓存按负责人存一次，本次重建内复用。
+    cache: dict = {_SOURCE_CACHE: _source_slots_by_task(
+        db, {slot.task_id for slot in manual_slots},
+    )}
     for slot in manual_slots:
-        bridge = _bridge_for_manual_task(db, slot)
+        bridge = _bridge_for_manual_task(db, slot, cache)
         if bridge is None:
             continue
         previous, following = bridge
@@ -138,20 +144,38 @@ def invalidate_task_bridge_reservations(db, task_id: int) -> int:
     ).delete(synchronize_session=False)
 
 
+_SOURCE_CACHE = "source"
+
+
+def _source_slots_by_task(db, task_ids: set[int]) -> dict[int, list[TimeSlot]]:
+    """一次取齐这批任务的人工时间槽，按任务分组。
+
+    原先是逐个任务查——重建桥接时每条候选槽都会问一次自己那个任务的槽，
+    实测一次排程里这一条就发了 39 条 SQL。
+    """
+    if not task_ids:
+        return {}
+    grouped: dict[int, list[TimeSlot]] = {task_id: [] for task_id in task_ids}
+    rows = db.query(TimeSlot).filter(
+        TimeSlot.task_id.in_(task_ids),
+        TimeSlot.instrument_id.is_(None),
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.status.in_(BRIDGE_SLOT_STATUSES),
+    ).all()
+    for row in rows:
+        grouped[row.task_id].append(row)
+    return grouped
+
+
 def _bridge_for_manual_task(db, slot: TimeSlot, cache: dict | None = None) -> tuple[TimeSlot, TimeSlot] | None:
     # 候选集只取决于负责人，与具体时间槽无关，但这里是逐槽调用的：一次甘特图
     # 请求里同一个人的那条全库扫描会被重复几十遍，实测 9 条桥接要 1.2 秒。
     # cache 按负责人存一次，同一次请求内复用。
     cache = cache if cache is not None else {}
-    source_slots = cache.setdefault("source", {}).get(slot.task_id)
-    if source_slots is None:
-        source_slots = db.query(TimeSlot).filter(
-            TimeSlot.task_id == slot.task_id,
-            TimeSlot.instrument_id.is_(None),
-            TimeSlot.lifecycle_status == "active",
-            TimeSlot.status.in_(BRIDGE_SLOT_STATUSES),
-        ).all()
-        cache["source"][slot.task_id] = source_slots
+    by_task = cache.setdefault(_SOURCE_CACHE, {})
+    if slot.task_id not in by_task:
+        by_task.update(_source_slots_by_task(db, {slot.task_id}))
+    source_slots = by_task.get(slot.task_id) or []
     if not source_slots:
         return None
     source_start = min(item.plan_start for item in source_slots)

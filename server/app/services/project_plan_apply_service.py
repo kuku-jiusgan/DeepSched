@@ -20,7 +20,10 @@ from app.services.project_plan_apply_helpers import (
 from app.services.scheduler_persistence import ACTIVE_EXECUTION_STATUSES
 from app.services.task_delay_status_service import reset_task_delay
 from app.services.schedule_priority_dependency_service import build_schedule_priority_dependencies
-from app.services.schedule_slot_protection_service import task_has_immovable_slot
+from app.services.schedule_slot_protection_service import (
+    task_has_immovable_slot,
+    tasks_with_immovable_slot,
+)
 from app.services.project_plan_impact_service import (
     build_project_impacts as _build_project_impacts,
     project_completions as _project_completions,
@@ -418,24 +421,27 @@ def _load_later_deadline_movable_tasks(
         Project.end_date.isnot(None),
         Project.end_date > project.end_date,
     ).order_by(Project.end_date, Project.priority, Task.created_at, Task.id).all()
-    conflicting_ids = set()
-    for task in candidates:
-        if _task_is_fully_protected(db, task.id):
-            continue
-        resource_filters = []
-        if selected_instruments:
-            resource_filters.append(TimeSlot.instrument_id.in_(selected_instruments))
-        elif selected_assignees:
-            resource_filters.append(Task.assignee_id.in_(selected_assignees))
-        future_slot = db.query(TimeSlot.id).join(Task).filter(
-            TimeSlot.task_id == task.id,
+    if not candidates:
+        return []
+    # 资源过滤条件与具体任务无关，原先在循环里重复拼了 N 遍。
+    resource_filters = []
+    if selected_instruments:
+        resource_filters.append(TimeSlot.instrument_id.in_(selected_instruments))
+    elif selected_assignees:
+        resource_filters.append(Task.assignee_id.in_(selected_assignees))
+    candidate_ids = [task.id for task in candidates]
+    protected_ids = _fully_protected_task_ids(db, set(candidate_ids))
+    conflicting_ids = {
+        task_id for (task_id,) in db.query(TimeSlot.task_id).join(Task).filter(
+            TimeSlot.task_id.in_([
+                task_id for task_id in candidate_ids if task_id not in protected_ids
+            ]),
             TimeSlot.tier.in_(MOVABLE_TIERS),
             TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
             TimeSlot.plan_end > (minimum_start or datetime.now()),
             *resource_filters,
-        ).first()
-        if future_slot:
-            conflicting_ids.add(task.id)
+        ).distinct().all()
+    }
     if not conflicting_ids:
         return []
 
@@ -444,10 +450,18 @@ def _load_later_deadline_movable_tasks(
             Project.end_date > project.end_date,
         ).all()
     }
+    branches = {
+        task_id: _downstream_ids(db, {task_id}, project_task_ids)
+        for task_id in conflicting_ids
+    }
+    # 原先每个分支上的每个任务都单独判一次"是否整个被保护住"，而那个判断本身
+    # 又是两条 SQL。这里先把所有涉及的任务凑齐，一次判完再回来筛。
+    fully_protected = _fully_protected_task_ids(
+        db, {task_id for branch in branches.values() for task_id in branch},
+    )
     affected_ids = set()
-    for task_id in conflicting_ids:
-        branch_ids = _downstream_ids(db, {task_id}, project_task_ids)
-        if any(_task_is_fully_protected(db, branch_id) for branch_id in branch_ids):
+    for branch_ids in branches.values():
+        if any(task_id in fully_protected for task_id in branch_ids):
             continue
         affected_ids.update(branch_ids)
     if not affected_ids:
@@ -456,22 +470,30 @@ def _load_later_deadline_movable_tasks(
         Task.id.in_(affected_ids),
         Task.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
     ).all()
-    return [
-        task for task in affected_tasks
-        if not _task_is_fully_protected(db, task.id)
-    ]
+    return [task for task in affected_tasks if task.id not in fully_protected]
+
+
+def _fully_protected_task_ids(db, task_ids: set[int]) -> set[int]:
+    """一次判出这批任务里哪些"整个被保护住"——有不可移动的槽，且没有任何还能挪的槽。"""
+    if not task_ids:
+        return set()
+    protected = tasks_with_immovable_slot(db, task_ids)
+    if not protected:
+        return set()
+    still_movable = {
+        task_id for (task_id,) in db.query(TimeSlot.task_id).filter(
+            TimeSlot.task_id.in_(protected),
+            TimeSlot.tier.in_(MOVABLE_TIERS),
+            TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
+            TimeSlot.actual_start.is_(None),
+            TimeSlot.plan_end > datetime.now(),
+        ).distinct().all()
+    }
+    return protected - still_movable
 
 
 def _task_is_fully_protected(db, task_id: int) -> bool:
-    if not _task_has_protected_slot(db, task_id):
-        return False
-    return db.query(TimeSlot.id).filter(
-        TimeSlot.task_id == task_id,
-        TimeSlot.tier.in_(MOVABLE_TIERS),
-        TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
-        TimeSlot.actual_start.is_(None),
-        TimeSlot.plan_end > datetime.now(),
-    ).first() is None
+    return task_id in _fully_protected_task_ids(db, {task_id})
 
 
 def _task_has_protected_slot(db, task_id: int) -> bool:
