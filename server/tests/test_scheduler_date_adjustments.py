@@ -93,11 +93,12 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
 
         self.assertEqual([], results)
 
-    def test_gives_up_after_one_solve_when_no_candidate_can_help(self):
-        """延期是单调放松：全推到最远还排不下，就没有可行的组合可找。
+    def test_gives_up_on_a_hopeless_project_after_two_solves(self):
+        """延期是单调放松：最远那天都排不下，这个项目就没有可行日期可找。
 
-        真实案例里卡住排程的项目没进候选名单，1237 次组合试探必然全部失败，
-        白等满 120 秒才给出一张空白方案表。
+        每次试解都是一次完整排程（实测 4.3 秒），次数就是成本。真实案例里卡住
+        排程的项目没进候选名单，1237 次组合试探必然全部失败，白等满 120 秒才
+        给出一张空白方案表。现在一个无解的项目最多试两次：最近那天和最远那天。
         """
         calls = []
 
@@ -108,10 +109,13 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
         results = self.enumerate_with(validator)
 
         self.assertEqual([], results)
-        self.assertEqual(1, len(calls))
+        # 两个项目，各自最多"最近那天 + 最远那天"两次。
+        self.assertLessEqual(len(calls), 4, calls)
+        self.assertTrue(all(len(changes) == 1 for changes in calls), calls)
         self.assertEqual(
-            {1: self.horizon_end.date(), 2: self.horizon_end.date()},
-            {project_id: date.date() for project_id, date in calls[0].items()},
+            {self.horizon_end.date()},
+            {date.date() for changes in calls for date in changes.values()
+             if date.date() == self.horizon_end.date()},
         )
 
     def test_keeps_searching_when_the_first_probe_only_times_out(self):
@@ -143,8 +147,7 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
 
         self.enumerate_with(validator)
 
-        self.assertEqual([1, 2], calls[0])       # 预检：全部推到最远
-        self.assertEqual([2], calls[1])          # 首个单项目试探是结题日更早的 2
+        self.assertEqual([2], calls[0])          # 首个试探是结题日更早的 2
 
 
 if __name__ == "__main__":
@@ -170,8 +173,8 @@ class BinarySearchOverCandidateDatesTest(unittest.TestCase):
             self.calls.append(changes)
             offset = (next(iter(changes.values())).date() - self.deadline.date()).days
             if first_feasible_offset is None:
-                # 全程超时：预检不是"证明不可行"，所以搜索会照常往下走，
-                # 二分要自己把整个候选区间收完才能断言没有方案。
+                # 全程超时。超时不是"证明不可行"，但最远那天也没被证明可行，
+                # 所以这个项目直接判定没有方案。
                 return UNDETERMINED
             return FEASIBLE if offset >= first_feasible_offset else INFEASIBLE
 
@@ -188,13 +191,22 @@ class BinarySearchOverCandidateDatesTest(unittest.TestCase):
 
         self.assertEqual(1, len(results))
         self.assertEqual(37, results[0]["changes"][0]["delay_days"])
+        # 64 个候选：最近、最远各一次，再倍增+二分收敛。逐天扫要 37 次。
+        self.assertLessEqual(len(self.calls), 12, len(self.calls))
+
+    def test_a_one_day_delay_costs_a_single_solve(self):
+        """答案很小是常态，这一档不能还走满 log2(N) 次。"""
+        results = self.enumerate_with(first_feasible_offset=1)
+
+        self.assertEqual(1, results[0]["changes"][0]["delay_days"])
+        self.assertEqual(1, len(self.calls), self.calls)
 
     def test_proves_no_solution_within_logarithmic_probes(self):
         results = self.enumerate_with(first_feasible_offset=None)
 
         self.assertEqual([], results)
-        # 64 个候选：二分 7 次足够，加上开头那次最宽松预检。逐天扫要 64 次。
-        self.assertLessEqual(len(self.calls), 9, len(self.calls))
+        # 最近那天 + 最远那天就能断言，逐天扫要 64 次。
+        self.assertLessEqual(len(self.calls), 2, len(self.calls))
 
 
 class ProbeGoesThroughTheRealEntryPointTest(unittest.TestCase):

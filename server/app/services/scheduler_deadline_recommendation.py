@@ -28,14 +28,10 @@ def enumerate_verified_date_adjustments(
     priorities = _load_project_priorities(db, project_ids)
     candidates = _candidate_deadlines(project_ids, original_deadlines, horizon_end)
     search_deadline = monotonic() + SEARCH_TIME_LIMIT_SECONDS
-    if simulation_context is None:
-        can_help = _any_adjustment_can_help(db, scheduler, project_ids, candidates, generate_kwargs)
-    else:
-        can_help = _any_adjustment_can_help(
-            db, scheduler, project_ids, candidates, generate_kwargs, simulation_context,
-        )
-    if not can_help:
-        return []
+    # 这里曾经先做一次"所有项目都放到求解视界还行不行"的全局预检，用来在完全
+    # 没救时提前收工。现在每个项目自己会先试最远那天，同样能定论，预检就纯属
+    # 多余了——而且它把所有结题日一起放宽，模型最松、求解器搜得最久，实测单这
+    # 一次就要 18.2 秒，比它能省下的那几次快速否定贵得多。
     results: list[dict] = []
     # 每个项目单独出一套方案：只动它一个，其余项目原地不动，求它最短要延几天。
     # 方案之间互相独立，不存在"这 2 个项目需要一起调整"的组合方案——那种方案
@@ -90,28 +86,6 @@ def _candidate_deadlines(
     }
 
 
-def _any_adjustment_can_help(db, scheduler, project_ids, candidates, generate_kwargs, simulation_context=None) -> bool:
-    """一次求解判断"延期"这条路在候选范围内是否走得通。
-
-    延后结题日只放宽任务的完工上界，是单调放松：把每个候选项目都推到最远的候选
-    日期，就是整个搜索空间里最宽松的一种改法。这一步被证明排不下，后面成百上千
-    次组合试探必然全部失败。曾经因此空转满 120 秒，最后只给出一张空白的方案表，
-    还顺带把重排请求锁在后面等超时。
-
-    只有拿到不可行的证明才放弃：超时未决时照常往下搜，宁可多花时间也不能把
-    存在的方案漏掉。
-    """
-    extreme = {
-        project_id: candidates[project_id][-1]
-        for project_id in project_ids if candidates[project_id]
-    }
-    if not extreme:
-        return False
-    if simulation_context is None:
-        return _probe_deadlines(db, scheduler, extreme, generate_kwargs) != INFEASIBLE
-    return _probe_deadlines(db, scheduler, extreme, generate_kwargs, simulation_context) != INFEASIBLE
-
-
 def _search_order(project_ids: list[int], original_deadlines: dict[int, datetime]) -> list[int]:
     """按结题日从早到晚试。
 
@@ -126,37 +100,64 @@ def _first_verified_adjustment(
     db, scheduler, project_id: int, candidates, generate_kwargs, search_deadline,
     simulation_context: SimulationContext | None = None,
 ):
-    """二分找这个项目最短要延几天，找不到返回 None。
+    """找这个项目最短要延几天，找不到返回 None。
 
     延后结题日只放宽任务的完工上界，是单调放松：某个日期可行，则更晚的日期必然
-    可行。于是候选序列上"前面全不可行、后面全可行"，可以二分。
+    可行。于是候选序列上"前面全不可行、后面全可行"，可以二分。但每次试解都是
+    一次完整排程（实测 4.3 秒，其中 CP-SAT 求解就占 2.7 秒），次数才是成本，
+    所以在二分之外还做了两件事：
 
-    逐天顺序试的代价全压在「其实没有解」的项目上——必须一路试到求解视界才能断言
-    单独延它不行。实测一次搜索里三个这样的项目吃掉了 227 次试解，二分每个 7 次
-    就能得到同样结论。
+    先试**最远那天**。它不可行就意味着整段都不可行，一次就能断言"单独延这个
+    项目没用"——否则要二分满 7 次才敢下同样的结论。一次搜索里通常多数项目都
+    属于这种，此前光是证明它们无解就占掉大半时间。
+
+    再从**近端倍增**试探（第 1、2、4、8… 天），命中后只在最后那一格里二分。
+    实际答案几乎都很小（常见就是延 1 天），倍增两次就能收敛，而二分不论答案
+    多小都要走满 log2(N) 次。
 
     5 秒没算出结论的（undetermined）当作"尚未证明可行"往右找。这样返回的日期
-    仍然是求解器验证过可行的，只是真正的最小值那天恰好超时时会比它晚一点——
-    逐天扫也有同样的问题，只是每次只跳一天。
+    仍然是求解器验证过可行的，只是真正的最小值那天恰好超时时会比它晚一点。
     """
     dates = candidates.get(project_id) or []
-    low, high = 0, len(dates) - 1
-    found = None
-    while low <= high:
-        if monotonic() >= search_deadline:
-            break
-        middle = (low + high) // 2
-        adjustment = {project_id: dates[middle]}
+    if not dates or monotonic() >= search_deadline:
+        return None
+
+    def probe(index: int) -> str:
         if simulation_context is None:
-            status = _probe_deadlines(db, scheduler, adjustment, generate_kwargs)
-        else:
-            status = _probe_deadlines(db, scheduler, adjustment, generate_kwargs, simulation_context)
-        if status == FEASIBLE:
-            found = middle
-            high = middle - 1
+            return _probe_deadlines(db, scheduler, {project_id: dates[index]}, generate_kwargs)
+        return _probe_deadlines(
+            db, scheduler, {project_id: dates[index]}, generate_kwargs, simulation_context,
+        )
+
+    # 先试最近那天。实际答案几乎都很小（常见就是延 1 天），命中就直接拿到了
+    # 真正的最小值，一次搞定。
+    if probe(0) == FEASIBLE:
+        return {project_id: dates[0]}
+
+    last = len(dates) - 1
+    if last < 1 or monotonic() >= search_deadline or probe(last) != FEASIBLE:
+        return None
+
+    # 倍增找到第一个可行的候选，同时把它左边那个不可行的记下来作为二分下界。
+    low, high = 1, last
+    step = 0
+    while low + step < last and monotonic() < search_deadline:
+        index = low + step
+        if probe(index) == FEASIBLE:
+            high = index
+            break
+        low = index + 1
+        step = step * 2 + 1
+    else:
+        high = last
+
+    while low < high and monotonic() < search_deadline:
+        middle = (low + high) // 2
+        if probe(middle) == FEASIBLE:
+            high = middle
         else:
             low = middle + 1
-    return {project_id: dates[found]} if found is not None else None
+    return {project_id: dates[high]} if low >= high else None
 
 
 def _load_project_priorities(db, project_ids: list[int]) -> dict[int, int]:
