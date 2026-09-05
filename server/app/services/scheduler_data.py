@@ -64,7 +64,12 @@ def load_scheduler_data(
     )
     tasks.extend(occupancy_tasks)
 
-    instruments = db.query(Instrument).filter(
+    return tasks, load_instruments(db)
+
+
+def load_instruments(db) -> list[Instrument]:
+    """参与排程的仪器。按 id 定序——它决定模型里一大批变量和约束的创建顺序。"""
+    return db.query(Instrument).filter(
         Instrument.availability_status == "available",
         Instrument.status.in_(["idle", "running", "fault"]),
     ).options(
@@ -72,7 +77,6 @@ def load_scheduler_data(
         selectinload(Instrument.faults),
         selectinload(Instrument.maintenance_windows),
     ).order_by(Instrument.id).all()
-    return tasks, instruments
 
 
 # 项目一旦收尾，其未签批的下游任务不再占用产能。

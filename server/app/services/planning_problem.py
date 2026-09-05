@@ -14,9 +14,8 @@ Preactor/Quintiq 都是同一形状），OR-Tools 自己就是纯函数，耦合
 迁移纪律：**一次搬一块，每搬一块都要求求解模型序列化后逐字节不变**
 （tools/model_equivalence.py）。只改取数方式，不改喂给求解器的那道题。
 
-已经搬进来的：时间原点与求解视界、排程规则、工作日历。
-还在库里直接取的：任务与仪器实体、固定时间槽、桥接预留、签批门上下界、
-前置任务实际完工时间。
+已经搬进来的：时间原点与求解视界、排程规则、工作日历、仪器。
+还在库里直接取的：任务实体、固定时间槽、桥接预留、签批门上下界。
 """
 from __future__ import annotations
 
@@ -44,6 +43,45 @@ class SolverRule:
 
 
 @dataclass(frozen=True)
+class CapabilityView:
+    tag_name: str
+    tag_value: str
+
+
+@dataclass(frozen=True)
+class MaintenanceWindowView:
+    start_time: datetime
+    end_time: datetime
+
+
+@dataclass(frozen=True)
+class FaultView:
+    status: str
+    reported_at: datetime | None
+    estimated_resolved_at: datetime | None
+    resolved_at: datetime | None
+
+
+@dataclass(frozen=True)
+class InstrumentView:
+    """一台仪器在求解眼里的样子。
+
+    字段名与 ORM 实体保持一致，下游的能力匹配、维护窗口、工作时段计算都不用改。
+    区别在于它是值：不绑会话、不会因为一次属性访问偷偷发 SQL，也能跨进程传递。
+    """
+
+    id: int
+    code: str
+    name: str
+    status: str
+    effective_work_start: str
+    effective_work_end: str
+    capabilities: tuple[CapabilityView, ...] = ()
+    maintenance_windows: tuple[MaintenanceWindowView, ...] = ()
+    faults: tuple[FaultView, ...] = ()
+
+
+@dataclass(frozen=True)
 class PlanningProblem:
     """一次求解的输入。构造完成后不再依赖数据库会话。"""
 
@@ -53,6 +91,7 @@ class PlanningProblem:
     total_units: int
     rules: dict[str, SolverRule]
     calendar_days: dict
+    instruments: tuple[InstrumentView, ...]
 
     def __getitem__(self, code: str) -> SolverRule:
         """让它能直接顶替原来那个 constraints 字典。"""
@@ -81,6 +120,7 @@ def build_planning_problem(
     ensure_calendar_range(db, horizon_start.date(), horizon_end.date())
     return PlanningProblem(
         calendar_days=load_calendar_days(db, horizon_start, horizon_end),
+        instruments=_load_instrument_views(db),
         now=now,
         horizon_start=horizon_start,
         horizon_end=horizon_end,
@@ -93,4 +133,51 @@ def build_planning_problem(
             )
             for code, rule in get_solver_constraints(db).items()
         },
+    )
+
+
+def _load_instrument_views(db) -> tuple[InstrumentView, ...]:
+    """装载参与排程的仪器，并转成值。
+
+    排序不能省：CP-SAT 的变量和约束索引按创建顺序分配，仪器顺序决定了候选顺序、
+    产能约束顺序和目标项顺序，不定序的话同一道题两次建出的模型就不同。
+    """
+    from app.services.scheduler_data import load_instruments
+
+    return tuple(
+        InstrumentView(
+            id=instrument.id,
+            code=instrument.code,
+            name=instrument.name,
+            status=instrument.status,
+            effective_work_start=instrument.effective_work_start,
+            effective_work_end=instrument.effective_work_end,
+            capabilities=tuple(
+                CapabilityView(capability.tag_name, capability.tag_value)
+                for capability in sorted(
+                    instrument.capabilities,
+                    key=lambda item: (item.tag_name, item.tag_value, item.id),
+                )
+            ),
+            maintenance_windows=tuple(
+                MaintenanceWindowView(window.start_time, window.end_time)
+                for window in sorted(
+                    instrument.maintenance_windows,
+                    key=lambda item: (item.start_time, item.end_time, item.id),
+                )
+            ),
+            faults=tuple(
+                FaultView(
+                    status=fault.status,
+                    reported_at=fault.reported_at,
+                    estimated_resolved_at=fault.estimated_resolved_at,
+                    resolved_at=fault.resolved_at,
+                )
+                for fault in sorted(
+                    instrument.faults or [],
+                    key=lambda item: (item.reported_at or datetime.min, item.id),
+                )
+            ),
+        )
+        for instrument in load_instruments(db)
     )

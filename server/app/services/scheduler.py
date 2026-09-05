@@ -156,7 +156,7 @@ class SchedulerService:
         replan_request = replayable_kwargs(locals())
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
-        tasks, instruments = load_scheduler_data(
+        tasks, _ = load_scheduler_data(
             self.db,
             project_ids,
             task_ids,
@@ -181,6 +181,24 @@ class SchedulerService:
         # 整个模型的时间原点只在这里取一次，往下全程传递。就地读挂钟会让同一道题
         # 每次构造出的模型都不同，"序列化后逐字节相同"这条等价性判据就无从建立。
         now = datetime.now()
+        # 求解输入正在往 PlanningProblem 上收拢：一次装载，之后纯内存。顺序是
+        # 装载 → 校验 → 建模：先把世界取齐，再判断这道题成不成立，最后才建模。
+        # 已搬进去的是时间原点、求解视界、排程规则、工作日历和仪器；任务实体、
+        # 固定时间槽、桥接预留仍在下面直接查库，逐块搬迁，每块都用模型字节对照
+        # 证明那道题没变。
+        problem = build_planning_problem(
+            self.db,
+            now=now,
+            planning_start_at=planning_start_at,
+            planning_end_at=planning_end_at,
+        )
+        constraints = problem
+        # 仪器改用值对象：不绑会话、属性访问不会偷偷发 SQL，也能跨进程传递。
+        instruments = list(problem.instruments)
+        horizon_start = problem.horizon_start
+        horizon_end = problem.horizon_end
+        total_units = problem.total_units
+
         preflight_error = validate_schedulable_input(
             self.db,
             tasks=tasks,
@@ -191,19 +209,6 @@ class SchedulerService:
         if preflight_error:
             return preflight_error
 
-        # 求解输入正在往 PlanningProblem 上收拢：一次装载，之后纯内存。已经搬
-        # 进去的是时间原点、求解视界和排程规则；任务与仪器实体、固定时间槽等仍
-        # 在下面直接查库，逐块搬迁，每块都用模型字节对照证明那道题没变。
-        problem = build_planning_problem(
-            self.db,
-            now=now,
-            planning_start_at=planning_start_at,
-            planning_end_at=planning_end_at,
-        )
-        constraints = problem
-        horizon_start = problem.horizon_start
-        horizon_end = problem.horizon_end
-        total_units = problem.total_units
         approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
         forecast_tasks = [task for task in tasks if task.id in forecast_task_ids]
         if forecast_tasks:

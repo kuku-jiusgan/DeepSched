@@ -93,5 +93,38 @@ class SolverModelIsReproducibleTest(unittest.TestCase):
         self.assertNotEqual(first, time_horizon(now=self.now + timedelta(hours=1)))
 
 
+class PlanningProblemIsAValueTest(unittest.TestCase):
+    """装载出来的求解输入必须是值，不能是绑在会话上的实体。
+
+    实体的问题有三个：属性访问可能悄悄触发一条 SQL（全仓 37 个 ORM 关系都是默认
+    延迟加载）；会话一关就不能再用；没法跨进程传。这三条都挡着"把一道题扔给另一
+    个进程去算"。仪器已经转成值对象，这里钉住它。
+    """
+
+    def test_instruments_survive_the_session_being_closed(self):
+        import pickle
+        from datetime import datetime as real_datetime
+
+        from app.services.planning_problem import build_planning_problem
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        db.add(Instrument(
+            code="VALUE-1", name="值对象仪器",
+            availability_status="available", status="idle",
+        ))
+        db.commit()
+
+        problem = build_planning_problem(db, now=real_datetime(2026, 9, 5, 9, 0, 0))
+        db.close()
+
+        # 会话已关闭，实体在这里会抛 DetachedInstanceError。
+        self.assertEqual(["VALUE-1"], [item.code for item in problem.instruments])
+        self.assertEqual(
+            problem.instruments, pickle.loads(pickle.dumps(problem.instruments)),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
