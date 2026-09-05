@@ -76,7 +76,7 @@ class BuildScheduleplanTouchesNothingTest(unittest.TestCase):
             task_ends=kwargs.pop("task_ends", {}),
             presences={}, split_unit_presences={},
             horizon_start=self.horizon_start, working_context=self.working_context,
-            schedule_run_id="run-1", supersedes=(), notify=None,
+            schedule_run_id="run-1", supersedes=(), notify=None, base_epoch=0,
             frozen_boundary=self.horizon_start - timedelta(days=1),
             confirmed_boundary=self.horizon_start + timedelta(days=7),
             forecast_task_ids=set(), preserved_status_task_ids=set(),
@@ -219,6 +219,9 @@ class NotificationIsAnOutwardActionTest(unittest.TestCase):
         ) as advanced, patch(
             "app.services.instrument_bridge_sync_service"
             ".rebuild_instrument_bridge_reservations",
+        ), patch(
+            # 版本号占用不是这条测试要验的东西，这里的 db 是个替身。
+            "app.services.schedule_action_plan.claim",
         ):
             apply_schedule_plan(
                 unittest.mock.MagicMock(),

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import inspect, text
 
 
@@ -9,6 +11,7 @@ def ensure_runtime_schema(engine) -> None:
         InstrumentUtilizationSnapshot,
         ScheduleDeadlineRecommendationJob,
         InstrumentBridgeReservation,
+        ScheduleEpoch,
         ScheduleSlotChangeLog,
         TaskNightRun,
     )
@@ -21,6 +24,8 @@ def ensure_runtime_schema(engine) -> None:
     ScheduleSlotChangeLog.__table__.create(bind=engine, checkfirst=True)
     ScheduleDeadlineRecommendationJob.__table__.create(bind=engine, checkfirst=True)
     InstrumentBridgeReservation.__table__.create(bind=engine, checkfirst=True)
+    ScheduleEpoch.__table__.create(bind=engine, checkfirst=True)
+    _ensure_schedule_epoch_row(engine)
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
 
@@ -361,3 +366,23 @@ def _backfill_continuous_successor_types(connection, dialect_name: str) -> None:
         "WHERE child.id = task_dependency.task_id "
         f"AND {shared_group} AND {pairs})"
     ))
+
+
+def _ensure_schedule_epoch_row(engine) -> None:
+    """版本号是单行表，必须保证那一行存在。
+
+    没有它的话写回时的条件更新会匹配到 0 行，被当成"世界变了"而整批失败。
+    """
+    with engine.begin() as connection:
+        exists = connection.execute(
+            text("SELECT 1 FROM schedule_epoch WHERE id = 1")
+        ).first()
+        if not exists:
+            # 用绑定参数而不是 NOW()：测试跑 SQLite、生产跑 MySQL，函数名不通用。
+            connection.execute(
+                text(
+                    "INSERT INTO schedule_epoch (id, version, updated_at)"
+                    " VALUES (1, 0, :now)"
+                ),
+                {"now": datetime.now()},
+            )

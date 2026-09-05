@@ -24,6 +24,7 @@ from datetime import date, datetime
 from typing import Any
 
 from app.services.calendar_service import ensure_calendar_range
+from app.services.schedule_epoch_service import current_epoch
 from app.services.schedule_rule_service import get_solver_constraints
 from app.services.scheduler_helpers import load_calendar_days, time_horizon
 
@@ -92,6 +93,8 @@ class PlanningProblem:
     rules: dict[str, SolverRule]
     calendar_days: dict
     instruments: tuple[InstrumentView, ...]
+    # 装载这一刻的排程版本号。写回时用它做条件更新，确认这中间没人动过排程。
+    epoch: int = 0
 
     def __getitem__(self, code: str) -> SolverRule:
         """让它能直接顶替原来那个 constraints 字典。"""
@@ -121,6 +124,7 @@ def build_planning_problem(
     return PlanningProblem(
         calendar_days=load_calendar_days(db, horizon_start, horizon_end),
         instruments=_load_instrument_views(db),
+        epoch=current_epoch(db),
         now=now,
         horizon_start=horizon_start,
         horizon_end=horizon_end,

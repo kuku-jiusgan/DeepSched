@@ -538,6 +538,7 @@ class SchedulerService:
             self.db,
             solver=solver,
             status=status,
+            base_epoch=problem.epoch,
             tasks=tasks,
             instruments=instruments,
             task_starts=task_starts,

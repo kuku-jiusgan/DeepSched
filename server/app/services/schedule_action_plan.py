@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 
 from app.services.scheduler_helpers import TIME_UNIT_MINUTES, is_allowed_calendar_day
 from app.domain.errors import DomainConflictError
+from app.services.schedule_epoch_service import claim
 
 
 class ScheduleSlotPersistError(DomainConflictError):
@@ -84,6 +85,8 @@ class SchedulePlan:
     # 与求解当时一致的 tier。
     frozen_boundary: datetime
     confirmed_boundary: datetime
+    # 这份计划是针对哪个版本的世界算出来的。写回时据此做条件更新。
+    base_epoch: int = 0
     # 顺序有意义：先作废旧槽再建新槽。反过来的话建槽时的去重会撞上还没作废的
     # 旧槽，把本该新建的那一条判成重复而跳过。
     supersedes: tuple[SupersedeSlot, ...] = ()
@@ -107,6 +110,7 @@ def build_schedule_plan(
     schedule_run_id: str,
     supersedes: tuple[SupersedeSlot, ...],
     notify: NotifySchedule | None,
+    base_epoch: int,
     frozen_boundary: datetime,
     confirmed_boundary: datetime,
     forecast_task_ids: set[int],
@@ -156,6 +160,7 @@ def build_schedule_plan(
         confirmed_boundary=confirmed_boundary,
         supersedes=tuple(supersedes),
         notify=notify,
+        base_epoch=base_epoch,
         slots=tuple(slots),
         task_statuses=tuple(statuses),
     )
@@ -191,6 +196,10 @@ def apply_schedule_plan(db, plan: SchedulePlan) -> int:
             Instrument.id.in_(instrument_ids),
         ).all()
     } if instrument_ids else {}
+
+    # 第一件事：确认装载世界之后没人动过排程，并把版本推进一格。比对写在 UPDATE
+    # 的 WHERE 里，所以"检查"和"占用"是同一个原子动作，中间没有可乘之机。
+    claim(db, plan.base_epoch)
 
     apply_supersedes(db, plan.supersedes)
 

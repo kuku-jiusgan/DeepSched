@@ -113,6 +113,7 @@ def persist_schedule_result(
     emit_advance_notifications,
     rollback_on_conflict,
     commit,
+    base_epoch: int = 0,
 ) -> dict:
     """把求解结果落成时间槽，并返回排程接口的成功响应。"""
     # Persist results
@@ -152,6 +153,7 @@ def persist_schedule_result(
         instrument_bridges=instrument_bridges,
         preserved_status_task_ids=preserved_status_task_ids,
         supersedes=supersedes,
+        base_epoch=base_epoch,
         notify=NotifySchedule(
             reason=advance_notification_reason,
             original_windows=original_schedule_windows or {},

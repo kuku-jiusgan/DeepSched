@@ -459,6 +459,25 @@ class WorkerLease(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
 
 
+class ScheduleEpoch(Base):
+    """排程状态的版本号，单行。
+
+    写回一份计划时要确认"我装载世界之后没人动过排程"。原先这个判断是 Python 里的
+    一个 if：先查指纹、比对、再写。检查和写之间隔着几毫秒，别人照样能在缝里提交。
+    改成把版本作为 UPDATE 的条件（见 schedule_epoch_service.claim），比对和推进
+    是同一条语句，没有缝。
+
+    粒度是全局一个号，而不是每个项目一个：排程本来就是全局互斥的一件事，之前那个
+    plan_fingerprint 也是把全库时间槽一起算进指纹的——只是它要全表扫描，这里换成
+    一个整数比较。
+    """
+
+    __tablename__ = "schedule_epoch"
+    id = Column(Integer, primary_key=True)
+    version = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+
 class ScheduleDeadlineRecommendationJob(Base):
     __tablename__ = "schedule_deadline_recommendation_job"
     id = Column(String(36), primary_key=True)
