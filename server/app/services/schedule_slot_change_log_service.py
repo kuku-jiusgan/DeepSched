@@ -66,6 +66,10 @@ def _invalidate_night_run_records(db, slot: TimeSlot, reason: str) -> None:
 def supersede_slot(db, slot: TimeSlot, reason: str, replacement: TimeSlot | None = None, operator_id: int | None = None) -> None:
     if slot.actual_start is not None or slot.actual_end is not None:
         raise ValueError("已发生时间槽不可被替代")
+    # 变更前的执行状态必须在改动之前留存。下面紧接着就把 status 收成 cancelled，
+    # 再去读它，记下来的"变更前状态"就永远是 cancelled——线上 1820 条作废记录里
+    # 有 651 条就是这样丢掉了原始状态，追查一个槽当时是在跑还是已暂停就无从谈起。
+    before_status = slot.status
     slot.lifecycle_status = "superseded"
     # 作废的同时必须把执行状态一起收掉。只改生命周期的话，一个当时状态为
     # running 的槽会带着这个状态永远留在库里，任何忘记过滤生命周期的查询都
@@ -83,5 +87,5 @@ def supersede_slot(db, slot: TimeSlot, reason: str, replacement: TimeSlot | None
         project_id=_project_id(db, slot), instrument_id=slot.instrument_id,
         slot_id=slot.id, change_type="superseded", reason_type=reason,
         before_start=slot.plan_start, before_end=slot.plan_end,
-        before_status=slot.status, operator_id=operator_id,
+        before_status=before_status, operator_id=operator_id,
     ))

@@ -269,5 +269,9 @@ def _create_slot(
             status=status,
         )
     db.add(slot)
+    # 先落一次 flush 拿到主键，再写变更日志。原先是 add 完直接记录，此时
+    # slot.id 还是 None——线上 1878 条新建记录里 1852 条的槽号是空的，等于这条
+    # 日志指不回它记录的那个时间槽。
+    db.flush()
     record_slot_created(db, slot, "replan")
     return 1
