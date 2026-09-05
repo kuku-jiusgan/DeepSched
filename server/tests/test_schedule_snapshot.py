@@ -1,5 +1,3 @@
-import pickle
-import threading
 import unittest
 from datetime import datetime
 
@@ -31,29 +29,6 @@ class ScheduleSnapshotTest(unittest.TestCase):
     def test_unknown_deadline_project_fails_fast(self):
         with self.assertRaises(ValueError):
             self.snapshot.with_deadline_overrides({99: datetime(2026, 10, 1)})
-
-    def test_simulation_context_isolated_and_picklable(self):
-        from app.services.schedule_snapshot import SimulationContext
-
-        context = SimulationContext(self.snapshot, {})
-        candidate = context.fork({1: datetime(2026, 10, 15)})
-        self.assertEqual({}, context.deadline_overrides)
-        self.assertEqual(datetime(2026, 10, 15), candidate.deadline_overrides[1])
-        restored = pickle.loads(pickle.dumps(candidate))
-        self.assertEqual(candidate, restored)
-
-    def test_simulation_context_requires_non_persistent_mode(self):
-        from app.services.scheduler import SchedulerService
-        from app.services.schedule_snapshot import SimulationContext
-
-        result = SchedulerService(object())._generate(
-            current_project_id=1,
-            simulation_context=SimulationContext(self.snapshot, {}),
-            commit=True,
-            feasibility_only=True,
-        )
-        self.assertEqual("error", result["status"])
-
 
 if __name__ == "__main__":
     unittest.main()
@@ -104,58 +79,3 @@ class DeadlineProbeLeavesNoNetChangeTest(unittest.TestCase):
             self.assertEqual(original, project.end_date)
         finally:
             db.close()
-
-
-class SimulationLockIsolationTest(unittest.TestCase):
-    """模拟求解不持全局排程锁。
-
-    模拟只读、不落库，与真实排程没有互斥关系。以前它照样走 schedule_run_lock，
-    于是方案搜索的几百次候选只能一个一个排队，还会把真实排程挡在后面——而这把
-    锁是非阻塞获取的，真实排程撞上就直接收到"正在计算中"。
-    """
-
-    def test_simulation_runs_while_the_lock_is_held(self):
-        from app.services.schedule_run_lock_service import SCHEDULE_RUN, schedule_run_lock
-        from app.services.scheduler import SchedulerService
-        from app.services.schedule_snapshot import SimulationContext
-
-        snapshot = ScheduleSnapshot(
-            projects={1: ProjectSnapshot(1, datetime(2026, 9, 30), 1)},
-            tasks={}, instruments={}, time_slots=(), maintenance_windows=(),
-            bridge_reservations=(), dependencies=(), calendar_days=(),
-            rule_params={}, rule_enabled={}, captured_at=datetime(2026, 9, 1),
-        )
-        calls = []
-
-        class Recording(SchedulerService):
-            def __init__(self):
-                pass
-
-            def _generate(self, *args, **kwargs):
-                calls.append(kwargs.get("simulation_context"))
-                return {"status": "ok"}
-
-        holder = threading.Thread(target=_hold_lock_briefly, args=(schedule_run_lock, SCHEDULE_RUN))
-        holder.start()
-        _LOCK_HELD.wait(2)
-        try:
-            result = Recording().generate(
-                current_project_id=1,
-                simulation_context=SimulationContext(snapshot, {}),
-            )
-        finally:
-            _RELEASE_LOCK.set()
-            holder.join(2)
-
-        self.assertEqual("ok", result["status"])
-        self.assertEqual(1, len(calls))
-
-
-_LOCK_HELD = threading.Event()
-_RELEASE_LOCK = threading.Event()
-
-
-def _hold_lock_briefly(schedule_run_lock, activity):
-    with schedule_run_lock(activity):
-        _LOCK_HELD.set()
-        _RELEASE_LOCK.wait(5)

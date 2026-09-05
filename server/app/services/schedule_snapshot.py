@@ -129,26 +129,6 @@ class ScheduleSnapshot:
         return deadlines
 
 
-@dataclass(frozen=True)
-class SimulationContext:
-    """Self-contained, worker-safe input for one simulated solve."""
-
-    snapshot: ScheduleSnapshot
-    deadline_overrides: dict[int, datetime]
-    solver_time_limit: float = 5.0
-    feasibility_only: bool = True
-
-    def fork(self, deadline_overrides: dict[int, datetime]) -> "SimulationContext":
-        """Create an isolated candidate context without mutating this context."""
-        normalized = self.snapshot.with_deadline_overrides(deadline_overrides)
-        selected = {
-            project_id: deadline
-            for project_id, deadline in normalized.items()
-            if deadline is not None and project_id in deadline_overrides
-        }
-        return replace(self, deadline_overrides=selected)
-
-
 def capture_schedule_snapshot(db, project_ids: set[int], task_ids: set[int]) -> ScheduleSnapshot:
     """Read the minimal immutable input used to seed simulation work."""
     from app.models import Instrument, InstrumentBridgeReservation, MaintenanceWindow, Project, ScheduleRule, SysCalendar, Task, TaskDependency, TimeSlot

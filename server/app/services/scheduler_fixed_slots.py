@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
-from types import SimpleNamespace
 
 from ortools.sat.python import cp_model
 
@@ -15,28 +14,8 @@ from app.services.scheduler_helpers import datetime_to_units
 FIXED_SLOT_STATUSES = ["scheduled", "running", "completed", "paused", "blocked", "interrupted"]
 
 
-def snapshot_fixed_slots(snapshot_slots) -> list:
-    """Adapt immutable snapshot rows to the minimal slot/task interface."""
-    return [
-        SimpleNamespace(
-            id=row.id, task_id=row.task_id, instrument_id=row.instrument_id,
-            plan_start=row.plan_start, plan_end=row.plan_end,
-            actual_start=row.actual_start, actual_end=row.actual_end,
-            tier=row.tier, status=row.status, lifecycle_status=row.lifecycle_status,
-            task=SimpleNamespace(
-                requires_human=row.task_requires_human,
-                assignee_id=row.task_assignee_id,
-            ),
-        )
-        for row in snapshot_slots
-        if row.status in FIXED_SLOT_STATUSES and row.lifecycle_status == "active"
-    ]
-
-
 def _fixed_slot_range(slot: TimeSlot | InstrumentBridgeReservation) -> tuple[datetime, datetime]:
-    if isinstance(slot, InstrumentBridgeReservation) or getattr(
-        slot, "is_bridge_reservation", False,
-    ):
+    if isinstance(slot, InstrumentBridgeReservation):
         return slot.plan_start, slot.plan_end
     if slot.status == "completed":
         return slot.actual_start, slot.actual_end
@@ -137,22 +116,6 @@ def load_fixed_bridge_reservations(
         InstrumentBridgeReservation.plan_start,
         InstrumentBridgeReservation.id,
     ).all()
-
-
-def snapshot_bridge_reservations(rows) -> list:
-    """Adapt immutable bridge snapshots to the constraint interface."""
-    return [
-        SimpleNamespace(
-            id=row.id, task_id=row.task_id, instrument_id=row.instrument_id,
-            previous_task_id=row.previous_task_id, following_task_id=row.following_task_id,
-            plan_start=row.plan_start, plan_end=row.plan_end,
-            # 桥接预留没有 status/actual_*，占用区间就是计划区间。快照适配出来的
-            # 是 SimpleNamespace，过不了 isinstance(InstrumentBridgeReservation)
-            # 那道判断，会掉进时间槽分支去读 slot.status 而报 AttributeError。
-            is_bridge_reservation=True,
-        )
-        for row in rows
-    ]
 
 
 def add_human_capacity_constraints(

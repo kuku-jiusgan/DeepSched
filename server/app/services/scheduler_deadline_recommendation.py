@@ -5,7 +5,6 @@ from time import monotonic
 import logging
 
 from app.models import Project
-from app.services.schedule_snapshot import SimulationContext
 
 _logger = logging.getLogger(__name__)
 
@@ -20,7 +19,6 @@ UNDETERMINED = "undetermined"  # 求解超时，什么也没证明
 def enumerate_verified_date_adjustments(
     db, scheduler, project_ids: list[int], original_deadlines: dict[int, datetime],
     horizon_end: datetime, generate_kwargs: dict, project_labels: dict[int, str] | None = None,
-    simulation_context: SimulationContext | None = None,
 ) -> list[dict]:
     """Enumerate minimal project-deadline adjustments verified by the solver."""
     project_ids = [project_id for project_id in project_ids if project_id in original_deadlines]
@@ -42,7 +40,6 @@ def enumerate_verified_date_adjustments(
             break
         adjustment = _first_verified_adjustment(
             db, scheduler, project_id, candidates, generate_kwargs, search_deadline,
-            simulation_context,
         )
         if adjustment:
             results.append(_format_adjustment(
@@ -98,7 +95,6 @@ def _search_order(project_ids: list[int], original_deadlines: dict[int, datetime
 
 def _first_verified_adjustment(
     db, scheduler, project_id: int, candidates, generate_kwargs, search_deadline,
-    simulation_context: SimulationContext | None = None,
 ):
     """找这个项目最短要延几天，找不到返回 None。
 
@@ -123,11 +119,7 @@ def _first_verified_adjustment(
         return None
 
     def probe(index: int) -> str:
-        if simulation_context is None:
-            return _probe_deadlines(db, scheduler, {project_id: dates[index]}, generate_kwargs)
-        return _probe_deadlines(
-            db, scheduler, {project_id: dates[index]}, generate_kwargs, simulation_context,
-        )
+        return _probe_deadlines(db, scheduler, {project_id: dates[index]}, generate_kwargs)
 
     # 先试最近那天。实际答案几乎都很小（常见就是延 1 天），命中就直接拿到了
     # 真正的最小值，一次搞定。
@@ -172,7 +164,6 @@ def _load_project_priorities(db, project_ids: list[int]) -> dict[int, int]:
 
 def _probe_deadlines(
     db, scheduler, deadlines: dict[int, datetime], generate_kwargs: dict,
-    simulation_context: SimulationContext | None = None,
 ) -> str:
     """在给定的一组结题日下，走**真实排程入口**试一次。
 

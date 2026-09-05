@@ -16,7 +16,6 @@ from app.services.schedule_run_lock_service import (
     schedule_run_lock,
 )
 from app.services.scheduler_deadline_recommendation import enumerate_verified_date_adjustments
-from app.services.schedule_snapshot import SimulationContext, capture_schedule_snapshot
 
 
 JOB_POLL_SECONDS = 1
@@ -267,13 +266,6 @@ def _calculate_job(db, job) -> dict | None:
     if plan_fingerprint(db, project, tasks) != job.plan_fingerprint:
         job.status = "stale"
         return None
-    snapshot = capture_schedule_snapshot(
-        db,
-        {int(item) for item in payload.get("project_ids", [project.id])},
-        {int(item) for item in payload.get("task_ids", [])},
-    )
-    snapshot_fingerprint = snapshot.fingerprint()
-    simulation_context = SimulationContext(snapshot, {})
     from app.services.scheduler import SchedulerService
 
     generate_kwargs = _deserialize_generate_kwargs(payload["generate_kwargs"])
@@ -290,14 +282,11 @@ def _calculate_job(db, job) -> dict | None:
     result = enumerate_verified_date_adjustments(
         db, SchedulerService(db, reuse_prepared_context=True), project_ids, deadlines,
         datetime.fromisoformat(payload["horizon_end"]), generate_kwargs, labels,
-        simulation_context=simulation_context,
     )
-    current_snapshot = capture_schedule_snapshot(
-        db,
-        set(project_ids),
-        {int(item) for item in payload.get("task_ids", [])},
-    )
-    if current_snapshot.fingerprint() != snapshot_fingerprint:
+    # 搜索期间世界有没有变。此前这里用的是 ScheduleSnapshot 自带的第二套指纹，
+    # 与入队/开算前用的 plan_fingerprint 是两套互不相干的算法；快照本身已经随
+    # 死掉的模拟路径一起删了，这里统一用同一个指纹，前后校验才对得上账。
+    if plan_fingerprint(db, project, tasks) != job.plan_fingerprint:
         job.status = "stale"
         return None
     return result
