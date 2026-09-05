@@ -63,6 +63,19 @@ class SetTaskStatus:
 
 
 @dataclass(frozen=True)
+class NotifySchedule:
+    """把这次重排里任务前移/后移的情况通知到人。
+
+    这是整份计划里唯一对外可见的动作——通知发出去就收不回来了。它必须排在一致性
+    校验通过之后执行，所以不能和写库动作一起在 apply_schedule_plan 里做完，
+    执行入口单独是 apply_schedule_notifications。
+    """
+
+    reason: str
+    original_windows: dict
+
+
+@dataclass(frozen=True)
 class SchedulePlan:
     """一次排程算出来的全部动作。纯值，可序列化。"""
 
@@ -76,6 +89,8 @@ class SchedulePlan:
     supersedes: tuple[SupersedeSlot, ...] = ()
     slots: tuple[CreateSlot, ...] = ()
     task_statuses: tuple[SetTaskStatus, ...] = ()
+    # 通知是对外动作，发出去收不回来；探测跑的计划这里恒为 None。
+    notify: NotifySchedule | None = None
 
 
 def build_schedule_plan(
@@ -91,6 +106,7 @@ def build_schedule_plan(
     working_context,
     schedule_run_id: str,
     supersedes: tuple[SupersedeSlot, ...],
+    notify: NotifySchedule | None,
     frozen_boundary: datetime,
     confirmed_boundary: datetime,
     forecast_task_ids: set[int],
@@ -139,6 +155,7 @@ def build_schedule_plan(
         frozen_boundary=frozen_boundary,
         confirmed_boundary=confirmed_boundary,
         supersedes=tuple(supersedes),
+        notify=notify,
         slots=tuple(slots),
         task_statuses=tuple(statuses),
     )
@@ -302,3 +319,24 @@ def _continuous_slots(
             task.id, instrument_id, chunk_start, _at(horizon_start, end_unit), status,
         ))
     return result
+
+
+def apply_schedule_notifications(db, plan: SchedulePlan) -> None:
+    """执行计划里的通知动作。
+
+    单独一个入口，是因为它必须发生在一致性校验通过之后：校验不过会整体回滚，而
+    已经发出去的通知回滚不掉。写库动作和对外动作之间隔着这道闸，不能揉在一起。
+    """
+    from app.services.schedule_advance_notification_service import (
+        notify_rescheduled_tasks_advanced,
+        notify_rescheduled_tasks_delayed,
+    )
+
+    if plan.notify is None:
+        return
+    notify_rescheduled_tasks_advanced(
+        db, plan.notify.original_windows, plan.notify.reason,
+    )
+    notify_rescheduled_tasks_delayed(
+        db, plan.notify.original_windows, plan.notify.reason,
+    )

@@ -11,6 +11,7 @@ from app.services.scheduler_helpers import (
     natural_day_boundary,
 )
 from app.services.schedule_action_plan import (
+    SchedulePlan,
     ScheduleSlotPersistError,
     _slot_status,
     apply_schedule_plan,
@@ -45,12 +46,16 @@ def persist_slots(
     instrument_bridges: list[dict] | None = None,
     preserved_status_task_ids: set[int] | None = None,
     supersedes: tuple = (),
-) -> int:
-    """把求解结果落地。
+    notify=None,
+) -> tuple[int, SchedulePlan]:
+    """把求解结果落地，返回（新建槽数，这次执行的计划）。
 
     真正的两步在下面：先算出一份 SchedulePlan（纯值，不碰库），再执行它。分开之后
     "算出了什么"可以先看一眼、可以丢弃、可以序列化后交给别的进程，而不必像以前那样
     只能靠 savepoint 包住整段写操作再回滚。
+
+    计划要交回给调用方，是因为里面的通知动作必须等一致性校验通过之后才能执行——
+    校验不过会整体回滚，而已经发出去的通知回滚不掉。
     """
     now = datetime.now()
     plan = build_schedule_plan(
@@ -65,6 +70,7 @@ def persist_slots(
         working_context=working_context,
         schedule_run_id=schedule_run_id,
         supersedes=supersedes,
+        notify=notify,
         frozen_boundary=natural_day_boundary(now, freeze_days),
         confirmed_boundary=now + timedelta(days=get_settings().CONFIRMED_DAYS),
         forecast_task_ids=forecast_task_ids or set(),
@@ -77,7 +83,7 @@ def persist_slots(
         db.commit()
     else:
         db.flush()
-    return created
+    return created, plan
 
 
 def _persisted_task_status(task, is_preserved: bool) -> str:

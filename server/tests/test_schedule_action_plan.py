@@ -9,11 +9,13 @@ db.add、一边改任务状态、一边重建桥接。于是这份结果没法�
 
 import pickle
 import unittest
+import unittest.mock
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from app.services.schedule_action_plan import (
     CreateSlot,
+    NotifySchedule,
     SchedulePlan,
     SetTaskStatus,
     SupersedeSlot,
@@ -74,7 +76,7 @@ class BuildScheduleplanTouchesNothingTest(unittest.TestCase):
             task_ends=kwargs.pop("task_ends", {}),
             presences={}, split_unit_presences={},
             horizon_start=self.horizon_start, working_context=self.working_context,
-            schedule_run_id="run-1", supersedes=(),
+            schedule_run_id="run-1", supersedes=(), notify=None,
             frozen_boundary=self.horizon_start - timedelta(days=1),
             confirmed_boundary=self.horizon_start + timedelta(days=7),
             forecast_task_ids=set(), preserved_status_task_ids=set(),
@@ -186,6 +188,75 @@ class SupersedeThenCreateTest(unittest.TestCase):
             self.assertEqual("scheduled", task.status)
         finally:
             db.close()
+
+
+class NotificationIsAnOutwardActionTest(unittest.TestCase):
+    """通知是整份计划里唯一对外可见的动作，发出去就收不回来。
+
+    它必须排在一致性校验通过之后：校验不过会整体回滚，而已经推送给人的消息回滚
+    不掉。所以写库动作走 apply_schedule_plan，通知单独走
+    apply_schedule_notifications，两者之间隔着那道闸。
+
+    探测跑的计划 notify 恒为 None——试排不该惊动任何人。
+    """
+
+    def _plan(self, notify):
+        return SchedulePlan(
+            schedule_run_id="run-1",
+            frozen_boundary=datetime(2026, 9, 6),
+            confirmed_boundary=datetime(2026, 9, 12),
+            notify=notify,
+        )
+
+    def test_applying_the_write_actions_never_notifies(self):
+        from unittest.mock import patch
+
+        from app.services.schedule_action_plan import apply_schedule_plan
+
+        with patch(
+            "app.services.schedule_advance_notification_service"
+            ".notify_rescheduled_tasks_advanced",
+        ) as advanced, patch(
+            "app.services.instrument_bridge_sync_service"
+            ".rebuild_instrument_bridge_reservations",
+        ):
+            apply_schedule_plan(
+                unittest.mock.MagicMock(),
+                self._plan(NotifySchedule("重新排程", {1: (None, None)})),
+            )
+
+        advanced.assert_not_called()
+
+    def test_a_plan_without_notification_sends_nothing(self):
+        from unittest.mock import patch
+
+        from app.services.schedule_action_plan import apply_schedule_notifications
+
+        with patch(
+            "app.services.schedule_advance_notification_service"
+            ".notify_rescheduled_tasks_advanced",
+        ) as advanced:
+            apply_schedule_notifications(unittest.mock.MagicMock(), self._plan(None))
+
+        advanced.assert_not_called()
+
+    def test_a_plan_with_notification_sends_both_directions(self):
+        from unittest.mock import patch
+
+        from app.services.schedule_action_plan import apply_schedule_notifications
+
+        plan = self._plan(NotifySchedule("仪器故障重排", {7: (None, None)}))
+        with patch(
+            "app.services.schedule_advance_notification_service"
+            ".notify_rescheduled_tasks_advanced",
+        ) as advanced, patch(
+            "app.services.schedule_advance_notification_service"
+            ".notify_rescheduled_tasks_delayed",
+        ) as delayed:
+            apply_schedule_notifications(unittest.mock.MagicMock(), plan)
+
+        self.assertEqual("仪器故障重排", advanced.call_args[0][2])
+        self.assertEqual({7: (None, None)}, delayed.call_args[0][1])
 
 
 if __name__ == "__main__":

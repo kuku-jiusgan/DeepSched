@@ -16,6 +16,10 @@ from app.services.schedule_calendar_snapshot_service import save_schedule_calend
 from app.services.schedule_conflict_service import ScheduleConflictError
 from app.services.schedule_replan_validation_service import ensure_replan_consistent
 from app.services.schedule_slot_change_log_service import supersede_slot
+from app.services.schedule_action_plan import (
+    NotifySchedule,
+    apply_schedule_notifications,
+)
 from app.services.scheduler_persistence import persist_slots
 from app.services.instrument_working_time_service import serialize_instrument_policies
 
@@ -130,7 +134,7 @@ def persist_schedule_result(
         maint_windows,
         serialize_instrument_policies(working_context),
     )
-    created = persist_slots(
+    created, plan = persist_slots(
         db,
         tasks,
         instruments,
@@ -148,6 +152,10 @@ def persist_schedule_result(
         instrument_bridges=instrument_bridges,
         preserved_status_task_ids=preserved_status_task_ids,
         supersedes=supersedes,
+        notify=NotifySchedule(
+            reason=advance_notification_reason,
+            original_windows=original_schedule_windows or {},
+        ) if emit_advance_notifications else None,
     )
 
     try:
@@ -161,17 +169,8 @@ def persist_schedule_result(
         if rollback_on_conflict:
             db.rollback()
         return {"status": "error", "message": str(exc), "timeslots_created": 0}
-    if emit_advance_notifications:
-        notify_rescheduled_tasks_advanced(
-            db,
-            original_schedule_windows,
-            advance_notification_reason,
-        )
-        notify_rescheduled_tasks_delayed(
-            db,
-            original_schedule_windows,
-            advance_notification_reason,
-        )
+    # 通知排在一致性校验之后：校验不过会整体回滚，而发出去的通知收不回来。
+    apply_schedule_notifications(db, plan)
     if commit:
         db.commit()
 
