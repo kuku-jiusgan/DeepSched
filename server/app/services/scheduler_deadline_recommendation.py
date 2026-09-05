@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from time import monotonic
+import logging
+
 from app.models import Project
 from app.services.schedule_snapshot import SimulationContext
+
+_logger = logging.getLogger(__name__)
 
 MAX_RECOMMENDATIONS = 20
 SEARCH_TIME_LIMIT_SECONDS = 120
@@ -43,11 +47,52 @@ def enumerate_verified_date_adjustments(
             db, scheduler, project_id, candidates, generate_kwargs, search_deadline,
             simulation_context,
         )
-        if adjustment:
+        if adjustment and _survives_real_scheduling(
+            db, adjustment, generate_kwargs.get("current_project_id"),
+        ):
             results.append(_format_adjustment(
                 adjustment, original_deadlines, project_labels or {}, priorities,
             ))
     return _sort_results(results)
+
+
+def _survives_real_scheduling(db, adjustment: dict, current_project_id: int | None) -> bool:
+    """把候选方案放到真实的「保存并排程」入口上再验一次。
+
+    搜索阶段是拿失败当时抓下的一份 generate_kwargs 直接重放求解，跳过了真实入口
+    在求解前要做的准备（删掉可移动任务的时间槽、重置任务状态），也不认「需要移动
+    别的项目」这种独立结果。两者并不等价：实测同一个结题日，重放成功、真实入口
+    失败，于是四套「求解器已验证」的方案里有三套照做之后仍然排不下——用户按提示
+    改完结题日，回来得到的还是同一句失败。
+
+    代价是每套候选多跑一次完整排程（约 1.5 秒），换的是这个标签名副其实。必须
+    真的改 Project.end_date 再跑：真实入口读的就是它，用覆盖参数验不出同一条路。
+    全程在 savepoint 里，跑完回滚。
+    """
+    if current_project_id is None:
+        return True
+    from app.services.project_plan_apply_service import apply_project_plan
+    from app.services.schedule_deadline_recommendation_job_service import (
+        suppress_recommendation_jobs,
+    )
+
+    savepoint = db.begin_nested()
+    try:
+        for project_id, deadline in adjustment.items():
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if project is not None:
+                project.end_date = deadline
+        db.flush()
+        # 复核用的是真实入口，而它失败时会顺手再排一个方案搜索作业——不挡住的话
+        # 复核自己又触发一轮搜索，层层套下去。实测套了 170 秒。
+        with suppress_recommendation_jobs():
+            result = apply_project_plan(db, current_project_id)
+        return getattr(result, "status", "error") != "error"
+    except Exception:
+        _logger.exception("方案复核失败 adjustment=%s", sorted(adjustment))
+        return False
+    finally:
+        savepoint.rollback()
 
 
 def _candidate_deadlines(

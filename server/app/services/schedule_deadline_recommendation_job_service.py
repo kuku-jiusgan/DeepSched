@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import contextmanager
 import uuid
 from datetime import datetime, timedelta
 
@@ -79,6 +80,25 @@ def enqueue_deadline_recommendation(
     return {"id": job.id, "status": "pending", "poll_after_ms": 1500}
 
 
+_verifying = threading.local()
+
+
+@contextmanager
+def suppress_recommendation_jobs():
+    """复核候选方案期间不再新建方案作业。
+
+    复核走的是真实的「保存并排程」入口，而它失败时会顺手排一个方案搜索作业——
+    于是复核自己又触发一轮搜索，层层套下去。实测一次复核跑了 170 秒，还在
+    savepoint 里插作业行报错。
+    """
+    previous = getattr(_verifying, "active", False)
+    _verifying.active = True
+    try:
+        yield
+    finally:
+        _verifying.active = previous
+
+
 def create_deadline_recommendation_job(
     project_id: int,
     task_ids: list[int],
@@ -89,6 +109,8 @@ def create_deadline_recommendation_job(
     failure,
     generate_kwargs,
 ) -> dict | None:
+    if getattr(_verifying, "active", False):
+        return None
     db = SessionLocal()
     try:
         project = db.query(Project).filter(Project.id == project_id).first()
