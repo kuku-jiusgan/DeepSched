@@ -47,27 +47,33 @@ class PreparedContextTest(unittest.TestCase):
 class FeasibilityOnlyTest(unittest.TestCase):
     """交期验证必须带 feasibility_only，否则每次探测都会白落地一次排程再回滚。"""
 
-    def test_deadline_search_asks_only_for_feasibility(self):
+    def test_deadline_probe_uses_the_trial_mode_of_the_real_entry_point(self):
+        """探测候选结题日走真实入口，且必须是不提交的试排模式。
+
+        判定排不排得下只能有一个口径；而入口默认是会提交的，探测若不指定试排，
+        改过的结题日和排程结果会被永久写进库。
+        """
         from app.services.scheduler_deadline_recommendation import FEASIBLE, _probe_deadlines
 
-        class _Scheduler:
-            kwargs = None
+        seen = {}
 
-            def generate(self, **kwargs):
-                _Scheduler.kwargs = kwargs
-                return {"status": "ok"}
+        def fake_apply(db, project_id, preserve_existing=False):
+            seen["project_id"] = project_id
+            seen["preserve_existing"] = preserve_existing
+            return unittest.mock.MagicMock(status="applied")
 
-        class _Db:
-            def begin_nested(self):
-                return unittest.mock.MagicMock()
+        with unittest.mock.patch(
+            "app.services.project_plan_apply_service.apply_project_plan",
+            side_effect=fake_apply,
+        ):
+            verdict = _probe_deadlines(
+                unittest.mock.MagicMock(), None, {}, {"current_project_id": 9},
+            )
 
-            def flush(self):
-                pass
+        self.assertEqual(FEASIBLE, verdict)
+        self.assertEqual(9, seen["project_id"])
+        self.assertTrue(seen["preserve_existing"])
 
-        self.assertEqual(FEASIBLE, _probe_deadlines(_Db(), _Scheduler(), {}, {"project_ids": [1]}))
-        self.assertTrue(_Scheduler.kwargs["feasibility_only"])
-        self.assertFalse(_Scheduler.kwargs["include_failure_diagnostics"])
-        self.assertFalse(_Scheduler.kwargs["commit"])
 
 
 if __name__ == "__main__":

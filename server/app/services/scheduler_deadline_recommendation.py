@@ -24,6 +24,7 @@ def enumerate_verified_date_adjustments(
 ) -> list[dict]:
     """Enumerate minimal project-deadline adjustments verified by the solver."""
     project_ids = [project_id for project_id in project_ids if project_id in original_deadlines]
+    project_ids = _projects_whose_deadline_can_bind(db, project_ids, generate_kwargs)
     priorities = _load_project_priorities(db, project_ids)
     candidates = _candidate_deadlines(project_ids, original_deadlines, horizon_end)
     search_deadline = monotonic() + SEARCH_TIME_LIMIT_SECONDS
@@ -47,52 +48,33 @@ def enumerate_verified_date_adjustments(
             db, scheduler, project_id, candidates, generate_kwargs, search_deadline,
             simulation_context,
         )
-        if adjustment and _survives_real_scheduling(
-            db, adjustment, generate_kwargs.get("current_project_id"),
-        ):
+        if adjustment:
             results.append(_format_adjustment(
                 adjustment, original_deadlines, project_labels or {}, priorities,
             ))
     return _sort_results(results)
 
 
-def _survives_real_scheduling(db, adjustment: dict, current_project_id: int | None) -> bool:
-    """把候选方案放到真实的「保存并排程」入口上再验一次。
+def _projects_whose_deadline_can_bind(db, project_ids: list[int], generate_kwargs: dict) -> list[int]:
+    """只保留结题日真的能影响这次求解的项目。
 
-    搜索阶段是拿失败当时抓下的一份 generate_kwargs 直接重放求解，跳过了真实入口
-    在求解前要做的准备（删掉可移动任务的时间槽、重置任务状态），也不认「需要移动
-    别的项目」这种独立结果。两者并不等价：实测同一个结题日，重放成功、真实入口
-    失败，于是四套「求解器已验证」的方案里有三套照做之后仍然排不下——用户按提示
-    改完结题日，回来得到的还是同一句失败。
-
-    代价是每套候选多跑一次完整排程（约 1.5 秒），换的是这个标签名副其实。必须
-    真的改 Project.end_date 再跑：真实入口读的就是它，用覆盖参数验不出同一条路。
-    全程在 savepoint 里，跑完回滚。
+    结题日的作用是给**参与本次求解的任务**设完工上界。一个项目如果没有任务在
+    求解集合里（它的活是固定时间槽，这次根本不会动），延它的结题日不会腾出任何
+    资源，探测必然全部不可行——却要白白花掉整整一轮二分。测试2 就是这种情况：
+    它的检测任务是固定槽，用户看到"延测试2 几天"的方案照做后毫无变化。
     """
-    if current_project_id is None:
-        return True
-    from app.services.project_plan_apply_service import apply_project_plan
-    from app.services.schedule_deadline_recommendation_job_service import (
-        suppress_recommendation_jobs,
-    )
+    task_ids = generate_kwargs.get("task_ids") or []
+    if not task_ids:
+        return project_ids
+    from app.models import Task
 
-    savepoint = db.begin_nested()
-    try:
-        for project_id, deadline in adjustment.items():
-            project = db.query(Project).filter(Project.id == project_id).first()
-            if project is not None:
-                project.end_date = deadline
-        db.flush()
-        # 复核用的是真实入口，而它失败时会顺手再排一个方案搜索作业——不挡住的话
-        # 复核自己又触发一轮搜索，层层套下去。实测套了 170 秒。
-        with suppress_recommendation_jobs():
-            result = apply_project_plan(db, current_project_id)
-        return getattr(result, "status", "error") != "error"
-    except Exception:
-        _logger.exception("方案复核失败 adjustment=%s", sorted(adjustment))
-        return False
-    finally:
-        savepoint.rollback()
+    rows = db.query(Task.project_id).filter(Task.id.in_(task_ids)).distinct().all()
+    solvable = {project_id for (project_id,) in rows}
+    current = generate_kwargs.get("current_project_id")
+    if current is not None:
+        solvable.add(current)
+    kept = [project_id for project_id in project_ids if project_id in solvable]
+    return kept or project_ids
 
 
 def _candidate_deadlines(
@@ -191,23 +173,48 @@ def _probe_deadlines(
     db, scheduler, deadlines: dict[int, datetime], generate_kwargs: dict,
     simulation_context: SimulationContext | None = None,
 ) -> str:
-    """在给定的一组结题日下试解一次，返回三态判定。
+    """在给定的一组结题日下，走**真实排程入口**试一次。
 
-    必须把"求解器证明了排不下"和"5 秒内没算出来"分开：后者什么都没证明。
-    最宽松那次探测放开了全部结题日上界，模型反而更难收敛，实测就会超时返回
-    UNKNOWN——若把它当成排不下，本来存在的调整方案会被整批丢掉。
+    判定排不排得下只能有一个口径。此前这里是拿排程失败当时抓下的 generate_kwargs
+    直接重放一次求解（5 秒、只问可行性），而用户点下去真正走的是「保存并排程」
+    入口——它在求解前还要删掉可移动任务的时间槽、重置任务状态，并且把「需要移动
+    别的项目」当作独立结果。实测同一批候选里 12 个有 9 个判定不一致，而且全部是
+    重放那条偏乐观：四套标着「求解器已验证」的方案只有一套真能排下去，用户按提示
+    改完结题日，回来得到的还是同一句失败。
+
+    代价是每次探测从约 0.46 秒涨到约 2.1 秒。宁可慢，也不能出现两套结论。
+
+    必须真的改 Project.end_date 再跑：真实入口读的就是它，用覆盖参数验不出同一
+    条路。全程在 savepoint 里，跑完回滚。
     """
-    if simulation_context is not None:
-        generate_kwargs = dict(generate_kwargs)
-        generate_kwargs["simulation_context"] = simulation_context.fork(deadlines)
-    result = scheduler.generate(
-        **generate_kwargs, commit=False, emit_advance_notifications=False,
-        include_failure_diagnostics=False, solver_time_limit=5.0,
-        feasibility_only=True, project_end_date_overrides=deadlines,
+    current_project_id = generate_kwargs.get("current_project_id")
+    if current_project_id is None:
+        return INFEASIBLE
+    from app.services.project_plan_apply_service import apply_project_plan
+    from app.services.schedule_deadline_recommendation_job_service import (
+        suppress_recommendation_jobs,
     )
-    if result.get("status") == "ok":
-        return FEASIBLE
-    return INFEASIBLE if result.get("solver_status") == "INFEASIBLE" else UNDETERMINED
+
+    savepoint = db.begin_nested()
+    try:
+        for project_id, deadline in deadlines.items():
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if project is not None:
+                project.end_date = deadline
+        db.flush()
+        # 真实入口失败时会顺手再排一个方案搜索作业。不挡住的话，搜索自己又触发
+        # 一轮搜索，层层套下去——实测套了 170 秒。
+        with suppress_recommendation_jobs():
+            # preserve_existing=True 是入口自带的"试排"模式：内部不提交、自己用
+            # savepoint 包住。不加这个的话它会真的提交，外层这个 savepoint 就
+            # 拦不住了——探测会把改过的结题日和排程结果永久写进库。
+            result = apply_project_plan(db, current_project_id, preserve_existing=True)
+        return FEASIBLE if getattr(result, "status", "error") != "error" else INFEASIBLE
+    except Exception:
+        _logger.exception("候选结题日探测失败 deadlines=%s", sorted(deadlines))
+        return INFEASIBLE
+    finally:
+        savepoint.rollback()
 
 
 def _format_adjustment(

@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from app.services.scheduler_deadline_recommendation import (
     FEASIBLE,
@@ -28,9 +29,6 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
         with patch(
             "app.services.scheduler_deadline_recommendation._probe_deadlines",
             side_effect=probe,
-        ), patch(
-            "app.services.scheduler_deadline_recommendation._survives_real_scheduling",
-            return_value=True,
         ):
             return enumerate_verified_date_adjustments(
                 object(), object(), [1, 2], self.originals, self.horizon_end, {}, self.labels,
@@ -180,9 +178,6 @@ class BinarySearchOverCandidateDatesTest(unittest.TestCase):
         with patch(
             "app.services.scheduler_deadline_recommendation._probe_deadlines",
             side_effect=probe,
-        ), patch(
-            "app.services.scheduler_deadline_recommendation._survives_real_scheduling",
-            return_value=True,
         ):
             return enumerate_verified_date_adjustments(
                 object(), object(), [1], self.originals, self.horizon_end, {}, {1: "项目一"},
@@ -202,40 +197,49 @@ class BinarySearchOverCandidateDatesTest(unittest.TestCase):
         self.assertLessEqual(len(self.calls), 9, len(self.calls))
 
 
-class PlansAreRecheckedAgainstRealSchedulingTest(unittest.TestCase):
-    """候选方案要在真实的「保存并排程」入口上复核，过不了的不展示。
+class ProbeGoesThroughTheRealEntryPointTest(unittest.TestCase):
+    """探测候选结题日必须走真实的「保存并排程」入口。
 
-    搜索阶段重放的是失败当时抓下的 generate_kwargs，跳过了真实入口在求解前的
-    准备，两者并不等价：实测四套「求解器已验证」的方案里有三套照做之后仍然
-    排不下，用户改完结题日回来得到的还是同一句失败。
+    判定排不排得下只能有一个口径。此前探测是重放一份 generate_kwargs 直接求解，
+    与用户点下去真正走的那条路不等价——实测同一批候选里 12 个有 9 个判定不一致，
+    全部是重放那条偏乐观，四套「已验证」的方案只有一套真能排下去。
     """
 
-    def setUp(self):
-        self.deadline = datetime(2026, 9, 1, 23, 59)
-        self.originals = {1: self.deadline, 2: self.deadline}
-        self.horizon_end = self.deadline + timedelta(days=4)
+    def test_maps_real_entry_point_result_to_verdict(self):
+        from app.services.scheduler_deadline_recommendation import _probe_deadlines
 
-    def enumerate_with(self, survives):
+        calls = []
+
+        def fake_apply(db, project_id, preserve_existing=False):
+            calls.append((project_id, preserve_existing))
+            return SimpleNamespace(status="applied")
+
+        db = MagicMock()
         with patch(
-            "app.services.scheduler_deadline_recommendation._probe_deadlines",
-            return_value=FEASIBLE,
-        ), patch(
-            "app.services.scheduler_deadline_recommendation._survives_real_scheduling",
-            side_effect=survives,
+            "app.services.project_plan_apply_service.apply_project_plan",
+            side_effect=fake_apply,
         ):
-            return enumerate_verified_date_adjustments(
-                object(), object(), [1, 2], self.originals, self.horizon_end,
-                {"current_project_id": 1}, {1: "项目一", 2: "项目二"},
+            verdict = _probe_deadlines(
+                db, object(), {1: datetime(2026, 9, 20, 23, 59)},
+                {"current_project_id": 7},
             )
 
-    def test_drops_plans_that_the_real_entry_point_rejects(self):
-        results = self.enumerate_with(
-            lambda _db, adjustment, _pid: 2 in adjustment,
-        )
+        self.assertEqual(FEASIBLE, verdict)
+        # 必须用试排模式：不加的话入口会真的提交，外层 savepoint 拦不住，
+        # 探测会把改过的结题日和排程结果永久写进库。
+        self.assertEqual([(7, True)], calls)
+        db.begin_nested.return_value.rollback.assert_called_once()
 
-        self.assertEqual([[2]], [result["projects"] for result in results])
+    def test_real_entry_point_error_means_infeasible(self):
+        from app.services.scheduler_deadline_recommendation import _probe_deadlines
 
-    def test_keeps_nothing_when_every_plan_fails_the_recheck(self):
-        results = self.enumerate_with(lambda _db, _adjustment, _pid: False)
+        with patch(
+            "app.services.project_plan_apply_service.apply_project_plan",
+            return_value=SimpleNamespace(status="error"),
+        ):
+            verdict = _probe_deadlines(
+                MagicMock(), object(), {1: datetime(2026, 9, 20, 23, 59)},
+                {"current_project_id": 7},
+            )
 
-        self.assertEqual([], results)
+        self.assertEqual(INFEASIBLE, verdict)

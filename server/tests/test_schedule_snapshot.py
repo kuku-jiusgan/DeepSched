@@ -59,73 +59,49 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class SimulationWriteIsolationTest(unittest.TestCase):
-    """模拟求解期间数据库写入次数必须为 0。
+class DeadlineProbeLeavesNoNetChangeTest(unittest.TestCase):
+    """探测候选结题日之后，库里不能留下任何改动。
 
-    方案搜索一次要试上百个候选结题日。它以前靠"改 Project.end_date、求解、回滚"
-    来试，既污染事务又和真实排程抢锁；改成结题日覆盖之后这条边界必须有测试钉住，
-    否则哪天有人在求解路径上加一句写库，回归时没人会发现。
+    探测走的是真实的「保存并排程」入口，它读 Project.end_date，所以必须真的改了
+    再跑——但全程在 savepoint 里，跑完必须回滚干净。此前那一版是"完全不写库"，
+    改成真实口径后写是必然的，能钉住的是"写完要还原"。
     """
 
-    WRITE_PREFIXES = ("INSERT", "UPDATE", "DELETE", "REPLACE", "ALTER", "DROP", "CREATE")
+    def test_probe_restores_the_original_deadline(self):
+        from datetime import timedelta
 
-    def _count_writes(self, engine, action):
-        from sqlalchemy import event
-
-        statements = []
-
-        def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
-            head = statement.lstrip().split(" ", 1)[0].upper()
-            if head in self.WRITE_PREFIXES:
-                statements.append(statement.strip().split("\n")[0][:120])
-
-        event.listen(engine, "before_cursor_execute", before_cursor_execute)
-        try:
-            action()
-        finally:
-            event.remove(engine, "before_cursor_execute", before_cursor_execute)
-        return statements
-
-    def test_deadline_probe_writes_nothing(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
         from app.core.database import Base
-        from app.models import Project, Task
-        from app.services.schedule_snapshot import SimulationContext, capture_schedule_snapshot
-        from app.services.scheduler import SchedulerService
+        from app.models import Instrument, Project, Task
         from app.services.scheduler_deadline_recommendation import _probe_deadlines
 
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         db = sessionmaker(bind=engine)()
         try:
-            project = Project(code="SIM-1", name="模拟项目", priority=3,
-                              end_date=datetime(2026, 9, 30, 23, 59, 59))
+            original = datetime(2026, 9, 30, 23, 59, 59)
+            db.add(Instrument(code="PROBE-INST", name="探测仪器",
+                              availability_status="available", status="idle"))
+            project = Project(code="SIM-1", name="模拟项目", priority=3, end_date=original)
             db.add(project)
             db.flush()
             task = Task(project_id=project.id, name="方法开发", task_type="test",
-                        status="pending", est_duration_hours=2, requires_instrument=False,
-                        requires_human=False)
+                        status="pending", est_duration_hours=2,
+                        requires_instrument=False, requires_human=False)
             db.add(task)
             db.commit()
 
-            snapshot = capture_schedule_snapshot(db, {project.id}, {task.id})
-            context = SimulationContext(snapshot, {})
-            scheduler = SchedulerService(db)
-            verdicts = []
-            writes = self._count_writes(engine, lambda: verdicts.append(_probe_deadlines(
-                db, scheduler,
-                {project.id: datetime(2026, 10, 5, 23, 59, 59)},
+            verdict = _probe_deadlines(
+                db, None, {project.id: original + timedelta(days=5)},
                 {"current_project_id": project.id, "task_ids": [task.id]},
-                context,
-            )))
+            )
 
-            # 先确认这次探测真的跑起来了，否则"零写入"可能只是因为它早早报错返回。
-            self.assertIn(verdicts[0], {"feasible", "infeasible", "undetermined"})
-            self.assertEqual([], writes, f"模拟求解写了库：{writes}")
+            self.assertIn(verdict, {"feasible", "infeasible"})
+            db.rollback()
             db.refresh(project)
-            self.assertEqual(datetime(2026, 9, 30, 23, 59, 59), project.end_date)
+            self.assertEqual(original, project.end_date)
         finally:
             db.close()
 

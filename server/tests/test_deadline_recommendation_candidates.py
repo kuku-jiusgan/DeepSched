@@ -149,3 +149,43 @@ class ReclaimInterruptedJobTest(unittest.TestCase):
 
         self.db.refresh(job)
         self.assertEqual("running", job.status)
+
+
+class OnlyBindingDeadlinesAreSearchedTest(unittest.TestCase):
+    """结题日搜索只覆盖任务真的参与本次求解的项目。
+
+    延后结题日只是放宽该项目自己的完工上界。如果它的任务不在求解集合里（是固定
+    时间槽，这次根本不动），延多久都腾不出资源，整轮二分必然全不可行——白花时间，
+    还可能把这种无效方案推给用户，用户照做后发现毫无变化。
+    """
+
+    def test_projects_without_tasks_in_the_solve_set_are_dropped(self):
+        from app.services.scheduler_deadline_recommendation import (
+            _projects_whose_deadline_can_bind,
+        )
+
+        class _Db:
+            def query(self, *_args):
+                return self
+
+            def filter(self, *_args):
+                return self
+
+            def distinct(self):
+                return self
+
+            def all(self):
+                return [(65,), (99,)]
+
+        kept = _projects_whose_deadline_can_bind(
+            _Db(), [65, 98, 99], {"task_ids": [603, 641], "current_project_id": 99},
+        )
+
+        self.assertEqual([65, 99], kept)
+
+    def test_falls_back_to_all_projects_when_the_solve_set_is_unknown(self):
+        from app.services.scheduler_deadline_recommendation import (
+            _projects_whose_deadline_can_bind,
+        )
+
+        self.assertEqual([65, 98], _projects_whose_deadline_can_bind(None, [65, 98], {}))
