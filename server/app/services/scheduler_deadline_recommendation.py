@@ -24,7 +24,7 @@ def enumerate_verified_date_adjustments(
     project_ids = [project_id for project_id in project_ids if project_id in original_deadlines]
     project_ids = _projects_whose_deadline_can_bind(db, project_ids, generate_kwargs)
     priorities = _load_project_priorities(db, project_ids)
-    candidates = _candidate_deadlines(project_ids, original_deadlines, horizon_end)
+    candidates = _candidate_deadlines(db, project_ids, original_deadlines, horizon_end)
     search_deadline = monotonic() + SEARCH_TIME_LIMIT_SECONDS
     # 这里曾经先做一次"所有项目都放到求解视界还行不行"的全局预检，用来在完全
     # 没救时提前收工。现在每个项目自己会先试最远那天，同样能定论，预检就纯属
@@ -71,16 +71,71 @@ def _projects_whose_deadline_can_bind(db, project_ids: list[int], generate_kwarg
 
 
 def _candidate_deadlines(
-    project_ids: list[int], original_deadlines: dict[int, datetime], horizon_end: datetime,
+    db, project_ids: list[int], original_deadlines: dict[int, datetime],
+    horizon_end: datetime,
 ) -> dict[int, list[datetime]]:
-    return {
-        project_id: [
-            (original_deadlines[project_id] + timedelta(days=offset)).replace(hour=23, minute=59, second=0, microsecond=0)
-            for offset in range(1, (horizon_end.date() - original_deadlines[project_id].date()).days + 1)
-            if (original_deadlines[project_id] + timedelta(days=offset)).date() <= horizon_end.date()
+    """候选结题日只取工作日。
+
+    结题日是跟客户签的合同日期，落在周末或法定假日上没有意义；更实际的问题是它
+    腾不出任何工时——排程只在工作时段里落任务，把结题日从周六挪到周日，可用工时
+    一分钟都没多。线上就出过这种建议：原结题日 2026-09-12（周六），建议延到
+    09-13（周日）。
+
+    是否把周末算作工作时间由排程规则决定（include_weekends / include_holidays），
+    所以这里按规则加日历判断，而不是简单地跳过周六周日。
+    """
+    from app.services.schedule_rule_service import get_solver_constraints
+    from app.services.scheduler_helpers import is_allowed_calendar_day, load_calendar_days
+
+    starts = [original_deadlines[project_id] for project_id in project_ids]
+    if not starts:
+        return {}
+    # 与本模块 _load_project_priorities 同一处理：搜索逻辑的单测传的是假的
+    # db，拿不到日历就不过滤。生产路径一定是真实会话。
+    if getattr(db, "query", None) is None:
+        return _raw_candidates(project_ids, original_deadlines, horizon_end)
+    rule = get_solver_constraints(db)["working_hours"]
+    params = rule.params or {}
+    include_weekends = bool(params.get("include_weekends", False)) or not rule.is_enabled
+    include_holidays = bool(params.get("include_holidays", False)) or not rule.is_enabled
+    calendar_days = load_calendar_days(db, min(starts), horizon_end)
+
+    result: dict[int, list[datetime]] = {}
+    for project_id in project_ids:
+        start = original_deadlines[project_id]
+        span = (horizon_end.date() - start.date()).days
+        days = _days_after(start, span, horizon_end)
+        working = [
+            day for day in days
+            if is_allowed_calendar_day(
+                day.date(), calendar_days, include_weekends, include_holidays,
+            )
         ]
+        # 视界内一个工作日都没有时不做过滤，宁可给出一个不理想的建议，也好过
+        # 一声不吭地什么都不给。
+        result[project_id] = working or days
+    return result
+
+
+def _raw_candidates(project_ids, original_deadlines, horizon_end) -> dict:
+    return {
+        project_id: _days_after(
+            original_deadlines[project_id],
+            (horizon_end.date() - original_deadlines[project_id].date()).days,
+            horizon_end,
+        )
         for project_id in project_ids
     }
+
+
+def _days_after(start: datetime, span: int, horizon_end: datetime) -> list[datetime]:
+    return [
+        (start + timedelta(days=offset)).replace(
+            hour=23, minute=59, second=0, microsecond=0,
+        )
+        for offset in range(1, span + 1)
+        if (start + timedelta(days=offset)).date() <= horizon_end.date()
+    ]
 
 
 def _search_order(project_ids: list[int], original_deadlines: dict[int, datetime]) -> list[int]:
