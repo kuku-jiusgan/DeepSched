@@ -60,6 +60,7 @@ def load_fixed_slots(
     relevant_instrument_ids: set[int] | None = None,
     relevant_assignee_ids: set[int] | None = None,
     slot_rows: list[TimeSlot] | None = None,
+    released_slot_ids: set[int] | None = None,
 ) -> list[TimeSlot]:
     # 下面按 slot.task.requires_human / assignee_id 过滤，不预加载的话每个时间槽
     # 都会触发一次单独的 task 查询——实测一次排程里仅此一处就发了 142 条 SQL。
@@ -84,6 +85,13 @@ def load_fixed_slots(
             and slot.tier != "frozen"
         )
     ]
+    if released_slot_ids:
+        # 调用方明确声明这些槽本次要让位。原先表达"让位"的方式是求解前先把它们
+        # 删掉，于是求解器只能靠回头查库才知道剩下什么——假设的最小单元成了一个
+        # 事务而不是一个值。现在它就是一个集合，删除挪到写回阶段作为指令执行。
+        fixed_slots = [
+            slot for slot in fixed_slots if slot.id not in released_slot_ids
+        ]
     if excluded_task_ids:
         fixed_slots = [
             slot for slot in fixed_slots

@@ -77,6 +77,7 @@ class BuildScheduleplanTouchesNothingTest(unittest.TestCase):
             presences={}, split_unit_presences={},
             horizon_start=self.horizon_start, working_context=self.working_context,
             schedule_run_id="run-1", supersedes=(), notify=None, base_epoch=0,
+            calendar_snapshot=None,
             frozen_boundary=self.horizon_start - timedelta(days=1),
             confirmed_boundary=self.horizon_start + timedelta(days=7),
             forecast_task_ids=set(), preserved_status_task_ids=set(),
@@ -264,3 +265,44 @@ class NotificationIsAnOutwardActionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReleasingSlotsDoesNotRequireDeletingThemFirstTest(unittest.TestCase):
+    """求解前不再靠"先把槽删掉"来表达"这些位置可以让出来"。
+
+    这是整套改造针对的那个病根：应用层原先通过数据库跟求解器通信——先 DELETE 掉
+    可移动的时间槽再求解，求解器回头查库才知道剩下什么。于是"一个假设"的最小单元
+    成了一个事务而不是一个值，探测只能靠 savepoint 包住再回滚，并行探测会撞行锁。
+
+    现在"哪些槽让位"就是一个槽号集合：求解时排除，作废作为写回阶段的一条指令执行。
+    """
+
+    def test_the_released_set_is_passed_as_a_value_not_applied_as_a_deletion(self):
+        from unittest.mock import patch
+
+        from app.services import project_plan_apply_service as service
+
+        self.assertFalse(
+            hasattr(service, "_delete_movable_slots"),
+            "求解前删槽的那条路径应当已经不存在",
+        )
+
+    def test_load_fixed_slots_drops_exactly_the_released_ones(self):
+        from types import SimpleNamespace
+
+        from app.services.scheduler_fixed_slots import load_fixed_slots
+
+        def slot(slot_id, task_id):
+            return SimpleNamespace(
+                id=slot_id, task_id=task_id, instrument_id=1,
+                status="scheduled", tier="confirmed", lifecycle_status="active",
+                actual_start=None, actual_end=None,
+                plan_start=datetime(2026, 9, 7, 8, 30),
+                plan_end=datetime(2026, 9, 7, 10, 30),
+                task=SimpleNamespace(requires_human=False, assignee_id=None),
+            )
+
+        rows = [slot(1, 10), slot(2, 10), slot(3, 11)]
+        kept = load_fixed_slots(None, slot_rows=rows, released_slot_ids={2})
+
+        self.assertEqual([1, 3], sorted(item.id for item in kept))

@@ -64,6 +64,22 @@ class SetTaskStatus:
 
 
 @dataclass(frozen=True)
+class RecordCalendarSnapshot:
+    """把这次排程用的工作日历与规则版本留档。
+
+    它是一次纯记录：出了问题要能回答"当时按的是哪套日历、哪版规则"。内容全部来自
+    装载阶段的值，落盘时不需要再算一遍。
+    """
+
+    horizon_start: datetime
+    horizon_end: datetime
+    working_params: dict
+    calendar_days: dict
+    maintenance_windows: tuple
+    instrument_working_hours: dict
+
+
+@dataclass(frozen=True)
 class NotifySchedule:
     """把这次重排里任务前移/后移的情况通知到人。
 
@@ -92,6 +108,7 @@ class SchedulePlan:
     supersedes: tuple[SupersedeSlot, ...] = ()
     slots: tuple[CreateSlot, ...] = ()
     task_statuses: tuple[SetTaskStatus, ...] = ()
+    calendar_snapshot: RecordCalendarSnapshot | None = None
     # 通知是对外动作，发出去收不回来；探测跑的计划这里恒为 None。
     notify: NotifySchedule | None = None
 
@@ -110,6 +127,7 @@ def build_schedule_plan(
     schedule_run_id: str,
     supersedes: tuple[SupersedeSlot, ...],
     notify: NotifySchedule | None,
+    calendar_snapshot: RecordCalendarSnapshot | None,
     base_epoch: int,
     frozen_boundary: datetime,
     confirmed_boundary: datetime,
@@ -160,6 +178,7 @@ def build_schedule_plan(
         confirmed_boundary=confirmed_boundary,
         supersedes=tuple(supersedes),
         notify=notify,
+        calendar_snapshot=calendar_snapshot,
         base_epoch=base_epoch,
         slots=tuple(slots),
         task_statuses=tuple(statuses),
@@ -176,6 +195,9 @@ def apply_schedule_plan(db, plan: SchedulePlan) -> int:
     from app.models import Instrument, Task
     from app.services.instrument_bridge_sync_service import (
         rebuild_instrument_bridge_reservations,
+    )
+    from app.services.schedule_calendar_snapshot_service import (
+        save_schedule_calendar_snapshot,
     )
     from app.services.scheduler_persistence import _create_slot
 
@@ -200,6 +222,14 @@ def apply_schedule_plan(db, plan: SchedulePlan) -> int:
     # 第一件事：确认装载世界之后没人动过排程，并把版本推进一格。比对写在 UPDATE
     # 的 WHERE 里，所以"检查"和"占用"是同一个原子动作，中间没有可乘之机。
     claim(db, plan.base_epoch)
+
+    if plan.calendar_snapshot is not None:
+        snapshot = plan.calendar_snapshot
+        save_schedule_calendar_snapshot(
+            db, plan.schedule_run_id, snapshot.horizon_start, snapshot.horizon_end,
+            snapshot.working_params, snapshot.calendar_days,
+            list(snapshot.maintenance_windows), snapshot.instrument_working_hours,
+        )
 
     apply_supersedes(db, plan.supersedes)
 

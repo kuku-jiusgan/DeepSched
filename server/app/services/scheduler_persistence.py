@@ -47,6 +47,7 @@ def persist_slots(
     preserved_status_task_ids: set[int] | None = None,
     supersedes: tuple = (),
     notify=None,
+    calendar_snapshot=None,
     base_epoch: int = 0,
 ) -> tuple[int, SchedulePlan]:
     """把求解结果落地，返回（新建槽数，这次执行的计划）。
@@ -72,6 +73,7 @@ def persist_slots(
         schedule_run_id=schedule_run_id,
         supersedes=supersedes,
         notify=notify,
+        calendar_snapshot=calendar_snapshot,
         base_epoch=base_epoch,
         frozen_boundary=natural_day_boundary(now, freeze_days),
         confirmed_boundary=now + timedelta(days=get_settings().CONFIRMED_DAYS),

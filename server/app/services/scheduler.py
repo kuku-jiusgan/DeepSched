@@ -126,6 +126,7 @@ class SchedulerService:
         task_ids: Optional[List[int]] = None,
         commit: bool = True,
         excluded_task_ids: set[int] | None = None,
+        released_slot_ids: set[int] | None = None,
         original_schedule_windows: dict[int, tuple[datetime, datetime]] | None = None,
         stability_task_ids: set[int] | None = None,
         additional_dependencies: list[tuple[int, int]] | None = None,
@@ -303,12 +304,15 @@ class SchedulerService:
             (
                 "fixed_slots", frozenset(task.id for task in tasks),
                 frozenset(relevant_instrument_ids), frozenset(relevant_assignee_ids),
+                # 释放集合不同，算出来的固定槽就不同，必须进缓存键。
+                frozenset(released_slot_ids or ()),
             ),
             lambda: load_fixed_slots(
                 self.db,
                 {task.id for task in tasks},
                 relevant_instrument_ids,
                 relevant_assignee_ids,
+                released_slot_ids=released_slot_ids,
             ),
         )
         # A preserved running slot remains the execution anchor. It must not
@@ -539,6 +543,7 @@ class SchedulerService:
             solver=solver,
             status=status,
             base_epoch=problem.epoch,
+            released_slot_ids=released_slot_ids,
             tasks=tasks,
             instruments=instruments,
             task_starts=task_starts,

@@ -18,6 +18,8 @@ from app.services.schedule_replan_validation_service import ensure_replan_consis
 from app.services.schedule_slot_change_log_service import supersede_slot
 from app.services.schedule_action_plan import (
     NotifySchedule,
+    RecordCalendarSnapshot,
+    SupersedeSlot,
     apply_schedule_notifications,
 )
 from app.services.scheduler_persistence import persist_slots
@@ -114,6 +116,7 @@ def persist_schedule_result(
     rollback_on_conflict,
     commit,
     base_epoch: int = 0,
+    released_slot_ids: set[int] | None = None,
 ) -> dict:
     """把求解结果落成时间槽，并返回排程接口的成功响应。"""
     # Persist results
@@ -124,17 +127,13 @@ def persist_schedule_result(
         replaceable_after,
         preserved_slot_ids,
     )
-    schedule_run_id = new_schedule_run_id()
-    save_schedule_calendar_snapshot(
-        db,
-        schedule_run_id,
-        horizon_start,
-        horizon_end,
-        working_params,
-        calendar_days,
-        maint_windows,
-        serialize_instrument_policies(working_context),
+    # 求解时被排除掉的那些槽，到这一步才真正作废——写回阶段的一条指令，而不是
+    # 求解前的一次删除。
+    supersedes = tuple(supersedes) + tuple(
+        SupersedeSlot(slot_id, "排程重排")
+        for slot_id in sorted(released_slot_ids or ())
     )
+    schedule_run_id = new_schedule_run_id()
     created, plan = persist_slots(
         db,
         tasks,
@@ -154,6 +153,14 @@ def persist_schedule_result(
         preserved_status_task_ids=preserved_status_task_ids,
         supersedes=supersedes,
         base_epoch=base_epoch,
+        calendar_snapshot=RecordCalendarSnapshot(
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+            working_params=working_params,
+            calendar_days=calendar_days,
+            maintenance_windows=tuple(maint_windows),
+            instrument_working_hours=serialize_instrument_policies(working_context),
+        ),
         notify=NotifySchedule(
             reason=advance_notification_reason,
             original_windows=original_schedule_windows or {},

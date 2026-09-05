@@ -221,7 +221,14 @@ def _execute_replan(
     # 失败后的占用明细还要按原计划位置统计这些工时，删掉就只剩"没有时间槽"
     # 的任务，工时会被记进预测工时列，仪器占用凭空变成 0。先留一份快照。
     released_slots = _released_slot_intervals(db, replan_task_ids)
-    _delete_movable_slots(db, replan_task_ids)
+    # 这些槽本次要让位。原先的表达方式是求解前先把它们删掉，让求解器回头查库时
+    # 自然看不到——"一个假设"的最小单元于是成了一个事务而不是一个值。现在它就是
+    # 一个槽号集合：求解时排除，作废挪到写回阶段作为指令执行。
+    released_slot_ids = {
+        slot_id for (slot_id,) in _movable_slots_query(
+            db, replan_task_ids,
+        ).with_entities(TimeSlot.id).all()
+    }
     # 顺延这些任务的时间是对的，改它们的执行状态不是。暂停/进行中的任务原本也允许
     # 被顺延（候选筛选特意放行了 paused），但这里一路重置成 pending、求解后又落成
     # scheduled，别人项目的一次保存并排程就把这个任务的暂停状态和暂停原因抹掉了。
@@ -257,6 +264,7 @@ def _execute_replan(
         current_project_id=project.id,
         rollback_on_conflict=rollback_on_failure and not use_savepoint,
         released_slot_intervals=released_slots,
+        released_slot_ids=released_slot_ids,
         preserved_status_task_ids=preserved_status_task_ids,
     )
     if solver_result.get("status") != "ok":
@@ -535,7 +543,7 @@ def _selected_tasks_start_today(
 def _released_slot_intervals(db, task_ids: set[int]) -> dict[int, list[tuple]]:
     """即将被删除的时间槽快照：任务 → [(计划开始, 计划结束, 仪器)]。
 
-    筛选条件与 _delete_movable_slots 保持一致，两者必须同进同出。
+    筛选条件与 _movable_slots_query 保持一致，两者必须同进同出。
     """
     intervals: dict[int, list[tuple]] = {}
     for slot in _movable_slots_query(db, task_ids).all():
@@ -553,12 +561,6 @@ def _movable_slots_query(db, task_ids: set[int]):
         TimeSlot.tier.in_(MOVABLE_TIERS),
         TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
         TimeSlot.actual_start.is_(None),
-    )
-
-
-def _delete_movable_slots(db, task_ids: set[int]) -> None:
-    delete_time_slots_and_refresh(
-        db, _movable_slots_query(db, task_ids), synchronize_session=False,
     )
 
 
