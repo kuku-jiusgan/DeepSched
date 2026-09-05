@@ -44,6 +44,19 @@ class CreateSlot:
 
 
 @dataclass(frozen=True)
+class SupersedeSlot:
+    """作废一个旧时间槽。
+
+    只带槽号和原因：作废本身牵动六件事（生命周期、执行状态、作废时间与原因、
+    桥接预留失效、夜跑记录失效、变更日志），这些规则在 supersede_slot 这个既有
+    原语里，指令不重复描述它们。
+    """
+
+    slot_id: int
+    reason: str
+
+
+@dataclass(frozen=True)
 class SetTaskStatus:
     task_id: int
     status: str
@@ -58,6 +71,9 @@ class SchedulePlan:
     # 与求解当时一致的 tier。
     frozen_boundary: datetime
     confirmed_boundary: datetime
+    # 顺序有意义：先作废旧槽再建新槽。反过来的话建槽时的去重会撞上还没作废的
+    # 旧槽，把本该新建的那一条判成重复而跳过。
+    supersedes: tuple[SupersedeSlot, ...] = ()
     slots: tuple[CreateSlot, ...] = ()
     task_statuses: tuple[SetTaskStatus, ...] = ()
 
@@ -74,6 +90,7 @@ def build_schedule_plan(
     horizon_start: datetime,
     working_context,
     schedule_run_id: str,
+    supersedes: tuple[SupersedeSlot, ...],
     frozen_boundary: datetime,
     confirmed_boundary: datetime,
     forecast_task_ids: set[int],
@@ -121,6 +138,7 @@ def build_schedule_plan(
         schedule_run_id=schedule_run_id,
         frozen_boundary=frozen_boundary,
         confirmed_boundary=confirmed_boundary,
+        supersedes=tuple(supersedes),
         slots=tuple(slots),
         task_statuses=tuple(statuses),
     )
@@ -129,7 +147,8 @@ def build_schedule_plan(
 def apply_schedule_plan(db, plan: SchedulePlan) -> int:
     """执行一份计划，返回新建的时间槽数量。
 
-    只调用既有落盘原语：建槽走 _create_slot（它负责算 tier、去重、写变更日志），
+    只调用既有落盘原语：作废走 supersede_slot（它负责收执行状态、失效桥接预留与
+    夜跑记录、写变更日志），建槽走 _create_slot（它负责算 tier、去重、写变更日志），
     收尾走桥接预留的全量重建。
     """
     from app.models import Instrument, Task
@@ -137,6 +156,7 @@ def apply_schedule_plan(db, plan: SchedulePlan) -> int:
         rebuild_instrument_bridge_reservations,
     )
     from app.services.scheduler_persistence import _create_slot
+
 
     task_ids = {item.task_id for item in plan.slots} | {
         item.task_id for item in plan.task_statuses
@@ -155,6 +175,8 @@ def apply_schedule_plan(db, plan: SchedulePlan) -> int:
         ).all()
     } if instrument_ids else {}
 
+    apply_supersedes(db, plan.supersedes)
+
     created = 0
     for action in plan.slots:
         created += _create_slot(
@@ -172,6 +194,26 @@ def apply_schedule_plan(db, plan: SchedulePlan) -> int:
         tasks[action.task_id].status = action.status
     rebuild_instrument_bridge_reservations(db, plan.schedule_run_id)
     return created
+
+
+def apply_supersedes(db, supersedes) -> None:
+    """执行一批作废指令。走既有的 supersede_slot 原语。"""
+    from app.models import TimeSlot
+    from app.services.schedule_slot_change_log_service import supersede_slot
+
+    if not supersedes:
+        return
+    by_id = {
+        slot.id: slot
+        for slot in db.query(TimeSlot).filter(
+            TimeSlot.id.in_([item.slot_id for item in supersedes]),
+        ).all()
+    }
+    for action in supersedes:
+        slot = by_id.get(action.slot_id)
+        if slot is not None:
+            supersede_slot(db, slot, action.reason)
+    db.flush()
 
 
 def _slot_status(task, is_preserved: bool) -> str:

@@ -31,8 +31,30 @@ def supersede_replaceable_slots(
     replaceable_after: datetime | None,
     preserved_slot_ids: set[int] | None = None,
 ) -> None:
+    """立即作废可替换的旧槽。排程主链路已改走指令集，这里保留给其它调用方。"""
+    from app.services.schedule_action_plan import apply_supersedes
+
+    apply_supersedes(db, plan_replaceable_supersedes(
+        db, task_ids, reason, replaceable_after, preserved_slot_ids,
+    ))
+
+
+def plan_replaceable_supersedes(
+    db,
+    task_ids: set[int],
+    reason: str,
+    replaceable_after: datetime | None,
+    preserved_slot_ids: set[int] | None = None,
+) -> tuple:
+    """选出这次重排里该被作废的旧时间槽，只出指令、不落盘。
+
+    选择依赖库里的当前状态，所以是一次读；把它和"执行作废"分开之后，一份计划
+    才能在执行之前被完整地看一眼。
+    """
+    from app.services.schedule_action_plan import SupersedeSlot
+
     if not task_ids:
-        return
+        return ()
     slots = db.query(TimeSlot).filter(
         TimeSlot.task_id.in_(task_ids),
         TimeSlot.lifecycle_status == "active",
@@ -49,11 +71,11 @@ def supersede_replaceable_slots(
         # Keep only slots wholly finished before that boundary.
         slots = [slot for slot in slots if slot.plan_end > replaceable_after]
     preserved_slot_ids = preserved_slot_ids or set()
-    for slot in slots:
-        if slot.id in preserved_slot_ids:
-            continue
-        supersede_slot(db, slot, reason)
-    db.flush()
+    return tuple(
+        SupersedeSlot(slot.id, reason)
+        for slot in sorted(slots, key=lambda item: item.id)
+        if slot.id not in preserved_slot_ids
+    )
 
 
 def persist_schedule_result(
@@ -90,7 +112,7 @@ def persist_schedule_result(
 ) -> dict:
     """把求解结果落成时间槽，并返回排程接口的成功响应。"""
     # Persist results
-    supersede_replaceable_slots(
+    supersedes = plan_replaceable_supersedes(
         db,
         replaceable_task_ids or set(),
         "CP-SAT局部重排",
@@ -125,6 +147,7 @@ def persist_schedule_result(
         forecast_task_ids=forecast_task_ids,
         instrument_bridges=instrument_bridges,
         preserved_status_task_ids=preserved_status_task_ids,
+        supersedes=supersedes,
     )
 
     try:

@@ -44,6 +44,7 @@ def persist_slots(
     forecast_task_ids: set[int] | None = None,
     instrument_bridges: list[dict] | None = None,
     preserved_status_task_ids: set[int] | None = None,
+    supersedes: tuple = (),
 ) -> int:
     """把求解结果落地。
 
@@ -63,6 +64,7 @@ def persist_slots(
         horizon_start=horizon_start,
         working_context=working_context,
         schedule_run_id=schedule_run_id,
+        supersedes=supersedes,
         frozen_boundary=natural_day_boundary(now, freeze_days),
         confirmed_boundary=now + timedelta(days=get_settings().CONFIRMED_DAYS),
         forecast_task_ids=forecast_task_ids or set(),

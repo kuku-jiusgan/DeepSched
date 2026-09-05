@@ -16,6 +16,7 @@ from app.services.schedule_action_plan import (
     CreateSlot,
     SchedulePlan,
     SetTaskStatus,
+    SupersedeSlot,
     build_schedule_plan,
 )
 
@@ -44,6 +45,7 @@ class SchedulePlanIsAValueTest(unittest.TestCase):
             confirmed_boundary=datetime(2026, 9, 12),
             slots=(CreateSlot(1, 10, datetime(2026, 9, 7, 8, 30),
                               datetime(2026, 9, 7, 12, 0), "scheduled"),),
+            supersedes=(SupersedeSlot(7, "CP-SAT局部重排"),),
             task_statuses=(SetTaskStatus(1, "scheduled"),),
         )
 
@@ -72,7 +74,7 @@ class BuildScheduleplanTouchesNothingTest(unittest.TestCase):
             task_ends=kwargs.pop("task_ends", {}),
             presences={}, split_unit_presences={},
             horizon_start=self.horizon_start, working_context=self.working_context,
-            schedule_run_id="run-1",
+            schedule_run_id="run-1", supersedes=(),
             frozen_boundary=self.horizon_start - timedelta(days=1),
             confirmed_boundary=self.horizon_start + timedelta(days=7),
             forecast_task_ids=set(), preserved_status_task_ids=set(),
@@ -121,6 +123,69 @@ class BuildScheduleplanTouchesNothingTest(unittest.TestCase):
         )
 
         self.assertEqual((), plan.slots)
+
+
+class SupersedeThenCreateTest(unittest.TestCase):
+    """一份计划里，作废必须排在新建前面。
+
+    建槽时会按 任务/仪器/起止/状态 去重。旧槽还没作废就去建新槽，本该新建的那一条
+    会被判成重复而跳过，于是任务的时间槽凭空少一段。顺序在 SchedulePlan 里是有
+    语义的，不是随手排的。
+    """
+
+    def test_the_old_slot_is_voided_before_the_new_one_is_created(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.core.database import Base
+        from app.models import Project, Task, TimeSlot
+        from app.services.schedule_action_plan import apply_schedule_plan
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        try:
+            start = datetime(2026, 9, 7, 8, 30)
+            project = Project(code="SUP-1", name="作废项目", priority=1,
+                              start_date=start, end_date=start + timedelta(days=10))
+            db.add(project)
+            db.flush()
+            task = Task(project_id=project.id, name="作废任务", task_type="test",
+                        status="pending", est_duration_hours=1,
+                        requires_instrument=False, requires_human=False)
+            db.add(task)
+            db.flush()
+            old = TimeSlot(
+                task_id=task.id, schedule_run_id="run-0", instrument_id=None,
+                plan_start=start, plan_end=start + timedelta(hours=2),
+                tier="confirmed", status="scheduled", lifecycle_status="active",
+            )
+            db.add(old)
+            db.flush()
+
+            # 新槽与旧槽的任务、起止、状态完全相同——去重规则会命中。
+            created = apply_schedule_plan(db, SchedulePlan(
+                schedule_run_id="run-1",
+                frozen_boundary=start - timedelta(days=1),
+                confirmed_boundary=start + timedelta(days=7),
+                supersedes=(SupersedeSlot(old.id, "CP-SAT局部重排"),),
+                slots=(CreateSlot(task.id, None, start,
+                                  start + timedelta(hours=2), "scheduled"),),
+                task_statuses=(SetTaskStatus(task.id, "scheduled"),),
+            ))
+            db.flush()
+
+            self.assertEqual(1, created, "旧槽先作废之后，新槽必须能建出来")
+            self.assertEqual("superseded", old.lifecycle_status)
+            self.assertEqual("cancelled", old.status)
+            active = db.query(TimeSlot).filter(
+                TimeSlot.lifecycle_status == "active",
+            ).all()
+            self.assertEqual(1, len(active))
+            self.assertEqual("run-1", active[0].schedule_run_id)
+            self.assertEqual("scheduled", task.status)
+        finally:
+            db.close()
 
 
 if __name__ == "__main__":
