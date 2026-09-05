@@ -10,6 +10,7 @@
 所以 build_failure_response 会按 id 把任务换回实体。这条测试钉住那个结果。
 """
 
+import json
 import unittest
 from datetime import datetime, timedelta
 
@@ -17,7 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Instrument, Project, Task, TaskDependency
+from app.models import Instrument, Project, Task, TaskDependency, TimeSlot
 from app.services.scheduler import SchedulerService
 
 NOW = datetime(2026, 9, 7, 9, 0, 0)
@@ -40,6 +41,25 @@ class FailureDiagnosticsSurviveTaskViewsTest(unittest.TestCase):
         ids = [item.id for item in instruments]
         # 每个任务单独都排得下，串起来才装不下——只有求解器能发现，因此会走到
         # 深度诊断。若在建变量阶段就因单任务窗口不足返回，这条路根本到不了。
+        # 别的项目先占掉一段仪器时间。诊断要读 slot.task.project.code 之类，
+        # 没有固定槽的话那条路根本走不到——第一版这条测试就是这样漏掉的：任务换回
+        # 了实体、时间槽没换，直到语料里加进占位槽才暴露出 AttributeError。
+        other = Project(code="DIAG-OCCUPY", name="占位项目", priority=5,
+                        start_date=NOW, end_date=NOW + timedelta(days=30))
+        self.db.add(other)
+        self.db.flush()
+        occupied = Task(project_id=other.id, name="占位任务", task_type="test",
+                        status="scheduled", est_duration_hours=6,
+                        requires_instrument=True, requires_human=False,
+                        instrument_ids=[ids[0]])
+        self.db.add(occupied)
+        self.db.flush()
+        self.db.add(TimeSlot(
+            task_id=occupied.id, schedule_run_id="seed", instrument_id=ids[0],
+            plan_start=NOW + timedelta(days=1), plan_end=NOW + timedelta(days=1, hours=6),
+            tier="confirmed", status="scheduled", lifecycle_status="active",
+        ))
+        self.db.flush()
         project = Project(code="DIAG-1", name="诊断项目", priority=1,
                           start_date=NOW, end_date=NOW + timedelta(days=4))
         self.db.add(project)
@@ -81,6 +101,9 @@ class FailureDiagnosticsSurviveTaskViewsTest(unittest.TestCase):
             "所需工时只算进了一个任务，说明诊断看到的任务集合不完整",
         )
         self.assertGreater(max(item["deficit_hours"] for item in failure["instruments"]), 0)
+        # 占用明细要认得出占位项目——这一条只有在时间槽也换回实体时才成立。
+        occupancy = json.dumps(failure.get("occupancy"), ensure_ascii=False)
+        self.assertIn("DIAG-OCCUPY", occupancy, "占用明细没认出占位项目")
 
 
 if __name__ == "__main__":

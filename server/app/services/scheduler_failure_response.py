@@ -46,7 +46,7 @@ def build_failure_response(
 ) -> dict:
     """把一次失败的求解翻译成带诊断信息的错误响应。
 
-    进来的任务是求解用的值对象，诊断这条路暂时还需要实体：它要从任务反向拿项目的
+    进来的任务和固定时间槽都是求解用的值对象，诊断这条路暂时还需要实体：它要从任务反向拿项目的
     全量叶子任务、顺着父链上溯、读时间槽，这些在值对象上都没有展开。用值对象跑
     不会报错，但会静默退化——实测同一个场景，缺口从 74 小时变成 0，根因从"计划内
     仪器工时不足"变成笼统的"受排程约束限制"，等于给出了错误的诊断。
@@ -56,6 +56,7 @@ def build_failure_response(
     叶子任务 + 父链 + 时间槽），那是一次独立的改造。
     """
     tasks = _rehydrate(db, tasks)
+    fixed_slots = _rehydrate_slots(db, fixed_slots)
     if not include_failure_diagnostics:
         return {
             "status": "error",
@@ -157,3 +158,23 @@ def _rehydrate(db, tasks):
         for entity in db.query(Task).filter(Task.id.in_(ordered_ids)).all()
     }
     return [by_id[task_id] for task_id in ordered_ids if task_id in by_id]
+
+
+def _rehydrate_slots(db, slots):
+    """把固定时间槽换回实体。
+
+    诊断要读 slot.task.project.code、slot.task.assignee.display_name，还要顺着
+    slot.task.parent 上溯——值对象上只有 project_id / assignee_id，直接 AttributeError。
+    """
+    from app.models import TimeSlot
+
+    if db is None or not slots:
+        return slots
+    if any(isinstance(slot, TimeSlot) for slot in slots):
+        return slots
+    ordered_ids = [slot.id for slot in slots]
+    by_id = {
+        entity.id: entity
+        for entity in db.query(TimeSlot).filter(TimeSlot.id.in_(ordered_ids)).all()
+    }
+    return [by_id[slot_id] for slot_id in ordered_ids if slot_id in by_id]

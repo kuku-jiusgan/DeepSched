@@ -19,7 +19,9 @@ def _fixed_slot_range(
 ) -> tuple[datetime, datetime]:
     # now 必须由调用方给定，不能就地读挂钟：一个已开工未结束的槽，它占用的区间
     # 右端是"到此刻为止"，每过一秒就变一次，同一道题两次构造出的模型就不同了。
-    if isinstance(slot, InstrumentBridgeReservation):
+    if isinstance(slot, InstrumentBridgeReservation) or getattr(
+        slot, "is_bridge_reservation", False,
+    ):
         return slot.plan_start, slot.plan_end
     if slot.status == "completed":
         return slot.actual_start, slot.actual_end

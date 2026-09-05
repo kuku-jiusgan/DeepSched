@@ -16,7 +16,12 @@ from app.services.scheduler_fixed_slots import (
 from app.services.scheduler_objective import add_scheduler_objective
 from app.services.scheduler_instrument_bridging import add_instrument_bridge_intervals
 from app.services.scheduler_diagnostics import unavailable_instrument_message
-from app.services.planning_problem import build_planning_problem, build_task_views
+from app.services.planning_problem import (
+    build_planning_problem,
+    build_task_views,
+    to_bridge_views,
+    to_slot_views,
+)
 from app.services.scheduler_data import load_scheduler_data, load_task_children
 from app.services.scheduler_predecessor_bounds import load_missing_predecessor_ends
 from app.services.scheduler_helpers import (
@@ -333,11 +338,13 @@ class SchedulerService:
                 slot for slot in fixed_slots
                 if slot.id not in preserved_slot_ids
             ]
-        fixed_bridge_reservations = load_fixed_bridge_reservations(
+        # 固定时间槽与桥接预留也转成值：至此建模全程不再持有任何 ORM 实体。
+        fixed_slots = to_slot_views(fixed_slots)
+        fixed_bridge_reservations = to_bridge_views(load_fixed_bridge_reservations(
             self.db,
             {task.id for task in tasks},
             relevant_instrument_ids,
-        )
+        ))
 
         model = cp_model.CpModel()
 

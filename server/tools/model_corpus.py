@@ -318,6 +318,12 @@ def scenario_solver_infeasible_runs_diagnostics():
     db = _session()
     instruments = [_instrument(db, "INST-%s" % code) for code in "AB"]
     ids = [item.id for item in instruments]
+    # 让别的项目先占掉一段仪器时间：失败诊断要读 slot.task.project.code 之类，
+    # 没有固定槽的话那条路根本走不到，验证就是空的。
+    other = _project(db, "P-OCCUPY")
+    occupied = _task(db, other, "占位任务", status="scheduled",
+                     requires_instrument=True, instrument_ids=[ids[0]], hours=6)
+    _slot(db, occupied, instruments[0], NOW + 1 * DAY, 6)
     project = _project(db, "P-INFEASIBLE", start=NOW, end=NOW + 4 * DAY)
     first = _task(db, project, "前序任务", requires_instrument=True,
                   instrument_ids=ids, hours=30)

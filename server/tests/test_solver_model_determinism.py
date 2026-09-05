@@ -125,6 +125,63 @@ class PlanningProblemIsAValueTest(unittest.TestCase):
             problem.instruments, pickle.loads(pickle.dumps(problem.instruments)),
         )
 
+    def test_the_whole_problem_survives_the_session_and_pickling(self):
+        """一道题要能整体序列化、扔给别的进程去算。
+
+        这是"内存领域模型"成不成立的判据：任务、项目、仪器、固定时间槽全部是值，
+        会话关掉之后照样读得到。只要还有一处是 ORM 实体，这里就会抛
+        DetachedInstanceError 或 pickle 失败。
+        """
+        import pickle
+        from dataclasses import replace
+        from datetime import datetime as real_datetime
+
+        from app.models import Project, Task, TimeSlot
+        from app.services.planning_problem import (
+            build_planning_problem,
+            build_task_views,
+            to_slot_views,
+        )
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine, expire_on_commit=False)()
+        now = real_datetime(2026, 9, 7, 9, 0)
+        instrument = Instrument(code="WHOLE-1", name="整体仪器",
+                                availability_status="available", status="idle")
+        db.add(instrument)
+        db.flush()
+        project = Project(code="WHOLE-1", name="整体项目", priority=1,
+                          start_date=now, end_date=now + timedelta(days=30))
+        db.add(project)
+        db.flush()
+        task = Task(project_id=project.id, name="整体任务", task_type="test",
+                    status="pending", est_duration_hours=4,
+                    requires_instrument=True, requires_human=False,
+                    instrument_ids=[instrument.id])
+        db.add(task)
+        db.flush()
+        db.add(TimeSlot(
+            task_id=task.id, schedule_run_id="seed", instrument_id=instrument.id,
+            plan_start=now + timedelta(days=1), plan_end=now + timedelta(days=1, hours=2),
+            tier="confirmed", status="scheduled", lifecycle_status="active",
+        ))
+        db.commit()
+
+        problem = replace(
+            build_planning_problem(db, now=now),
+            tasks=tuple(build_task_views(db.query(Task).all())),
+        )
+        slots = to_slot_views(db.query(TimeSlot).all())
+        db.close()
+
+        restored, restored_slots = pickle.loads(pickle.dumps((problem, slots)))
+
+        self.assertEqual("整体任务", restored.tasks[0].name)
+        self.assertEqual("WHOLE-1", restored.tasks[0].project.code)
+        self.assertEqual("WHOLE-1", restored.instruments[0].code)
+        self.assertEqual(project.id, restored_slots[0].task.project_id)
+
 
 if __name__ == "__main__":
     unittest.main()

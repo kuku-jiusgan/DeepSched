@@ -163,6 +163,50 @@ class TaskView:
 
 
 @dataclass(frozen=True)
+class SlotTaskView:
+    """固定时间槽背后的任务，只带产能约束用得到的几项。"""
+
+    id: int
+    project_id: int | None
+    requires_human: bool
+    assignee_id: int | None
+
+
+@dataclass(frozen=True)
+class TimeSlotView:
+    """一个已占用的时间槽。字段名与 TimeSlot 对齐。"""
+
+    id: int
+    task_id: int | None
+    instrument_id: int | None
+    plan_start: datetime | None
+    plan_end: datetime | None
+    actual_start: datetime | None
+    actual_end: datetime | None
+    status: str | None
+    tier: str | None
+    lifecycle_status: str | None
+    task: SlotTaskView | None = None
+
+
+@dataclass(frozen=True)
+class BridgeReservationView:
+    """桥接预留。它没有执行状态，占用区间就是计划区间。
+
+    必须带 is_bridge_reservation 标记：_fixed_slot_range 原先靠
+    isinstance(InstrumentBridgeReservation) 分流，值对象过不了那道判断，会掉进
+    时间槽分支去读 slot.status 而抛 AttributeError。此前快照适配器就踩过这个坑。
+    """
+
+    id: int
+    task_id: int | None
+    instrument_id: int | None
+    plan_start: datetime | None
+    plan_end: datetime | None
+    is_bridge_reservation: bool = True
+
+
+@dataclass(frozen=True)
 class PlanningProblem:
     """一次求解的输入。构造完成后不再依赖数据库会话。"""
 
@@ -348,3 +392,32 @@ def _task_view(task) -> TaskView:
             )
         ),
     )
+
+
+def to_slot_views(slots) -> list[TimeSlotView]:
+    """把固定时间槽转成值对象，保持传入顺序（顺序决定约束的创建次序）。"""
+    return [
+        TimeSlotView(
+            id=slot.id, task_id=slot.task_id, instrument_id=slot.instrument_id,
+            plan_start=slot.plan_start, plan_end=slot.plan_end,
+            actual_start=slot.actual_start, actual_end=slot.actual_end,
+            status=slot.status, tier=slot.tier,
+            lifecycle_status=getattr(slot, "lifecycle_status", None),
+            task=SlotTaskView(
+                id=slot.task.id, project_id=slot.task.project_id,
+                requires_human=bool(getattr(slot.task, "requires_human", False)),
+                assignee_id=getattr(slot.task, "assignee_id", None),
+            ) if getattr(slot, "task", None) is not None else None,
+        )
+        for slot in slots
+    ]
+
+
+def to_bridge_views(reservations) -> list[BridgeReservationView]:
+    return [
+        BridgeReservationView(
+            id=item.id, task_id=item.task_id, instrument_id=item.instrument_id,
+            plan_start=item.plan_start, plan_end=item.plan_end,
+        )
+        for item in reservations
+    ]
