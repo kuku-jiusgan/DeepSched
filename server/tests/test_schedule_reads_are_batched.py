@@ -97,3 +97,73 @@ class ProtectedSlotLookupIsBatchedTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SolverTraceReadsAreBatchedTest(unittest.TestCase):
+    """求解日志的取数不能随时间槽数量增长。
+
+    这份日志是排查求解结果用的，本身不影响排程。但它原先是逐槽懒加载——每条槽各查
+    一次所属项目、负责人、仪器，再顺着父任务上溯。实测一次真实排程光写这份日志就
+    发 27 条 SQL，和整个装载阶段（29 条）几乎一样多。
+    """
+
+    def _fixture(self, slot_count: int):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        # commit 之后实体会过期，之后每次读属性都要回查一次——那是 ORM 的行为，
+        # 会把"取数条数随槽数增长"这件事伪造出来。这里关掉它，测的才是取数本身。
+        db = sessionmaker(bind=engine, expire_on_commit=False)()
+        now = datetime.now().replace(second=0, microsecond=0)
+        project = Project(code="TRACE-1", name="日志项目", priority=1,
+                          start_date=now, end_date=now + timedelta(days=30))
+        db.add(project)
+        db.flush()
+        parent = Task(project_id=project.id, name="顶层任务", task_type="test",
+                      status="pending", est_duration_hours=1,
+                      requires_instrument=False, requires_human=False)
+        db.add(parent)
+        db.flush()
+        slots = []
+        for index in range(slot_count):
+            task = Task(project_id=project.id, name="子任务%d" % index,
+                        task_type="test", status="scheduled", est_duration_hours=1,
+                        parent_id=parent.id,
+                        requires_instrument=False, requires_human=False)
+            db.add(task)
+            db.flush()
+            slot = TimeSlot(
+                task_id=task.id, schedule_run_id="run-0", instrument_id=None,
+                plan_start=now + timedelta(hours=index),
+                plan_end=now + timedelta(hours=index + 1),
+                tier="confirmed", status="scheduled", lifecycle_status="active",
+            )
+            db.add(slot)
+            db.flush()
+            slots.append(slot)
+        db.commit()
+        return engine, db, slots
+
+    def _count(self, slot_count: int) -> int:
+        from app.services.scheduler_solver_trace_service import _resolve_slot_names
+
+        engine, db, slots = self._fixture(slot_count)
+        statements = []
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def record(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        try:
+            names = _resolve_slot_names(db, slots)
+            # 顺带确认名字真的解析出来了，否则条数为零也"通过"。
+            self.assertEqual("TRACE-1", names[slots[0].id]["project"])
+            self.assertEqual("顶层任务", names[slots[0].id]["top_task"])
+            return len(statements)
+        finally:
+            db.close()
+
+    def test_query_count_does_not_grow_with_the_number_of_slots(self):
+        few = self._count(2)
+        many = self._count(12)
+
+        self.assertEqual(few, many, "槽从 2 条涨到 12 条，SQL 从 %d 条涨到 %d 条" % (few, many))

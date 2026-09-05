@@ -492,7 +492,7 @@ class SchedulerService:
         )
         if solver_trace:
             solver_trace.write_model(model)
-            solver_trace.write_fixed_slot_registry(fixed_slots)
+            solver_trace.write_fixed_slot_registry(self.db, fixed_slots)
             solver.log_callback = solver_trace.write
         status = solver.Solve(model)
         elapsed_ms = (
