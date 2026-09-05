@@ -83,6 +83,86 @@ class InstrumentView:
 
 
 @dataclass(frozen=True)
+class ProjectView:
+    id: int
+    code: str | None
+    name: str | None
+    priority: int | None
+    start_date: datetime | None
+    end_date: datetime | None
+    # 诊断路径会从任务反向拿项目的全量任务集合。求解主链路用不到，这里恒为空元组，
+    # 失败分支会把任务重新取成 ORM 实体再走诊断。
+    tasks: tuple = ()
+
+
+@dataclass(frozen=True)
+class MilestoneView:
+    id: int
+    due_date: datetime | None
+
+
+@dataclass(frozen=True)
+class CapabilityRequirementView:
+    tag_name: str
+    tag_value: str
+
+
+@dataclass(frozen=True)
+class DependencyView:
+    """一条依赖边。字段名与 TaskDependency 对齐，下游读的是 dependency.predecessor。"""
+
+    task_id: int
+    predecessor_id: int
+    predecessor: "TaskView | None" = None
+
+
+@dataclass(frozen=True, eq=False)
+class TaskView:
+    """一个任务在求解眼里的样子。
+
+    字段名与 ORM 实体保持一致，下游的建模、目标函数、指令集一行不用改。区别在于
+    它是值：不绑会话、属性访问不会偷偷发 SQL、能跨进程传。
+
+    eq=False 是必要的：predecessors 里的视图会指回来形成环，默认的逐字段比较会
+    无限递归。
+
+    ⚠️ 字段一个都不能少。scheduler_task_duration 里有一处
+    `hasattr(task, "executed_minutes")` 分支——漏掉这个字段不会报错，会静默跌进
+    另一套时长算法，而那个值直接进 NewIntVar 的边界。靠模型字节对照兜底。
+    """
+
+    id: int
+    name: str | None
+    status: str | None
+    task_type: str | None
+    project_id: int | None
+    milestone_id: int | None
+    parent_id: int | None
+    assignee_id: int | None
+    requires_instrument: bool
+    requires_human: bool
+    est_duration_hours: float | None
+    switchover_hours: float | None
+    allow_split: bool
+    # 必须是 list：_parse_instrument_ids 只认 list / str / 标量，元组会掉进
+    # int(raw_ids) 那条分支报错。
+    instrument_ids: list
+    priority_weight: int | None
+    created_at: datetime | None
+    executed_minutes: int
+    additional_planned_minutes: int
+    latest_due: datetime | None
+    is_external_gate: bool
+    project: ProjectView | None = None
+    milestone: MilestoneView | None = None
+    capability_requirements: tuple[CapabilityRequirementView, ...] = ()
+    predecessors: tuple[DependencyView, ...] = ()
+    # 求解主链路用不到；诊断路径会用，但那条路会把任务重新取成 ORM 实体。
+    time_slots: tuple = ()
+    execution_segments: tuple = ()
+
+
+@dataclass(frozen=True)
 class PlanningProblem:
     """一次求解的输入。构造完成后不再依赖数据库会话。"""
 
@@ -93,6 +173,7 @@ class PlanningProblem:
     rules: dict[str, SolverRule]
     calendar_days: dict
     instruments: tuple[InstrumentView, ...]
+    tasks: tuple[TaskView, ...] = ()
     # 装载这一刻的排程版本号。写回时用它做条件更新，确认这中间没人动过排程。
     epoch: int = 0
 
@@ -184,4 +265,86 @@ def _load_instrument_views(db) -> tuple[InstrumentView, ...]:
             ),
         )
         for instrument in load_instruments(db)
+    )
+
+
+def build_task_views(orm_tasks) -> tuple[TaskView, ...]:
+    """把 ORM 任务转成值对象，保持传入顺序。
+
+    分两遍：先给每个任务（含只作为前置出现的那些）建好视图，再回填依赖边。
+    依赖会穿过签批门递归展开（见 scheduler_helpers._effective_predecessor_ids），
+    所以前置任务即使不在求解集合里也必须有视图，否则展开会断在门上。
+    """
+    views: dict[int, TaskView] = {}
+    dependencies: dict[int, list] = {}
+
+    def register(task) -> TaskView:
+        existing = views.get(task.id)
+        if existing is not None:
+            return existing
+        view = _task_view(task)
+        views[task.id] = view
+        dependencies[task.id] = list(getattr(task, "predecessors", None) or [])
+        for dependency in dependencies[task.id]:
+            predecessor = getattr(dependency, "predecessor", None)
+            if predecessor is not None:
+                register(predecessor)
+        return view
+
+    ordered = [register(task) for task in orm_tasks]
+    for task_id, rows in dependencies.items():
+        edges = tuple(
+            DependencyView(
+                task_id=task_id,
+                predecessor_id=dependency.predecessor_id,
+                predecessor=views.get(dependency.predecessor_id),
+            )
+            # 定序：依赖边的顺序会决定约束的创建顺序。
+            for dependency in sorted(rows, key=lambda item: item.predecessor_id)
+        )
+        object.__setattr__(views[task_id], "predecessors", edges)
+    return tuple(ordered)
+
+
+def _task_view(task) -> TaskView:
+    project = getattr(task, "project", None)
+    milestone = getattr(task, "milestone", None)
+    raw_instrument_ids = getattr(task, "instrument_ids", None)
+    return TaskView(
+        id=task.id,
+        name=task.name,
+        status=task.status,
+        task_type=getattr(task, "task_type", None),
+        project_id=task.project_id,
+        milestone_id=getattr(task, "milestone_id", None),
+        parent_id=getattr(task, "parent_id", None),
+        assignee_id=getattr(task, "assignee_id", None),
+        requires_instrument=bool(getattr(task, "requires_instrument", False)),
+        requires_human=bool(getattr(task, "requires_human", False)),
+        est_duration_hours=getattr(task, "est_duration_hours", None),
+        switchover_hours=getattr(task, "switchover_hours", None),
+        allow_split=bool(getattr(task, "allow_split", False)),
+        instrument_ids=list(raw_instrument_ids) if isinstance(raw_instrument_ids, (list, tuple))
+        else raw_instrument_ids,
+        priority_weight=getattr(task, "priority_weight", None),
+        created_at=getattr(task, "created_at", None),
+        executed_minutes=int(getattr(task, "executed_minutes", 0) or 0),
+        additional_planned_minutes=int(getattr(task, "additional_planned_minutes", 0) or 0),
+        latest_due=getattr(task, "latest_due", None),
+        is_external_gate=bool(getattr(task, "is_external_gate", False)),
+        project=ProjectView(
+            id=project.id, code=project.code, name=project.name,
+            priority=project.priority,
+            start_date=project.start_date, end_date=project.end_date,
+        ) if project is not None else None,
+        milestone=MilestoneView(
+            id=milestone.id, due_date=milestone.due_date,
+        ) if milestone is not None else None,
+        capability_requirements=tuple(
+            CapabilityRequirementView(item.tag_name, item.tag_value)
+            for item in sorted(
+                getattr(task, "capability_requirements", None) or [],
+                key=lambda item: (item.tag_name, item.tag_value, item.id),
+            )
+        ),
     )

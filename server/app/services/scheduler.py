@@ -2,6 +2,7 @@ import inspect
 import logging
 
 from sqlalchemy.orm import Session
+from dataclasses import replace
 from datetime import datetime
 from typing import List, Optional
 from ortools.sat.python import cp_model
@@ -15,7 +16,7 @@ from app.services.scheduler_fixed_slots import (
 from app.services.scheduler_objective import add_scheduler_objective
 from app.services.scheduler_instrument_bridging import add_instrument_bridge_intervals
 from app.services.scheduler_diagnostics import unavailable_instrument_message
-from app.services.planning_problem import build_planning_problem
+from app.services.planning_problem import build_planning_problem, build_task_views
 from app.services.scheduler_data import load_scheduler_data, load_task_children
 from app.services.scheduler_predecessor_bounds import load_missing_predecessor_ends
 from app.services.scheduler_helpers import (
@@ -159,7 +160,7 @@ class SchedulerService:
         replan_request = replayable_kwargs(locals())
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
-        tasks, _ = load_scheduler_data(
+        orm_tasks, _ = load_scheduler_data(
             self.db,
             project_ids,
             task_ids,
@@ -169,6 +170,10 @@ class SchedulerService:
                 current_project_id, *(project_ids or ()),
             },
         )
+        # 任务改用值对象：不绑会话、属性访问不会偷偷发 SQL、能跨进程传。
+        # 失败诊断那条路仍需要实体（它要从任务反向拿项目全量任务、上溯父链、
+        # 读时间槽），由 build_failure_response 按 id 重新取回。
+        tasks = list(build_task_views(orm_tasks))
         # 未签批方案的下游任务不进入求解，改为收窄所在项目的完工上界，
         # 详见 scheduler_pending_approval。
         if not tasks:
@@ -197,6 +202,7 @@ class SchedulerService:
             planning_end_at=planning_end_at,
         )
         constraints = problem
+        problem = replace(problem, tasks=tuple(tasks))
         # 仪器改用值对象：不绑会话、属性访问不会偷偷发 SQL，也能跨进程传递。
         instruments = list(problem.instruments)
         horizon_start = problem.horizon_start

@@ -307,6 +307,28 @@ def scenario_window_too_short_fails():
     return db, {"current_project_id": project.id, "task_ids": [task.id]}
 
 
+def scenario_solver_infeasible_runs_diagnostics():
+    """求解器真的判不可行——走深度失败诊断。
+
+    与 window_too_short_fails 不同：那个在建变量阶段就因单任务窗口不足返回了，
+    根本到不了诊断。这里每个任务单独都排得下，串起来才装不下，只有求解器能发现。
+    诊断路径要从任务反向拿项目全量任务、上溯父链、读时间槽，是任务值对象化风险
+    最集中的地方，必须有场景覆盖。
+    """
+    db = _session()
+    instruments = [_instrument(db, "INST-%s" % code) for code in "AB"]
+    ids = [item.id for item in instruments]
+    project = _project(db, "P-INFEASIBLE", start=NOW, end=NOW + 4 * DAY)
+    first = _task(db, project, "前序任务", requires_instrument=True,
+                  instrument_ids=ids, hours=30)
+    second = _task(db, project, "后续任务", requires_instrument=True,
+                   instrument_ids=ids, hours=30)
+    db.add(TaskDependency(task_id=second.id, predecessor_id=first.id))
+    db.commit()
+    return db, {"current_project_id": project.id,
+                "task_ids": [first.id, second.id]}
+
+
 def scenario_stability_against_original_windows():
     """带原计划窗口重排，走稳定性惩罚。"""
     db = _session()

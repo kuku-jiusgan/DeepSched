@@ -44,7 +44,18 @@ def build_failure_response(
     replan_request,
     released_slot_intervals=None,
 ) -> dict:
-    """把一次失败的求解翻译成带诊断信息的错误响应。"""
+    """把一次失败的求解翻译成带诊断信息的错误响应。
+
+    进来的任务是求解用的值对象，诊断这条路暂时还需要实体：它要从任务反向拿项目的
+    全量叶子任务、顺着父链上溯、读时间槽，这些在值对象上都没有展开。用值对象跑
+    不会报错，但会静默退化——实测同一个场景，缺口从 74 小时变成 0，根因从"计划内
+    仪器工时不足"变成笼统的"受排程约束限制"，等于给出了错误的诊断。
+
+    所以在这里按 id 把它们重新取回实体。这是一处明知的临时妥协："求解不碰库"这句
+    话在失败分支上还不成立；彻底解决要把诊断依赖的那批数据也装载成视图（项目全量
+    叶子任务 + 父链 + 时间槽），那是一次独立的改造。
+    """
+    tasks = _rehydrate(db, tasks)
     if not include_failure_diagnostics:
         return {
             "status": "error",
@@ -127,3 +138,22 @@ def build_failure_response(
     if 'diagnostic' in locals() and isinstance(diagnostic, dict):
         response["schedule_failure"] = diagnostic.get("schedule_failure")
     return response
+
+
+def _rehydrate(db, tasks):
+    """把求解用的任务值对象按 id 换回 ORM 实体，保持原有顺序。
+
+    传进来的已经是实体时原样返回——诊断相关的几个 loader 本来就交实体。
+    """
+    from app.models import Task
+
+    if db is None or not tasks:
+        return tasks
+    if any(isinstance(task, Task) for task in tasks):
+        return tasks
+    ordered_ids = [task.id for task in tasks]
+    by_id = {
+        entity.id: entity
+        for entity in db.query(Task).filter(Task.id.in_(ordered_ids)).all()
+    }
+    return [by_id[task_id] for task_id in ordered_ids if task_id in by_id]
