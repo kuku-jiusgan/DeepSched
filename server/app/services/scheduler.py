@@ -189,9 +189,13 @@ class SchedulerService:
             return preflight_error
 
         constraints = get_solver_constraints(self.db)
+        # 整个模型的时间原点只在这里取一次，往下全程传递。就地读挂钟会让同一道题
+        # 每次构造出的模型都不同，"序列化后逐字节相同"这条等价性判据就无从建立。
+        now = datetime.now()
         horizon_start, horizon_end, total_units = time_horizon(
             planning_start_at,
             planning_end_at,
+            now,
         )
         ensure_calendar_range(self.db, horizon_start.date(), horizon_end.date())
         approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
@@ -320,6 +324,7 @@ class SchedulerService:
             remaining_duration_minutes=remaining_duration_minutes,
             project_end_bounds=project_end_bounds,
             project_end_date_overrides=project_end_date_overrides,
+            now=now,
         )
         if variable_error:
             return variable_error
@@ -360,6 +365,7 @@ class SchedulerService:
             CROSS_PROJECT_SETUP_UNITS,
             fixed_bridge_reservations,
             maint_windows,
+            now,
         )
         add_human_capacity_constraints(
             model,
@@ -368,6 +374,7 @@ class SchedulerService:
             fixed_slots,
             horizon_start,
             total_units,
+            now,
         )
         switch_penalties = add_cross_project_switch_constraints(
             model,
@@ -443,6 +450,11 @@ class SchedulerService:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = solver_time_limit
         solver.parameters.num_search_workers = 4
+        # 显式钉住随机种子。默认值本来就是 1，写出来是为了把"求解可复现"这件事
+        # 变成有人负责的决定，而不是依赖库的默认值。注意这只保证求解器自身的
+        # 随机性可复现；num_search_workers > 1 的组合搜索依赖挂钟，目标值并列时
+        # 返回的解仍可能不同——所以改造的等价性判据建立在**模型**上，不在解上。
+        solver.parameters.random_seed = 1
         if feasibility_only:
             # 只问排不排得下，找到任意可行解即可返回，不必继续优化目标函数。
             # 不影响结论：可行就是可行；判定不可行仍然要走完整证明。

@@ -14,15 +14,19 @@ from app.services.scheduler_helpers import datetime_to_units
 FIXED_SLOT_STATUSES = ["scheduled", "running", "completed", "paused", "blocked", "interrupted"]
 
 
-def _fixed_slot_range(slot: TimeSlot | InstrumentBridgeReservation) -> tuple[datetime, datetime]:
+def _fixed_slot_range(
+    slot: TimeSlot | InstrumentBridgeReservation, now: datetime,
+) -> tuple[datetime, datetime]:
+    # now 必须由调用方给定，不能就地读挂钟：一个已开工未结束的槽，它占用的区间
+    # 右端是"到此刻为止"，每过一秒就变一次，同一道题两次构造出的模型就不同了。
     if isinstance(slot, InstrumentBridgeReservation):
         return slot.plan_start, slot.plan_end
     if slot.status == "completed":
         return slot.actual_start, slot.actual_end
     if slot.actual_start:
-        if slot.plan_start > datetime.now():
+        if slot.plan_start > now:
             return slot.plan_start, slot.plan_end
-        return slot.actual_start, slot.actual_end or max(slot.plan_end, datetime.now())
+        return slot.actual_start, slot.actual_end or max(slot.plan_end, now)
     return slot.plan_start, slot.plan_end
 
 
@@ -30,7 +34,11 @@ def _merge_task_ranges(
     ranges: list[tuple[TimeSlot, int, int]],
 ) -> list[tuple[TimeSlot, int, int]]:
     merged: list[tuple[TimeSlot, int, int]] = []
-    for slot, start, end in sorted(ranges, key=lambda item: (item[0].task_id, item[1])):
+    # 排序键必须是全序。只按 (任务, 开始) 排时，同任务同起点的两个槽会并列，
+    # 稳定排序于是回落到输入顺序，而胜出那个槽的 id 会成为区间名。
+    for slot, start, end in sorted(
+        ranges, key=lambda item: (item[0].task_id, item[1], item[2], item[0].id),
+    ):
         if merged and merged[-1][0].task_id == slot.task_id and start < merged[-1][2]:
             previous_slot, previous_start, previous_end = merged[-1]
             merged[-1] = (previous_slot, previous_start, max(previous_end, end))
@@ -125,7 +133,9 @@ def add_human_capacity_constraints(
     fixed_slots: list[TimeSlot],
     horizon_start,
     total_units: int,
+    now: datetime | None = None,
 ) -> None:
+    now = now or datetime.now()
     intervals_by_assignee: dict[int, list[cp_model.IntervalVar]] = defaultdict(list)
     fixed_by_assignee: dict[int, list[tuple[TimeSlot, int, int]]] = defaultdict(list)
     for task in tasks:
@@ -136,7 +146,7 @@ def add_human_capacity_constraints(
         task = slot.task
         if not task or not task.requires_human or not task.assignee_id:
             continue
-        start_time, end_time = _fixed_slot_range(slot)
+        start_time, end_time = _fixed_slot_range(slot, now)
         start_unit = datetime_to_units(start_time, horizon_start)
         end_unit = datetime_to_units(end_time, horizon_start)
         if end_unit <= 0 or start_unit >= total_units:
@@ -175,14 +185,16 @@ def add_instrument_capacity_constraints(
     setup_units: int,
     fixed_bridge_reservations: list[InstrumentBridgeReservation] | None = None,
     maintenance_windows: list[tuple[int, tuple[int, int]]] | None = None,
+    now: datetime | None = None,
 ) -> None:
+    now = now or datetime.now()
     fixed_by_instrument: dict[int, list[tuple[TimeSlot | InstrumentBridgeReservation, int, int]]] = defaultdict(list)
     fixed_bridge_reservations = fixed_bridge_reservations or []
     maintenance_windows = maintenance_windows or []
     for slot in [*fixed_slots, *fixed_bridge_reservations]:
         if slot.instrument_id is None:
             continue
-        start_time, end_time = _fixed_slot_range(slot)
+        start_time, end_time = _fixed_slot_range(slot, now)
         start_unit = datetime_to_units(start_time, horizon_start)
         end_unit = datetime_to_units(end_time, horizon_start)
         if end_unit <= 0 or start_unit >= total_units:

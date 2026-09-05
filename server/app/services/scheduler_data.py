@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from sqlalchemy import and_, not_, or_, select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
-from app.models import Instrument, Project, Task
+from app.models import Instrument, Project, Task, TaskDependency
 
 
 def load_scheduler_data(
@@ -38,7 +38,10 @@ def load_scheduler_data(
     ).options(
         selectinload(Task.project),
         selectinload(Task.milestone),
-        selectinload(Task.predecessors),
+        # 建依赖关系时要读 dependency.predecessor，只预加载 predecessors 是不够的
+        # ——每个任务的每条依赖各会再发一条 SQL 去取前置任务，递归穿过签批门时
+        # 还会逐层放大。写法照 approval_gate_query_service 里已有的那条。
+        selectinload(Task.predecessors).joinedload(TaskDependency.predecessor),
         selectinload(Task.capability_requirements),
     )
     if project_ids:
@@ -68,7 +71,7 @@ def load_scheduler_data(
         selectinload(Instrument.capabilities),
         selectinload(Instrument.faults),
         selectinload(Instrument.maintenance_windows),
-    ).all()
+    ).order_by(Instrument.id).all()
     return tasks, instruments
 
 
@@ -107,7 +110,10 @@ def _load_unapproved_downstream_tasks(
     ).options(
         selectinload(Task.project),
         selectinload(Task.milestone),
-        selectinload(Task.predecessors),
+        # 建依赖关系时要读 dependency.predecessor，只预加载 predecessors 是不够的
+        # ——每个任务的每条依赖各会再发一条 SQL 去取前置任务，递归穿过签批门时
+        # 还会逐层放大。写法照 approval_gate_query_service 里已有的那条。
+        selectinload(Task.predecessors).joinedload(TaskDependency.predecessor),
         selectinload(Task.capability_requirements),
     )
     if loaded_task_ids:
@@ -118,13 +124,13 @@ def _load_unapproved_downstream_tasks(
 
 
 def load_task_children(db, tasks) -> dict[int, list[int]]:
-    project_ids = {task.project_id for task in tasks}
+    project_ids = sorted({task.project_id for task in tasks})
     if not project_ids:
         return {}
     rows = db.query(Task.id, Task.parent_id).filter(
         Task.project_id.in_(project_ids),
         Task.parent_id.isnot(None),
-    ).all()
+    ).order_by(Task.parent_id, Task.id).all()
     children_by_parent: dict[int, list[int]] = {}
     for task_id, parent_id in rows:
         children_by_parent.setdefault(parent_id, []).append(task_id)
@@ -152,7 +158,10 @@ def load_diagnostic_resource_tasks(
     query = db.query(Task).filter(*conditions).options(
         selectinload(Task.project),
         selectinload(Task.time_slots),
-        selectinload(Task.predecessors),
+        # 建依赖关系时要读 dependency.predecessor，只预加载 predecessors 是不够的
+        # ——每个任务的每条依赖各会再发一条 SQL 去取前置任务，递归穿过签批门时
+        # 还会逐层放大。写法照 approval_gate_query_service 里已有的那条。
+        selectinload(Task.predecessors).joinedload(TaskDependency.predecessor),
         selectinload(Task.capability_requirements),
     )
     if excluded_task_ids:

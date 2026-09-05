@@ -20,6 +20,7 @@ def remaining_duration_units(
     horizon_start,
     total_units: int,
     remaining_duration_minutes: dict[int, int] | None = None,
+    now: datetime | None = None,
 ) -> int:
     from app.services.task_progress_service import planned_task_minutes
 
@@ -43,6 +44,7 @@ def remaining_duration_units(
         instrument_prefix_sums,
         horizon_start,
         total_units,
+        now,
     )
     if not segments:
         fixed_units = executed_slot_duration_units(
@@ -52,6 +54,7 @@ def remaining_duration_units(
             instrument_prefix_sums,
             horizon_start,
             total_units,
+            now,
         )
     return max(1, duration_units - fixed_units)
 
@@ -63,6 +66,7 @@ def executed_duration_units(
     instrument_prefix_sums,
     horizon_start,
     total_units,
+    now: datetime | None = None,
 ) -> int:
     total = 0
     instrument_id = next(
@@ -75,7 +79,7 @@ def executed_duration_units(
         return 0
     for segment in segments:
         start = max(0, datetime_to_units(segment.started_at, horizon_start))
-        end_time = segment.ended_at or datetime.now()
+        end_time = segment.ended_at or now or datetime.now()
         end = min(total_units, datetime_to_units(end_time, horizon_start))
         if end > start:
             total += prefix_sum[end] - prefix_sum[start]
@@ -89,13 +93,14 @@ def executed_slot_duration_units(
     instrument_prefix_sums,
     horizon_start,
     total_units,
+    now: datetime | None = None,
 ) -> int:
     total = 0
     for slot in fixed_slots:
         if slot.task_id != task.id or not slot.actual_start:
             continue
         start = max(0, datetime_to_units(slot.actual_start, horizon_start))
-        end_time = slot.actual_end or datetime.now()
+        end_time = slot.actual_end or now or datetime.now()
         end = min(total_units, datetime_to_units(end_time, horizon_start))
         prefix_sum = (
             instrument_prefix_sums.get(slot.instrument_id)

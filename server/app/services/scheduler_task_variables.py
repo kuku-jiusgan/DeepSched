@@ -55,6 +55,7 @@ def build_task_variables(
     remaining_duration_minutes,
     project_end_bounds=None,
     project_end_date_overrides=None,
+    now=None,
 ) -> tuple[TaskVariables, dict | None]:
     """建好全部任务变量；某个任务放不下时返回错误响应。"""
     variables = TaskVariables()
@@ -72,6 +73,7 @@ def build_task_variables(
             horizon_start,
             total_units,
             remaining_duration_minutes,
+            now,
         )
 
         # Compute project-level hard constraint window

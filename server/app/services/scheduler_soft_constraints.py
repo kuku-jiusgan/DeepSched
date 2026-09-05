@@ -77,9 +77,11 @@ def build_dependency_gap_penalties(
 
 def build_early_start_penalties(task_starts, early_start_task_ids) -> list:
     """资源尽早释放：对指定任务的开始时刻求和作为惩罚。"""
+    # 按任务号排序再求和。集合的遍历顺序不稳定，而这是权重最高的目标项
+    # （×100_000），求和顺序会直接落进目标函数的 proto 里。
     early_start_penalties = [
         task_starts[task_id]
-        for task_id in (early_start_task_ids or set())
+        for task_id in sorted(early_start_task_ids or ())
         if task_id in task_starts
     ]
 
@@ -148,7 +150,8 @@ def build_stability_penalties(
 ) -> list:
     """与原计划开始时间的偏差惩罚，用于抑制被动任务漂移。"""
     stability_penalties = []
-    for task_id in stability_task_ids or set():
+    # 排序遍历：这里在循环里建变量，顺序一变，其后所有 proto 索引全部错位。
+    for task_id in sorted(stability_task_ids or ()):
         old_window = original_schedule_windows.get(task_id)
         if task_id not in task_starts or not old_window:
             continue

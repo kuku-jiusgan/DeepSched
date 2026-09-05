@@ -30,8 +30,16 @@ def natural_day_boundary(now: datetime, days: int) -> datetime:
 def time_horizon(
     start_at: datetime | None = None,
     end_at: datetime | None = None,
+    now: datetime | None = None,
 ) -> tuple[datetime, datetime, int]:
-    now = (start_at or datetime.now()).replace(second=0, microsecond=0)
+    """求解时间窗口。now 是整个模型的时间原点，一次求解里必须只取一次。
+
+    这里原本直接读挂钟。它决定所有时间单元换算的起点，于是同一道题隔一秒再算
+    一遍，模型的每一个数字都不同——没法用"序列化后逐字节相同"来证明改造前后
+    等价。求解入口现在在最开头取一次 now 往下传，生产行为不变（仍是当前时刻），
+    但对照工具可以把它钉死。
+    """
+    now = (start_at or now or datetime.now()).replace(second=0, microsecond=0)
     remaining_minutes = (-now.minute) % TIME_UNIT_MINUTES
     if remaining_minutes:
         now += timedelta(minutes=remaining_minutes)
@@ -244,7 +252,9 @@ def build_maintenance_windows(
                 )
         if instrument.status == "fault" and not _has_open_fault_repair_time(instrument):
             windows.append((instrument.id, (0, HORIZON_DAYS * 24 * 60 // TIME_UNIT_MINUTES)))
-    return windows
+    # 维护窗口来自没有排序的 ORM 关系集合，而它的顺序决定了区间约束的编号
+    # （maintenance_window_i{id}_{index}）。这里全是整数元组，直接排序即可定序。
+    return sorted(windows)
 
 
 def _fault_unavailable_until(fault) -> datetime | None:
