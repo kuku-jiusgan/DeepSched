@@ -58,6 +58,14 @@ class _ModelCaptured(Exception):
         self.raw = raw
 
 
+def model_bytes(model):
+    """导出一个 CpModel 的真实字节，并解析成可反射遍历的 protobuf 消息。
+
+    返回 (消息, 原始字节)。语料采集与等价性对照共用它。
+    """
+    return _parse_model(model)
+
+
 def _parse_model(model):
     """把 CpModel 转成可反射遍历的纯 Python protobuf 消息。
 
@@ -164,7 +172,63 @@ def _canonical_constraint(constraint, variable_rank: dict, interval_rank: dict) 
     canonical = type(constraint)()
     canonical.CopyFrom(constraint)
     _remap(canonical, variable_rank, interval_rank)
+    _sort_commutative(canonical)
     return text_format.MessageToString(canonical, as_one_line=True)
+
+
+# 这几个字段的元素之间是可交换的：字面量的合取/析取、区间的互斥集合，换个次序
+# 是同一个约束。重映射之后还要把它们排序，否则集合相同、次序不同也会被判成有差异
+# ——实测倒序仪器时 exactly_one 的字面量就是这种情况（8,9,10 对 10,9,8）。
+#
+# 不排 vars / coeffs：它们是位置配对的两个数组，单独排一个会把约束改坏。
+_COMMUTATIVE_FIELDS = {"literals", "enforcement_literal", "intervals"}
+# 这些是可交换的**子消息**列表：取最大值的各个参数换次序仍是同一个约束。
+# 排序键取子消息规范化之后的文本。
+_COMMUTATIVE_MESSAGE_FIELDS = {"exprs"}
+
+
+def _sort_commutative(message) -> None:
+    for descriptor, value in message.ListFields():
+        if descriptor.type == descriptor.TYPE_MESSAGE:
+            items = value if descriptor.is_repeated else [value]
+            for item in items:
+                _sort_commutative(item)
+            if descriptor.is_repeated and descriptor.name in _COMMUTATIVE_MESSAGE_FIELDS:
+                from google.protobuf import text_format as _tf
+
+                ordered = sorted(
+                    list(value), key=lambda item: _tf.MessageToString(item, as_one_line=True),
+                )
+                copies = [type(item)() for item in ordered]
+                for target, source in zip(copies, ordered):
+                    target.CopyFrom(source)
+                del value[:]
+                value.extend(copies)
+        elif descriptor.is_repeated and descriptor.name in _COMMUTATIVE_FIELDS:
+            ordered = sorted(value)
+            del value[:]
+            value.extend(ordered)
+    _sort_linear_terms(message)
+
+
+def _sort_linear_terms(message) -> None:
+    """线性项按 (变量, 系数) 成对排序。
+
+    vars 与 coeffs 是位置配对的两个数组，表示一个求和式——加数换个次序是同一个
+    式子，但渲染出来的文本不同。必须成对排，单独排任何一个都会把约束改坏。
+    """
+    names = {descriptor.name for descriptor, _ in message.ListFields()}
+    if not {"vars", "coeffs"} <= names:
+        return
+    variables = list(message.vars)
+    coefficients = list(message.coeffs)
+    if len(variables) != len(coefficients) or len(variables) < 2:
+        return
+    pairs = sorted(zip(variables, coefficients))
+    del message.vars[:]
+    del message.coeffs[:]
+    message.vars.extend(item[0] for item in pairs)
+    message.coeffs.extend(item[1] for item in pairs)
 
 
 def _remap(message, variable_rank: dict, interval_rank: dict) -> None:

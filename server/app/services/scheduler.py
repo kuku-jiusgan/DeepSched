@@ -69,6 +69,7 @@ _REPLAY_EXCLUDED_KWARGS = frozenset({
     "include_failure_diagnostics",  # 验证不需要诊断
     "feasibility_only",             # 验证只问可行与否
     "solver_time_limit",            # 验证用更短的求解预算
+    "now",                          # 时间原点每次重取，回放旧的会把排程排到过去
     "advance_notification_reason",
     "rollback_on_conflict",
     "current_project_id",           # 由作业按候选项目设置
@@ -127,6 +128,7 @@ class SchedulerService:
         commit: bool = True,
         excluded_task_ids: set[int] | None = None,
         released_slot_ids: set[int] | None = None,
+        now: datetime | None = None,
         original_schedule_windows: dict[int, tuple[datetime, datetime]] | None = None,
         stability_task_ids: set[int] | None = None,
         additional_dependencies: list[tuple[int, int]] | None = None,
@@ -181,7 +183,8 @@ class SchedulerService:
             )
         # 整个模型的时间原点只在这里取一次，往下全程传递。就地读挂钟会让同一道题
         # 每次构造出的模型都不同，"序列化后逐字节相同"这条等价性判据就无从建立。
-        now = datetime.now()
+        # 允许外部指定，是为了让语料能构造完全确定的场景——生产调用一律不传。
+        now = now or datetime.now()
         # 求解输入正在往 PlanningProblem 上收拢：一次装载，之后纯内存。顺序是
         # 装载 → 校验 → 建模：先把世界取齐，再判断这道题成不成立，最后才建模。
         # 已搬进去的是时间原点、求解视界、排程规则、工作日历和仪器；任务实体、
