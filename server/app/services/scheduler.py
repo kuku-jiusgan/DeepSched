@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import List, Optional
 from ortools.sat.python import cp_model
 from app.core.config import get_settings
-from app.services.schedule_rule_service import get_solver_constraints
 from app.services.scheduler_fixed_slots import (
     add_human_capacity_constraints,
     add_instrument_capacity_constraints,
@@ -16,7 +15,9 @@ from app.services.scheduler_fixed_slots import (
 from app.services.scheduler_objective import add_scheduler_objective
 from app.services.scheduler_instrument_bridging import add_instrument_bridge_intervals
 from app.services.scheduler_diagnostics import unavailable_instrument_message
+from app.services.planning_problem import build_planning_problem
 from app.services.scheduler_data import load_scheduler_data, load_task_children
+from app.services.scheduler_predecessor_bounds import load_missing_predecessor_ends
 from app.services.scheduler_helpers import (
     build_compatibility,
     build_dependencies,
@@ -28,7 +29,6 @@ from app.services.approval_gate_service import unapproved_gate_context
 from app.services.schedule_advance_notification_service import (
     capture_task_schedule_windows,
 )
-from app.services.calendar_service import ensure_calendar_range
 from app.services.scheduler_solver_trace_service import SolverTrace
 from app.services.scheduler_cross_project_setup import (
     add_cross_project_switch_constraints,
@@ -178,6 +178,9 @@ class SchedulerService:
                 self.db,
                 {task.id for task in tasks},
             )
+        # 整个模型的时间原点只在这里取一次，往下全程传递。就地读挂钟会让同一道题
+        # 每次构造出的模型都不同，"序列化后逐字节相同"这条等价性判据就无从建立。
+        now = datetime.now()
         preflight_error = validate_schedulable_input(
             self.db,
             tasks=tasks,
@@ -188,16 +191,19 @@ class SchedulerService:
         if preflight_error:
             return preflight_error
 
-        constraints = get_solver_constraints(self.db)
-        # 整个模型的时间原点只在这里取一次，往下全程传递。就地读挂钟会让同一道题
-        # 每次构造出的模型都不同，"序列化后逐字节相同"这条等价性判据就无从建立。
-        now = datetime.now()
-        horizon_start, horizon_end, total_units = time_horizon(
-            planning_start_at,
-            planning_end_at,
-            now,
+        # 求解输入正在往 PlanningProblem 上收拢：一次装载，之后纯内存。已经搬
+        # 进去的是时间原点、求解视界和排程规则；任务与仪器实体、固定时间槽等仍
+        # 在下面直接查库，逐块搬迁，每块都用模型字节对照证明那道题没变。
+        problem = build_planning_problem(
+            self.db,
+            now=now,
+            planning_start_at=planning_start_at,
+            planning_end_at=planning_end_at,
         )
-        ensure_calendar_range(self.db, horizon_start.date(), horizon_end.date())
+        constraints = problem
+        horizon_start = problem.horizon_start
+        horizon_end = problem.horizon_end
+        total_units = problem.total_units
         approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
         forecast_tasks = [task for task in tasks if task.id in forecast_task_ids]
         if forecast_tasks:
@@ -238,6 +244,12 @@ class SchedulerService:
         business_task_deps = sorted(set(build_dependencies(tasks, task_children)))
         queue_task_deps = sorted(set(additional_dependencies or []))
         task_deps = sorted(set(business_task_deps) | set(queue_task_deps))
+        # 建模阶段不许再查库。前置任务的实际完工时间在这里一次装载好——包含
+        # 全部前置，建模时再按"哪些不在求解集合里"筛。哪些在集合外要等变量建完
+        # 才知道，所以不能等到那时候再查。
+        predecessor_ends = load_missing_predecessor_ends(
+            self.db, {pred_id for _, pred_id in task_deps}, horizon_start,
+        )
         maintenance_rule = constraints["maintenance_avoidance"]
         maint_windows = (
             build_maintenance_windows(instruments, horizon_start)
@@ -250,13 +262,15 @@ class SchedulerService:
                 len(maint_windows),
             ),
             lambda: build_working_calendar(
-                self.db,
                 instruments=instruments,
                 constraints=constraints,
                 horizon_start=horizon_start,
                 horizon_end=horizon_end,
                 total_units=total_units,
                 maint_windows=maint_windows,
+                calendar_days=problem.calendar_days,
+                rule_params=problem["working_hours"].params,
+                rule_enabled=problem["working_hours"].is_enabled,
             ),
         )
         working_context = working_calendar.context
@@ -389,7 +403,7 @@ class SchedulerService:
 
         missing_pred_ends = add_precedence_constraints(
             model,
-            self.db,
+            predecessor_ends=predecessor_ends,
             task_deps=task_deps,
             task_starts=task_starts,
             task_ends=task_ends,

@@ -167,7 +167,7 @@ class InstrumentFaultScheduleServiceTest(unittest.TestCase):
         self.db.commit()
 
         with patch(
-            "app.services.scheduler.time_horizon",
+            "app.services.planning_problem.time_horizon",
             return_value=(reported_at, reported_at + timedelta(days=30), 30 * 24 * 2),
         ), patch(
             "app.services.instrument_fault_notification_service.push_by_rule", return_value=0,

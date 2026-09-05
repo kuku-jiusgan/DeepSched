@@ -53,7 +53,7 @@ class SchedulerDurationRoundingTest(unittest.TestCase):
 
         total_units = 10 * 48
         with patch(
-            "app.services.scheduler.time_horizon",
+            "app.services.planning_problem.time_horizon",
             return_value=(
                 self.horizon_start,
                 self.horizon_start + timedelta(days=10),

@@ -8,13 +8,12 @@ from __future__ import annotations
 from ortools.sat.python import cp_model
 
 from app.services.scheduler_helpers import datetime_to_units
-from app.services.scheduler_predecessor_bounds import load_missing_predecessor_ends
 
 
 def add_precedence_constraints(
     model: cp_model.CpModel,
-    db,
     *,
+    predecessor_ends: dict[int, int],
     task_deps,
     task_starts,
     task_ends,
@@ -31,9 +30,13 @@ def add_precedence_constraints(
         if pred_id not in task_starts
     }
 
-    missing_pred_ends = load_missing_predecessor_ends(
-        db, missing_pred_ids, horizon_start,
-    )
+    # predecessor_ends 是建模开始前一次装载好的全量前置完工时间，这里按原逻辑
+    # 筛出"不在求解集合里"的那部分。建模过程中不再查库。
+    missing_pred_ends = {
+        pred_id: predecessor_ends[pred_id]
+        for pred_id in missing_pred_ids
+        if pred_id in predecessor_ends
+    }
 
     if precedence_enabled:
         for tid, pred_id in task_deps:

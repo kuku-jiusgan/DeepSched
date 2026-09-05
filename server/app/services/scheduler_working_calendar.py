@@ -28,7 +28,6 @@ class WorkingCalendar:
 
 
 def build_working_calendar(
-    db,
     *,
     instruments,
     constraints,
@@ -42,8 +41,10 @@ def build_working_calendar(
 ) -> WorkingCalendar:
     working_rule = constraints["working_hours"]
     working_params = working_rule.params or {}
+    # 不再接收会话：日历明细和规则都由 PlanningProblem 一次装载好传进来，
+    # 仪器实体也是调用方给的，这里已经不需要碰数据库。
     working_context = load_working_time_context(
-        db, horizon_start, horizon_end, instruments, calendar_days=calendar_days,
+        None, horizon_start, horizon_end, instruments, calendar_days=calendar_days,
         rule_params=rule_params, rule_enabled=rule_enabled,
     )
     global_policy = working_context.global_policy
