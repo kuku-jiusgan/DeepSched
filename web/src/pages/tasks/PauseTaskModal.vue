@@ -80,8 +80,8 @@
 
 <script setup lang="ts">
 import { computed, h, ref, watch } from 'vue'
-import type { ProjectPlanApplyResult } from '@/types'
-import ScheduleFailureModal from '@/pages/projects/components/ScheduleFailureModal.vue'
+import type { PauseSwitchFailureResult } from '@/types/pauseSwitchFailure'
+import PauseSwitchFailureModal from './components/PauseSwitchFailureModal.vue'
 import '@/pages/projects/scheduleFailure.css'
 import dayjs from 'dayjs'
 import { Empty, message, Modal } from 'ant-design-vue'
@@ -155,19 +155,17 @@ async function submit() {
     const candidate = error as { response?: { data?: { detail?: string } } }
     const detail = candidate.response?.data?.detail || '暂停任务失败'
     const structured = typeof detail === 'object' && detail !== null
-      ? detail as ProjectPlanApplyResult
+      ? detail as PauseSwitchFailureResult
       : null
-    // 排程失败诊断带表格，必须和计划排程用同一套宽度与容器样式，否则挤在
-    // 默认的 416px 弹窗里会错行。
-    Modal.error(structured?.schedule_failure
+    const failure = structured?.pause_switch_failure
+    // 诊断带表格，必须和计划排程用同一套宽度与容器样式，否则挤在默认的
+    // 416px 弹窗里会错行。
+    Modal.error(failure
       ? {
-          title: '暂停并切换失败',
+          title: failure.title,
           width: 900,
           wrapClassName: 'schedule-failure-modal',
-          content: h(ScheduleFailureModal, {
-            projectId: structured.schedule_failure.project_id ?? 0,
-            result: structured,
-          }),
+          content: h(PauseSwitchFailureModal, { failure }),
           okText: '确认',
         }
       : {

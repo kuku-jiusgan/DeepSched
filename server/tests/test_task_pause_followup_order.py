@@ -115,10 +115,8 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
 
         context = build_pause_switch_context(self.db, source_slot, target_slot, now)
 
-        self.assertEqual(
-            [(target_followup.id, target.id), (source.id, target.id)],
-            context.queue_dependencies,
-        )
+        # 人工任务根本不进队列锁，自然也就挡不住任何仪器任务。
+        self.assertEqual([(source.id, target.id)], context.queue_dependencies)
         self.assertEqual(source_parent.id, source.parent_id)
 
     def test_switch_context_includes_target_assignee_slots_when_source_is_nonhuman(self):
@@ -210,8 +208,16 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
                 "message": "受限重排窗口与窗口外任务发生资源冲突",
             },
         ):
-            with self.assertRaisesRegex(DomainConflictError, "窗口外任务发生资源冲突"):
+            with self.assertRaises(DomainConflictError) as raised:
                 replan_pause_switch(self.db, source_slot, target_slot, now)
+
+        # 求解器没给出 INFEASIBLE 这个证明，就不能断言"改日期解决不了"——
+        # 没有结论时如实说没有结论。
+        failure = raised.exception.detail["pause_switch_failure"]
+        self.assertEqual("undetermined", failure["kind"])
+        self.assertEqual([], failure["overruns"])
+        # 求解器的原话必须留着，它是排查这类冲突唯一的线索。
+        self.assertEqual("受限重排窗口与窗口外任务发生资源冲突", failure["solver_message"])
 
         self.db.refresh(source_slot)
         self.db.refresh(target_slot)
@@ -248,6 +254,42 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
         self.assertIsNotNone(current.actual_start)
         self.assertEqual("scheduled", future.status)
         self.assertIsNone(future.actual_start)
+
+    def test_manual_task_without_predecessor_in_closure_is_not_pinned(self):
+        """前驱不在闭包里的人工任务不能被钉在原位。
+
+        线上就是这么排不下的：一个方案撰写，它的方法开发早就做完、不在闭包里，
+        却因为队列锁被硬钉在两个不相干项目的仪器任务中间，把四个项目串成一条链，
+        切换随即判定不可行——而报出来的原因是"某某项目要延期"，看不出真正的症结。
+        """
+        _, target, _ = self._task_group(self.project_b, "B")
+        _, source, _ = self._task_group(self.project_a, "A")
+        project_c = Project(code="C", name="项目C")
+        self.db.add(project_c)
+        self.db.flush()
+        stranded_parent, stranded_method, stranded = self._task_group(project_c, "C")
+        # 项目C 的方法开发已经做完，闭包里只剩下它的方案撰写。
+        stranded_method.status = "completed"
+        now = datetime.now().replace(second=0, microsecond=0)
+        source_slot = self._slot(source, now - timedelta(hours=1), now + timedelta(hours=2))
+        target_slot = self._slot(target, now + timedelta(hours=2), now + timedelta(hours=8))
+        # 落在仪器队列窗口之内，才会被闭包按"同负责人的人工任务"拉进来。
+        self._slot(stranded, now + timedelta(hours=4), now + timedelta(hours=6), False)
+        self.db.add(TaskDependency(
+            task_id=stranded.id,
+            predecessor_id=stranded_method.id,
+            dependency_type="continuous_successor",
+        ))
+        self.db.commit()
+
+        context = build_pause_switch_context(self.db, source_slot, target_slot, now)
+
+        self.assertIn(stranded.id, context.task_ids)
+        locked = {task_id for edge in context.queue_dependencies for task_id in edge}
+        self.assertNotIn(stranded.id, locked)
+        # 仪器上的排队仍然锁着：接替任务在前，被暂停的源任务在后。
+        self.assertEqual([(source.id, target.id)], context.queue_dependencies)
+        self.assertEqual(stranded_parent.id, stranded.parent_id)
 
     def _task_group(self, project: Project, suffix: str) -> tuple[Task, Task, Task]:
         parent = Task(project_id=project.id, name=f"标准计划{suffix}", task_type="ROOT")

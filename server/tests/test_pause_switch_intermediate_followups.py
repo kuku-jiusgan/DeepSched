@@ -66,11 +66,18 @@ class PauseSwitchIntermediateFollowupTest(unittest.TestCase):
         self.assertIn(4, order)
         self.assertLess(order.index(3), order.index(4))
 
-    def test_no_inverted_dependency_is_emitted(self):
+    def test_only_instrument_competitors_are_locked(self):
+        """队列锁只管这台仪器上的排队，方案撰写不在其列。
+
+        方案撰写要跟着自己的方法开发走，靠的是项目计划创建时写下的
+        continuous_successor 关系，求解器本来就当硬前置执行。队列再锁一遍不但
+        多余，还会把前驱不在闭包里的人工任务钉死在两个不相干项目中间。
+        """
         context = build_pause_switch_context(self.db, self.source, self.target, self.now)
 
-        self.assertNotIn((3, 4), context.queue_dependencies)
-        self.assertIn((4, 3), context.queue_dependencies)
+        self.assertEqual([(1, 2), (3, 1)], context.queue_dependencies)
+        # 方案撰写C（4）一条边都不该有：既不能挡住谁，也不该被谁钉住。
+        self.assertNotIn(4, {task_id for edge in context.queue_dependencies for task_id in edge})
 
     def test_followup_slots_are_replanned_too(self):
         context = build_pause_switch_context(self.db, self.source, self.target, self.now)

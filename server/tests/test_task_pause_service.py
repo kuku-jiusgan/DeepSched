@@ -447,7 +447,16 @@ class TaskPauseServiceTest(unittest.TestCase):
         intermediate_slots = self._task_slots(intermediate_task.id)
         self.assertEqual(120, self._total_minutes(intermediate_slots))
         self.assertLessEqual(target_slots[-1].plan_end, source_slots[0].plan_start)
-        self.assertLessEqual(source_slots[-1].plan_end, intermediate_slots[0].plan_start)
+        # 中间任务不占仪器、也没有任何前置关系，重排后完全可以挪到源任务之前：
+        # 队列锁只管同一台仪器上的排队，不再把不相干的人工任务钉在原位。这里要
+        # 保住的是它的时间槽一个不少地被重排，且不和同一个负责人的源任务撞车。
+        for slot in intermediate_slots:
+            for busy in source_slots:
+                self.assertFalse(
+                    slot.plan_start < busy.plan_end and busy.plan_start < slot.plan_end,
+                    f"中间任务 {slot.plan_start}~{slot.plan_end} 与源任务 "
+                    f"{busy.plan_start}~{busy.plan_end} 重叠",
+                )
 
     def test_pause_switch_replans_target_assignee_noninstrument_task_when_source_is_nonhuman(self):
         # 断言依赖"源任务已跑一段、只剩剩余部分"，必须冻结当前时刻。
@@ -552,10 +561,21 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.source_task.project.end_date = datetime.now() + timedelta(hours=1)
         self.db.commit()
 
-        with self.assertRaisesRegex(DomainConflictError, "有效时间窗口不足"):
+        with self.assertRaises(DomainConflictError) as raised:
             pause_and_switch_task(
                 self.db, self.source_slot.id, "切换任务", self.operator, self.target_slot.id,
             )
+
+        # 暂停并切换只有一种失败：切完某个项目就超出结题日期。报错要直接说是哪个
+        # 项目、要延几天，而不是笼统的"有效时间窗口不足"。
+        self.assertIn("会导致项目", str(raised.exception))
+        failure = raised.exception.detail["pause_switch_failure"]
+        self.assertEqual("project_deadline_overrun", failure["kind"])
+        self.assertEqual(
+            [self.source_task.project_id],
+            [row["project_id"] for row in failure["overruns"]],
+        )
+        self.assertGreaterEqual(failure["overruns"][0]["delay_days"], 1)
 
     def test_approval_gate_sets_downstream_earliest_start(self):
         expected_approval_at = datetime.now() + timedelta(days=7)

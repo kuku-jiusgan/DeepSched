@@ -12,6 +12,16 @@ FINISHED_TASK_STATUSES = {"done", "completed"}
 
 def projected_project_completion(db, project: Project, options: dict) -> datetime:
     """Forecast completion of every unfinished leaf task in dependency order."""
+    baseline = project.start_date or datetime.now()
+    return max(project_task_completions(db, project, options).values(), default=baseline)
+
+
+def project_task_completions(db, project: Project, options: dict) -> dict[int, datetime]:
+    """逐个叶子任务的预计完工时间，按依赖顺序推演。
+
+    暂停切换的失败诊断要指名道姓说清是哪个任务把项目顶出了结题日期，只有项目
+    层面的最晚完工时间不够用。
+    """
     tasks = db.query(Task).filter(Task.project_id == project.id).order_by(
         Task.plan_order, Task.id,
     ).all()
@@ -41,7 +51,7 @@ def projected_project_completion(db, project: Project, options: dict) -> datetim
             labels = "、".join(task.name for task in pending.values())
             raise ValueError(f"项目任务依赖无法完成推演：{labels}")
 
-    return max(completion.values(), default=baseline)
+    return completion
 
 
 def _project_task_completion(db, task: Task, dependency_end: datetime, options: dict) -> datetime:

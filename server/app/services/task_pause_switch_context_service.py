@@ -27,6 +27,10 @@ class PauseSwitchContext:
     replaceable_slots: list[TimeSlot]
     queue: list[PauseSwitchQueueEntry]
     source_task_id: int
+    target_task_id: int
+    target_slot_id: int
+    current_project_id: int
+    instrument_id: int | None
 
     @property
     def task_ids(self) -> set[int]:
@@ -56,29 +60,37 @@ class PauseSwitchContext:
 
     @property
     def queue_dependencies(self) -> list[tuple[int, int]]:
-        dependencies: list[tuple[int, int]] = []
-        for index, entry in enumerate(self.queue[1:], start=1):
-            predecessor = self.queue[index - 1]
-            if entry.task.id == predecessor.task.id:
-                continue
-            if not entry.task.requires_instrument:
-                dependencies.append((entry.task.id, predecessor.task.id))
-                continue
-            if predecessor.task.requires_instrument:
-                dependencies.append((entry.task.id, predecessor.task.id))
-                continue
-            # 下面只处理"前驱是非仪器任务"：它不该挡住后面的仪器任务，所以要么
-            # 确认它有资格挡（同仪器同负责人），要么把依赖改挂到更早的仪器任务上。
-            # previous_instrument 只服务于这两种判断，此前它的 None 判断挡在最
-            # 前面，导致前驱本身就是队首仪器任务时（暂停并切换最常见的形态）顺序
-            # 依赖被整条丢掉，求解器随即把被暂停任务的剩余排到了接替任务之前。
-            previous_instrument = _previous_instrument_entry(self.queue, predecessor)
-            if previous_instrument is None:
-                continue
-            if _queue_dependency_allowed(self.queue, predecessor, entry):
-                dependencies.append((entry.task.id, predecessor.task.id))
-            else:
-                dependencies.append((entry.task.id, previous_instrument.task.id))
+        """锁住这台仪器上各任务的先后，仅此而已。
+
+        这条顺序约束存在的理由只有两个：不锁的话求解器会把被暂停任务的剩余工时
+        排到接替任务之前，这次切换就白切了；而暂停切换是个局部动作，不该把仪器
+        队列后面那些别的项目的先后打乱。两个理由讲的都是**同一台仪器上的排队**。
+
+        此前这里把整条闭包队列相邻两两串成硬链，不占仪器的任务也在里面。闭包不
+        只按仪器圈定——task_pause_window_service._assignee_slots 会把同一个负责人
+        的人工任务一并拉进来，于是"方案撰写"这类根本不碰仪器的任务也被钉在了某个
+        固定位置上。方案撰写要跟着自己的方法开发走，这是项目计划创建时就写下的
+        continuous_successor 关系（见 task_dependency_service），求解器本来就当
+        硬前置执行，外加一条"做完接着做"的软目标——不需要队列再锁一遍。
+
+        真正的坏处出在**前驱不在闭包里**的那些人工任务身上：它们没有可跟随的前驱，
+        却被硬钉在两个不相干项目的仪器任务中间。实测就是这么把四个互不相关的项目
+        串成一条链，切换随即判定不可行；而放开之后，两个方案撰写仍然紧跟各自的
+        方法开发，仪器队列的先后也没有变。
+
+        "别的项目会被打乱"这层担心另有更靠谱的东西兜着：项目结题日期是硬约束，
+        真把别人顶超期了，排程会当场失败并指名道姓，不必靠钉死位置来防。
+        """
+        competing = [
+            entry for entry in self.queue
+            if entry.task.requires_instrument
+            and entry.template_slot.instrument_id == self.instrument_id
+        ]
+        dependencies = [
+            (competing[index].task.id, competing[index - 1].task.id)
+            for index in range(1, len(competing))
+            if competing[index].task.id != competing[index - 1].task.id
+        ]
         return list(dict.fromkeys(dependencies))
 
 
@@ -110,7 +122,11 @@ def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot,
     for group in intermediate_groups:
         queue.append(PauseSwitchQueueEntry(group[0].task, None, slot_minutes(group), group[0].status, group[0]))
         queue.extend(_followup_entries(intermediate_followups.get(group[0].task_id, [])))
-    return PauseSwitchContext(switch_time, queue_end, replaceable, queue, source_slot.task_id)
+    return PauseSwitchContext(
+        switch_time, queue_end, replaceable, queue,
+        source_slot.task_id, target_slot.task_id, target_slot.id,
+        source_slot.task.project_id, source_slot.instrument_id,
+    )
 
 
 def _split_intermediate_followups(
@@ -144,41 +160,3 @@ def _split_intermediate_followups(
 
 def _followup_entries(groups: list[list[TimeSlot]]) -> list[PauseSwitchQueueEntry]:
     return [PauseSwitchQueueEntry(group[0].task, None, remaining_minutes(group[0].task), group[0].status, group[0]) for group in groups]
-
-
-def _queue_dependency_allowed(
-    queue: list[PauseSwitchQueueEntry],
-    predecessor: PauseSwitchQueueEntry,
-    entry: PauseSwitchQueueEntry,
-) -> bool:
-    """Do not let an unqualified manual task block another instrument task."""
-    if getattr(predecessor.task, "requires_instrument", False) or not getattr(entry.task, "requires_instrument", False):
-        return True
-    previous_instrument = _previous_instrument_entry(queue, predecessor)
-    if previous_instrument is None:
-        return False
-    return (
-        previous_instrument.template_slot.instrument_id == entry.template_slot.instrument_id
-        and _same_assignee(predecessor.task, previous_instrument.task, entry.task)
-    )
-
-
-def _previous_instrument_entry(
-    queue: list[PauseSwitchQueueEntry],
-    predecessor: PauseSwitchQueueEntry,
-) -> PauseSwitchQueueEntry | None:
-    predecessor_index = next(
-        index for index, item in enumerate(queue) if item is predecessor
-    )
-    return next(
-        (
-            item for item in reversed(queue[:predecessor_index])
-            if item.task.requires_instrument
-        ),
-        None,
-    )
-
-
-def _same_assignee(*tasks: Task) -> bool:
-    assignee_id = tasks[0].assignee_id
-    return assignee_id is not None and all(task.assignee_id == assignee_id for task in tasks)

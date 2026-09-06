@@ -84,7 +84,7 @@ def _candidate_deadlines(
     是否把周末算作工作时间由排程规则决定（include_weekends / include_holidays），
     所以这里按规则加日历判断，而不是简单地跳过周六周日。
     """
-    from app.services.schedule_rule_service import get_solver_constraints
+    from app.services.project_deadline_calendar_service import working_day_flags
     from app.services.scheduler_helpers import is_allowed_calendar_day, load_calendar_days
 
     starts = [original_deadlines[project_id] for project_id in project_ids]
@@ -94,10 +94,7 @@ def _candidate_deadlines(
     # db，拿不到日历就不过滤。生产路径一定是真实会话。
     if getattr(db, "query", None) is None:
         return _raw_candidates(project_ids, original_deadlines, horizon_end)
-    rule = get_solver_constraints(db)["working_hours"]
-    params = rule.params or {}
-    include_weekends = bool(params.get("include_weekends", False)) or not rule.is_enabled
-    include_holidays = bool(params.get("include_holidays", False)) or not rule.is_enabled
+    include_weekends, include_holidays = working_day_flags(db)
     calendar_days = load_calendar_days(db, min(starts), horizon_end)
 
     result: dict[int, list[datetime]] = {}
