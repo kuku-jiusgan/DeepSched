@@ -12,6 +12,7 @@ from app.services.project_plan_apply_service import (
     apply_project_plan,
     confirm_project_plan_insert,
 )
+from app.services.deletion_guard_service import deletion_block_reason, project_state
 from app.services.user_role_service import has_role
 from app.services.audit_log_service import record_audit_log
 
@@ -212,8 +213,13 @@ def _apply_detection_plan(db, project_id: int) -> dict:
 
 def delete_detection_task(db, detection_id: int, user) -> None:
     project = _get_detection_task(db, detection_id, user)
-    if any(task.status in {"done", "completed"} for task in project.tasks) and not has_role(user, SYSTEM_ADMIN_ROLE):
-        raise DetectionTaskInvalidError("已完成检测任务不允许删除")
+    reason = deletion_block_reason(
+        project_state(project),
+        is_system_admin=has_role(user, SYSTEM_ADMIN_ROLE),
+        subject="检测任务",
+    )
+    if reason:
+        raise DetectionTaskInvalidError(reason)
     task_ids = [task.id for task in project.tasks]
     if task_ids:
         delete_time_slots_and_refresh(

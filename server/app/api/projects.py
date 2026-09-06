@@ -168,7 +168,10 @@ def delete_project(
     user=Depends(require_project_editor_by_proj_id),
 ):
     try:
-        delete_project_plan(db, proj_id, user.display_name or user.username)
+        delete_project_plan(
+            db, proj_id, user.display_name or user.username,
+            is_system_admin=has_role(user, "系统管理员"),
+        )
         return {"detail": "已删除"}
     except ProjectDeleteNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -249,7 +252,7 @@ def delete_task(
         delete_task_plan(
             db,
             task_id,
-            allow_completed=has_role(user, "系统管理员"),
+            is_system_admin=has_role(user, "系统管理员"),
             actor_name=user.display_name or user.username,
         )
         return {"detail": "已删除"}

@@ -19,6 +19,7 @@ from app.services.project_hours_validation_service import (
 )
 from app.services.project_task_rollup_service import recalculate_project_parent_hours
 from app.services.instrument_status_service import refresh_instrument_statuses
+from app.services.deletion_guard_service import deletion_block_reason, task_tree_state
 from app.services.task_purge_service import purge_task_trees
 from app.services.project_date_service import (
     normalize_project_end,
@@ -66,14 +67,17 @@ class PlanChangeInvalidError(Exception):
 def delete_task_plan(
     db,
     task_id: int,
-    allow_completed: bool = False,
+    is_system_admin: bool = False,
     actor_name: str | None = None,
 ) -> None:
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise PlanChangeNotFoundError("任务不存在")
-    if not allow_completed and _task_tree_has_completed_task(task):
-        raise PlanChangeInvalidError("已完成任务不允许删除")
+    reason = deletion_block_reason(
+        task_tree_state(task), is_system_admin=is_system_admin, subject="任务",
+    )
+    if reason:
+        raise PlanChangeInvalidError(reason)
     audit_detail = task_deleted_audit_detail(db, task) if actor_name else None
     released_resources = _released_task_resources(task)
     project_id = task.project_id
@@ -87,10 +91,9 @@ def delete_task_plan(
     for item in task_tree:
         if item in db:
             db.expunge(item)
-    # 时间槽一律物理删除，与操作人是不是系统管理员无关。allow_completed 说的是
-    # "允许删已完成的任务"这条权限，此前却被顺手当成了"是否真的删时间槽"：普通
-    # 用户删一个已排程的任务时只作废槽不删，随后删任务就撞上 time_slot 外键报
-    # 1451。线上 8 月有两次就是这么失败的。
+    # 时间槽一律物理删除，与操作人是不是系统管理员无关。此前这件事被搭在
+    # allow_completed 上：普通用户删一个已排程的任务时只作废槽不删，随后删任务
+    # 就撞上 time_slot 外键报 1451，线上 8 月有两次就是这么失败的。
     instrument_ids = purge_task_trees(db, task_ids)
     refresh_instrument_statuses(db, instrument_ids)
     _restore_bridged_dependencies(db, bridge_pairs)
@@ -142,12 +145,6 @@ def _compact_released_resource_queues(
     released_at = datetime.now()
     for instrument_id, assignee_id in sorted(resources, key=lambda item: (item[0], item[1] or 0)):
         _forward_shift_instrument_queue(db, instrument_id, released_at, assignee_id)
-
-
-def _task_tree_has_completed_task(task: Task) -> bool:
-    return task.schedule_lock_status == "completed" or any(
-        _task_tree_has_completed_task(child) for child in task.children
-    )
 
 
 def update_project_plan(db, project_id: int, data: ProjectCreate) -> Project:

@@ -409,7 +409,7 @@ class ProjectPlanDraftServiceTest(unittest.TestCase):
         ))
         self.db.commit()
 
-        delete_task_plan(self.db, parent.id, allow_completed=True)
+        delete_task_plan(self.db, parent.id, is_system_admin=True)
 
         self.assertEqual(0, self.db.query(Task).filter(Task.id.in_([parent.id, child.id])).count())
         self.assertEqual(0, self.db.query(TimeSlot).filter(TimeSlot.task_id == child.id).count())

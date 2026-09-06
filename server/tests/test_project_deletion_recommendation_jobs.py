@@ -152,12 +152,12 @@ class TaskTimelineTracesArePurgedTest(unittest.TestCase):
         }
 
     def test_deleting_a_task_leaves_no_orphan_rows_even_for_a_non_admin(self):
-        """allow_completed 说的是权限，不是"要不要真删时间槽"。
+        """物理删除时间槽与操作人是不是系统管理员无关。
 
         此前普通用户删一个已排程的任务时只把时间槽作废、不删，随后删任务就撞上
         time_slot 外键。线上 8 月有两次就是这么失败的。
         """
-        delete_task_plan(self.db, self.child.id, allow_completed=False, actor_name="技术员")
+        delete_task_plan(self.db, self.child.id, is_system_admin=False, actor_name="技术员")
 
         self.assertEqual({"任务": 1, "时间槽": 0, "夜间运行": 0, "桥接预留": 0}, self._orphans())
 

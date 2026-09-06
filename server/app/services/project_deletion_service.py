@@ -14,7 +14,7 @@ from __future__ import annotations
 from app.models import Milestone, Project, Task
 from app.services.audit_log_service import record_audit_log
 from app.services.instrument_status_service import refresh_instrument_statuses
-from app.services.project_status_service import calculate_project_status
+from app.services.deletion_guard_service import deletion_block_reason, project_state
 from app.services.task_purge_service import purge_task_trees
 
 
@@ -26,12 +26,25 @@ class ProjectDeleteInvalidError(Exception):
     pass
 
 
-def delete_project_plan(db, project_id: int, actor_name: str | None = None) -> None:
+def delete_project_plan(
+    db,
+    project_id: int,
+    actor_name: str | None = None,
+    is_system_admin: bool = False,
+) -> None:
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise ProjectDeleteNotFoundError("项目不存在")
-    if calculate_project_status(project) == "completed":
-        raise ProjectDeleteInvalidError("已完成项目不允许删除")
+    reason = deletion_block_reason(
+        project_state(project),
+        is_system_admin=is_system_admin,
+        subject="项目",
+        # 已结题的项目谁都不能删，系统管理员也不行——这是原有规矩，本次只统一
+        # 判据和文案，不放宽它。
+        admin_may_delete_completed=False,
+    )
+    if reason:
+        raise ProjectDeleteInvalidError(reason)
     task_ids = {
         task_id for task_id, in db.query(Task.id).filter(Task.project_id == project_id).all()
     }
