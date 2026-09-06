@@ -33,6 +33,11 @@ from app.services.project_plan_change_service import (
     update_task_plan,
 )
 from app.services.project_status_service import calculate_project_status
+from app.services.project_deletion_service import (
+    ProjectDeleteInvalidError,
+    ProjectDeleteNotFoundError,
+    delete_project_plan,
+)
 from app.services.instrument_status_service import delete_time_slots_and_refresh
 from app.api.access import (
     require_project_editor_by_proj_id,
@@ -162,36 +167,13 @@ def delete_project(
     db: Session = Depends(get_db),
     user=Depends(require_project_editor_by_proj_id),
 ):
-    proj = db.query(Project).filter(Project.id == proj_id).first()
-    if not proj:
-        raise HTTPException(status_code=404, detail="项目不存在")
-    if calculate_project_status(proj) == "completed":
-        raise HTTPException(status_code=409, detail="已完成项目不允许删除")
-    # Delete related records
-    task_ids = [t.id for t in db.query(Task).filter(Task.project_id == proj_id).all()]
-    for tid in task_ids:
-        db.query(TaskDependency).filter(
-            (TaskDependency.predecessor_id == tid) | (TaskDependency.task_id == tid)
-        ).delete()
-        db.query(TaskCapabilityRequirement).filter(TaskCapabilityRequirement.task_id == tid).delete()
-    if task_ids:
-        delete_time_slots_and_refresh(
-            db,
-            db.query(TimeSlot).filter(TimeSlot.task_id.in_(task_ids)),
-        )
-    db.query(Task).filter(Task.project_id == proj_id).delete()
-    db.query(Milestone).filter(Milestone.project_id == proj_id).delete()
-    record_audit_log(
-        db,
-        user.display_name or user.username,
-        "project_deleted",
-        "project",
-        proj.id,
-        {"project_code": proj.code, "project_name": proj.name, "task_count": len(task_ids)},
-    )
-    db.delete(proj)
-    db.commit()
-    return {"detail": "已删除"}
+    try:
+        delete_project_plan(db, proj_id, user.display_name or user.username)
+        return {"detail": "已删除"}
+    except ProjectDeleteNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ProjectDeleteInvalidError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 @router.post("/{proj_id}/milestones", response_model=MilestoneOut)
 def add_milestone(

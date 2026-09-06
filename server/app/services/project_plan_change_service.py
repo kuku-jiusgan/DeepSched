@@ -5,12 +5,8 @@ from datetime import datetime
 from app.models import (
     Project,
     Task,
-    TaskCapabilityRequirement,
     TaskDependency,
-    TaskExecutionSegment,
-    TaskNightRun,
     TimeSlot,
-    InstrumentBridgeReservation,
 )
 from app.schemas.schemas import ProjectCreate, TaskUpdate
 from app.services.project_hours_validation_service import (
@@ -22,7 +18,8 @@ from app.services.project_hours_validation_service import (
     validate_project_window_capacity,
 )
 from app.services.project_task_rollup_service import recalculate_project_parent_hours
-from app.services.instrument_status_service import delete_time_slots_and_refresh
+from app.services.instrument_status_service import refresh_instrument_statuses
+from app.services.task_purge_service import purge_task_trees
 from app.services.project_date_service import (
     normalize_project_end,
     normalize_project_start,
@@ -90,44 +87,12 @@ def delete_task_plan(
     for item in task_tree:
         if item in db:
             db.expunge(item)
-    db.query(TaskDependency).filter(
-        (TaskDependency.predecessor_id.in_(task_ids))
-        | (TaskDependency.task_id.in_(task_ids))
-    ).delete(synchronize_session=False)
-    db.query(TaskCapabilityRequirement).filter(
-        TaskCapabilityRequirement.task_id.in_(task_ids)
-    ).delete(synchronize_session=False)
-    db.query(TaskNightRun).filter(
-        TaskNightRun.task_id.in_(task_ids)
-    ).delete(synchronize_session=False)
-    db.query(TaskExecutionSegment).filter(
-        TaskExecutionSegment.task_id.in_(task_ids)
-    ).delete(synchronize_session=False)
-    slot_query = db.query(TimeSlot).filter(TimeSlot.task_id.in_(task_ids))
-    if allow_completed:
-        # 管理员明确执行物理删除时，先清理仍引用任务的历史槽，避免
-        # time_slot.task_id 外键阻止任务树删除。普通删除仍保留作废槽。
-        instrument_ids = {
-            instrument_id for instrument_id, in slot_query.with_entities(
-                TimeSlot.instrument_id,
-            ).distinct().all() if instrument_id
-        }
-        db.query(InstrumentBridgeReservation).filter(
-            (InstrumentBridgeReservation.task_id.in_(task_ids))
-            | (InstrumentBridgeReservation.previous_task_id.in_(task_ids))
-            | (InstrumentBridgeReservation.following_task_id.in_(task_ids))
-        ).delete(synchronize_session=False)
-        slot_query.delete(synchronize_session=False)
-        from app.services.instrument_status_service import refresh_instrument_statuses
-        refresh_instrument_statuses(db, instrument_ids)
-    else:
-        delete_time_slots_and_refresh(db, slot_query)
-    db.query(Task).filter(
-        Task.id.in_(task_ids),
-        Task.id != task_id,
-    ).update({Task.parent_id: None}, synchronize_session=False)
-    db.query(Task).filter(Task.id.in_(task_ids)).delete(synchronize_session=False)
-    db.flush()
+    # 时间槽一律物理删除，与操作人是不是系统管理员无关。allow_completed 说的是
+    # "允许删已完成的任务"这条权限，此前却被顺手当成了"是否真的删时间槽"：普通
+    # 用户删一个已排程的任务时只作废槽不删，随后删任务就撞上 time_slot 外键报
+    # 1451。线上 8 月有两次就是这么失败的。
+    instrument_ids = purge_task_trees(db, task_ids)
+    refresh_instrument_statuses(db, instrument_ids)
     _restore_bridged_dependencies(db, bridge_pairs)
     for affected_task in affected_tasks:
         if affected_task.status == "waiting_external":
