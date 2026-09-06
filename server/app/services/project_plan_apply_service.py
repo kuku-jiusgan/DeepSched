@@ -13,6 +13,7 @@ from app.services.approval_gate_schedule_context import ApprovalScheduleContext
 from app.services.project_plan_apply_helpers import (
     approval_earliest_bounds,
     apply_success_message,
+    clear_replanned_project_dirty,
     expand_movable_downstream_tasks,
     load_approval_resource_queue_tasks,
     plan_fingerprint,
@@ -301,8 +302,7 @@ def _execute_replan(
         new_project_completions,
         moved_workloads,
     )
-    for task in db.query(Task).filter(Task.project_id == project.id).all():
-        task.schedule_dirty = False
+    clear_replanned_project_dirty(db, replan_tasks)
 
     response = ProjectPlanApplyResponse(
         status="applied",

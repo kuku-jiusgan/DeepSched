@@ -18,6 +18,7 @@ from app.services.schedule_insert_resources import (
     anchor_schedule_end,
     resource_queue_task_ids,
 )
+from app.services.project_plan_apply_helpers import clear_replanned_project_dirty
 from app.services.task_delay_status_service import reset_task_delay
 from app.services.schedule_working_time_service import working_hours_between
 
@@ -158,6 +159,7 @@ def _execute_insert(
         total_delay_hours=round(sum(max(0, impact.delay_hours) for impact in impacts), 1),
         impacts=impacts,
     )
+    clear_replanned_project_dirty(db, replan_tasks)
     if commit:
         db.commit()
     return preview

@@ -10,6 +10,16 @@ from app.services.approval_gate_schedule_context import ApprovalScheduleContext
 from app.services.schedule_insert_resources import resource_queue_task_ids
 
 
+def clear_replanned_project_dirty(db, tasks: list[Task]) -> None:
+    """Clear stale plan-change markers for every project touched by a replan."""
+    project_ids = {task.project_id for task in tasks if task.project_id is not None}
+    if not project_ids:
+        return
+    db.query(Task).filter(Task.project_id.in_(project_ids)).update(
+        {Task.schedule_dirty: False}, synchronize_session=False,
+    )
+
+
 def load_approval_resource_queue_tasks(
     db,
     project: Project,

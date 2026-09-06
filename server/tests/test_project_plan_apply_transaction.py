@@ -10,7 +10,10 @@ from app.services.project_plan_apply_service import (
     _preview_plan_insert,
     apply_project_plan,
 )
-from app.services.project_plan_apply_helpers import expand_movable_downstream_tasks
+from app.services.project_plan_apply_helpers import (
+    clear_replanned_project_dirty,
+    expand_movable_downstream_tasks,
+)
 from app.models import Project, Task, TaskDependency
 from app.core.database import Base
 from sqlalchemy import create_engine
@@ -18,6 +21,34 @@ from sqlalchemy.orm import sessionmaker
 
 
 class ProjectPlanApplyTransactionTest(unittest.TestCase):
+    def test_replan_clears_dirty_markers_for_all_touched_projects(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        try:
+            touched = Project(code="TOUCHED", name="已重排项目")
+            untouched = Project(code="UNTOUCHED", name="未重排项目")
+            db.add_all([touched, untouched])
+            db.flush()
+            db.add_all([
+                Task(project_id=touched.id, name="已纳入重排", task_type="test", schedule_dirty=True),
+                Task(project_id=touched.id, name="同项目任务", task_type="test", schedule_dirty=True),
+                Task(project_id=untouched.id, name="未纳入重排", task_type="test", schedule_dirty=True),
+            ])
+            db.commit()
+            selected = db.query(Task).filter(Task.project_id == touched.id).first()
+
+            clear_replanned_project_dirty(db, [selected])
+            db.commit()
+
+            touched_tasks = db.query(Task).filter(Task.project_id == touched.id).all()
+            untouched_task = db.query(Task).filter(Task.project_id == untouched.id).one()
+            self.assertTrue(touched_tasks)
+            self.assertTrue(all(not task.schedule_dirty for task in touched_tasks))
+            self.assertTrue(untouched_task.schedule_dirty)
+        finally:
+            db.close()
+
     def test_moved_predecessor_includes_unstarted_scheduled_successor(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
