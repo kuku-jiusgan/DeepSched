@@ -517,7 +517,13 @@ def _task_windows(db, task_ids: set[int], schedule_run_id: str | None = None) ->
         TimeSlot.lifecycle_status == "active",
     )
     if schedule_run_id:
-        query = query.filter(TimeSlot.schedule_run_id == schedule_run_id)
+        # 已开始的片段属于当前任务的实际排程，即使它来自上一版 run，也必须
+        # 与新 run 的未开始片段一起参与对比。否则同一任务在重排前后的窗口
+        # 会分别从 09-06 和 09-07 开始，被误报为“被顺延”。
+        query = query.filter(
+            (TimeSlot.schedule_run_id == schedule_run_id)
+            | TimeSlot.actual_start.isnot(None),
+        )
     windows: dict[int, tuple[datetime, datetime]] = {}
     for slot in query.order_by(TimeSlot.plan_start, TimeSlot.id).all():
         if slot.task_id not in windows:

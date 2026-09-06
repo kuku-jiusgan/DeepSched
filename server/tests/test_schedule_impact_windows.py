@@ -65,6 +65,25 @@ class ScheduleImpactWindowTest(unittest.TestCase):
     def test_insert_anchor_ignores_superseded_slots(self):
         self.assertEqual(self.base + timedelta(hours=2.5), anchor_schedule_end(self.db, 1))
 
+    def test_new_run_keeps_started_segments_in_comparison_window(self):
+        started = TimeSlot(
+            id=3,
+            task_id=1,
+            plan_start=self.base - timedelta(days=1),
+            plan_end=self.base - timedelta(hours=20),
+            status="paused",
+            lifecycle_status="active",
+            schedule_run_id="r1",
+            actual_start=self.base - timedelta(days=1),
+        )
+        self.db.add(started)
+        self.db.commit()
+
+        window = _task_windows(self.db, {1}, schedule_run_id="r2")[1]
+
+        self.assertEqual(started.plan_start, window[0])
+        self.assertEqual(self.base + timedelta(hours=2.5), window[1])
+
 
 if __name__ == "__main__":
     unittest.main()
