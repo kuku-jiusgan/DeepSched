@@ -90,6 +90,9 @@ def run_switch_replan(
         # 替代，剩余工时在时间轴上凭空消失，排程还报成功。
         preserved_status_task_ids={context.paused_source_task_id, context.target_task_id},
         additional_dependencies=context.queue_dependencies,
+        # 接替任务必须第一个开始：人既然已经决定切过去，就是现在要做它，别的活
+        # 一律不许插在它前面。
+        first_start_task_id=context.target_task_id,
         preserved_slot_ids={context.target_slot_id},
         setup_exempt_task_pairs={
             frozenset((task_id, predecessor_id))

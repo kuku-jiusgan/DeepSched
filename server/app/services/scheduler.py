@@ -50,6 +50,7 @@ from app.services.scheduler_preflight import (
 from app.services.scheduler_working_calendar import build_working_calendar
 from app.services.scheduler_task_variables import build_task_variables
 from app.services.scheduler_soft_constraints import (
+    add_first_start_constraint,
     add_milestone_tardiness,
     add_precedence_constraints,
     build_dependency_gap_penalties,
@@ -158,6 +159,7 @@ class SchedulerService:
         fixed_instrument_ids: dict[int, int] | None = None,
         allow_unassigned_human_task_ids: set[int] | None = None,
         additional_dependency_gaps: dict[tuple[int, int], int] | None = None,
+        first_start_task_id: int | None = None,
         released_slot_intervals: dict[int, list[tuple]] | None = None,
         feasibility_only: bool = False,
         project_end_date_overrides: dict[int, datetime] | None = None,
@@ -435,6 +437,11 @@ class SchedulerService:
             horizon_start=horizon_start,
             precedence_enabled=constraints["precedence"].is_enabled,
             additional_dependency_gaps=additional_dependency_gaps,
+        )
+        add_first_start_constraint(
+            model,
+            task_starts=task_starts,
+            first_start_task_id=first_start_task_id,
         )
         dependency_gap_penalties = build_dependency_gap_penalties(
             model,

@@ -458,6 +458,55 @@ class TaskPauseServiceTest(unittest.TestCase):
                     f"{busy.plan_start}~{busy.plan_end} 重叠",
                 )
 
+    def test_switch_target_starts_before_every_other_task(self):
+        """接替任务必须第一个开始，任何别的活都不许插在它前面。
+
+        人既然已经决定切过去，就是现在要做这个任务。此前靠目标函数的整体最优
+        近似，线上出过这样的结果：切换之后，同一负责人另一个项目的方案撰写（不占
+        仪器、所属项目结题日更早）被排在了当天最前面，接替任务被推到两个半小时
+        之后才开始——从目标函数看合理，从业务上看这次切换就落空了。
+        """
+        self._freeze_now(self.base_day.replace(hour=10))
+        now = _next_working_day().replace(hour=10)
+        self.source_task.assignee_id = self.operator.id
+        self.source_task.requires_human = True
+        self.target_slot.plan_start = now + timedelta(hours=5)
+        self.target_slot.plan_end = now + timedelta(hours=8)
+        # 结题日更早、又不占仪器的人工任务：不加约束时求解器会优先把它排到最前面。
+        self.project_a.end_date = self.base_day + timedelta(days=3)
+        urgent = Task(
+            project_id=self.project_a.id,
+            name="加急方案撰写",
+            task_type="QCFA_001",
+            requires_human=True,
+            requires_instrument=False,
+            assignee_id=self.operator.id,
+            status="scheduled",
+            est_duration_hours=2,
+        )
+        self.db.add(urgent)
+        self.db.flush()
+        self.db.add(TimeSlot(
+            task_id=urgent.id,
+            instrument_id=None,
+            plan_start=now + timedelta(hours=3),
+            plan_end=now + timedelta(hours=5),
+            status="scheduled",
+            tier="confirmed",
+        ))
+        self.db.commit()
+
+        pause_and_switch_task(
+            self.db, self.source_slot.id, "切换任务", self.operator, self.target_slot.id,
+        )
+        self.db.commit()
+
+        target_start = self._task_slots(self.target_task.id)[0].plan_start
+        for task_id in (self.source_task.id, urgent.id):
+            slots = self._future_slots(task_id)
+            self.assertTrue(slots, "闭包内任务的时间槽不该消失")
+            self.assertGreaterEqual(slots[0].plan_start, target_start)
+
     def test_pause_switch_replans_target_assignee_noninstrument_task_when_source_is_nonhuman(self):
         # 断言依赖"源任务已跑一段、只剩剩余部分"，必须冻结当前时刻。
         self._freeze_now(self.base_day.replace(hour=10))

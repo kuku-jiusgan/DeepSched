@@ -39,6 +39,7 @@ def replan_resource_closure(
     solver_time_limit: float = 30.0,
     project_end_date_overrides: dict[int, datetime] | None = None,
     include_failure_diagnostics: bool = True,
+    first_start_task_id: int | None = None,
 ) -> dict:
     """Run the authoritative CP-SAT replan for a resource-impact closure."""
     if not seed_task_ids:
@@ -118,6 +119,7 @@ def replan_resource_closure(
                 solver_time_limit=solver_time_limit,
                 project_end_date_overrides=project_end_date_overrides,
                 include_failure_diagnostics=include_failure_diagnostics,
+                first_start_task_id=first_start_task_id,
                 rollback_on_conflict=False,
             )
             iteration_diagnostic.update(_solver_result_diagnostic(last_result))

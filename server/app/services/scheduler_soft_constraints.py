@@ -58,6 +58,32 @@ def add_precedence_constraints(
     return missing_pred_ends
 
 
+def add_first_start_constraint(
+    model: cp_model.CpModel,
+    *,
+    task_starts,
+    first_start_task_id: int | None,
+) -> None:
+    """指定任务必须第一个开始，其余任务都不得排在它之前。
+
+    暂停并切换用它落实一条业务语义：人既然已经决定切过去，就是现在要做这个任务，
+    不存在"先干点别的再说"。此前靠目标函数的整体最优近似，实测切换之后周一早上先
+    排了另一个项目的方案撰写（同一负责人、不占仪器、结题日更早），接替任务被推到
+    两个半小时后才开始——从目标函数看合理，从业务上看这次切换就落空了。
+
+    约束管的是**开始时刻**而不是完工时刻：其余任务只是不许比它更早开始，并不需要
+    等它整个做完。后者会把闭包重新串成一条硬链，正是此前让排程判定不可行的错误。
+    """
+    if first_start_task_id is None or first_start_task_id not in task_starts:
+        return
+    anchor = task_starts[first_start_task_id]
+    # 按任务号排序：集合/字典的遍历顺序会直接落进模型 proto，同一道题两次构造
+    # 必须逐字节相同。
+    for task_id, start in sorted(task_starts.items()):
+        if task_id != first_start_task_id:
+            model.Add(start >= anchor)
+
+
 def build_dependency_gap_penalties(
     model: cp_model.CpModel,
     *,
