@@ -21,6 +21,16 @@ class Project(Base):
 
     milestones = relationship("Milestone", back_populates="project", cascade="all, delete-orphan")
     tasks = relationship("Task", back_populates="project", cascade="all, delete-orphan")
+    # 排程失败时后台会为这个项目记一条"调整方案"作业。它是排程过程的中间产物，
+    # 项目没了就没有任何意义，必须跟着项目一起走。此前没有这条关系，外键又是
+    # NO ACTION，于是一个项目只要排程失败过一次就再也删不掉——线上删检测任务时
+    # 报的 IntegrityError 1451 就是它。删除项目的两条路（检测任务与普通项目）
+    # 最后都是 db.delete(project)，挂在这里两边一起覆盖。
+    deadline_recommendation_jobs = relationship(
+        "ScheduleDeadlineRecommendationJob",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
     manager = relationship("User")
     @property
     def manager_name(self):
@@ -491,6 +501,8 @@ class ScheduleDeadlineRecommendationJob(Base):
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+    project = relationship("Project", back_populates="deadline_recommendation_jobs")
 
 class PushChannelConfig(Base):
     __tablename__ = "push_channel_config"
