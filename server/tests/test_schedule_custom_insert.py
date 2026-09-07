@@ -12,6 +12,7 @@ from app.services.schedule_insert_service import (
     _insert_audit_detail,
     _insert_notification_reason,
 )
+from app.services.schedule_resource_closure_service import load_resource_closure_movable_tasks
 
 
 class ScheduleCustomInsertTest(unittest.TestCase):
@@ -227,6 +228,56 @@ class ScheduleCustomInsertTest(unittest.TestCase):
         self.assertIn(queued.id, {task.id for task in context["replan_tasks"]})
         self.assertIn((queued.id, source.id), context["dependency_pairs"])
         self.assertEqual("shifted", context["impact_roles"][queued.id])
+
+    def test_resource_closure_follows_moved_instrument_task_to_assignee_queue(self):
+        self.source_project.priority = 1
+        self.target_project.priority = 2
+        later_project = self._project("LATER")
+        insert_owner = User(username="insert-owner", display_name="插单负责人", role="分析员")
+        owner = User(username="owner-closure", display_name="李伟", role="分析员")
+        instrument = Instrument(id=2, code="INST-CLOSURE", name="测试仪器")
+        self.db.add_all([insert_owner, owner, instrument])
+        self.db.flush()
+        inserted = self._task(self.source_project, "插入检测", status="pending")
+        inserted.requires_instrument = True
+        inserted.requires_human = True
+        inserted.instrument_ids = [instrument.id]
+        inserted.assignee_id = insert_owner.id
+        instrument_task = self._task(self.target_project, "方法验证")
+        instrument_task.requires_instrument = True
+        instrument_task.requires_human = True
+        instrument_task.instrument_ids = [instrument.id]
+        instrument_task.assignee_id = owner.id
+        report = self._task(later_project, "报告撰写")
+        report.requires_human = True
+        report.assignee_id = owner.id
+        self.db.add_all([
+            TimeSlot(
+                task_id=instrument_task.id,
+                instrument_id=instrument.id,
+                plan_start=datetime(2026, 9, 8, 8, 30),
+                plan_end=datetime(2026, 9, 8, 12, 30),
+                tier="confirmed",
+                status="scheduled",
+            ),
+            TimeSlot(
+                task_id=report.id,
+                plan_start=datetime(2026, 9, 9, 8, 30),
+                plan_end=datetime(2026, 9, 9, 12, 30),
+                tier="confirmed",
+                status="scheduled",
+            ),
+        ])
+        self.db.flush()
+
+        movable = load_resource_closure_movable_tasks(
+            self.db,
+            insert_priority=1,
+            selected_tasks=[inserted],
+            include_same_priority=False,
+        )
+
+        self.assertEqual({instrument_task.id, report.id}, {task.id for task in movable})
 
     def test_custom_insert_does_not_push_frozen_resource_task(self):
         instrument = Instrument(id=1, code="INST-1", name="测试仪器")

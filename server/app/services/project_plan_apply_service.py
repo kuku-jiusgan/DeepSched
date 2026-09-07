@@ -40,9 +40,11 @@ from app.services.project_instrument_validation_service import (
 from app.services.project_task_rollup_service import recalculate_project_parent_hours
 from app.services.schedule_insert_service import (
     _build_impacts,
-    _load_lower_priority_movable_tasks,
     _selected_instrument_ids,
     _task_windows,
+)
+from app.services.schedule_resource_closure_service import (
+    load_resource_closure_movable_tasks,
 )
 
 
@@ -367,16 +369,12 @@ def _load_insert_movable_tasks(
 ) -> list[Task]:
     selected_ids = {task.id for task in selected_tasks}
     is_detection_priority_insert = project.project_kind == "detection"
-    movable = _load_lower_priority_movable_tasks(
+    insert_priority = int(project.priority or 3)
+    movable = load_resource_closure_movable_tasks(
         db,
-        int(project.priority or 3),
-        selected_ids,
-        _selected_instrument_ids(selected_tasks),
-        {task.assignee_id for task in selected_tasks if task.assignee_id},
+        insert_priority,
+        selected_tasks,
         include_same_priority=not is_detection_priority_insert,
-        # 项目已启动不代表其中所有后续任务都已开始；具体的冻结、运行中
-        # 和已开始时间槽仍由候选过滤保护，未开始的低优先级任务可以顺延。
-        unstarted_projects_only=False,
         minimum_start=approval_context.anchor_at if approval_context else None,
     )
     approval_movable = load_approval_resource_queue_tasks(
