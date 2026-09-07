@@ -119,6 +119,71 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
 
         self.assertEqual([(movable.id, selected.id)], dependencies)
 
+    def test_detection_insert_moves_same_priority_task_after_selected(self):
+        selected_project, selected = self._scheduled_project("A", 2, 1)
+        selected_project.project_kind = "detection"
+        _, later_task = self._scheduled_project("B", 2, 2)
+        base_time = datetime.now() + timedelta(days=2)
+        selected_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == selected.id,
+        ).one()
+        later_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == later_task.id,
+        ).one()
+        selected_slot.plan_start = base_time
+        selected_slot.plan_end = base_time + timedelta(hours=1)
+        later_slot.plan_start = base_time + timedelta(hours=2)
+        later_slot.plan_end = base_time + timedelta(hours=6)
+        self.db.flush()
+
+        movable = _load_lower_priority_movable_tasks(
+            self.db,
+            insert_priority=2,
+            excluded_task_ids={selected.id},
+            selected_instrument_ids={1},
+            include_same_priority=True,
+            same_priority_after=selected_slot.plan_start,
+        )
+        self.assertEqual([later_task.id], [task.id for task in movable])
+
+        _, earlier_task = self._scheduled_project("C", 2, 3)
+        earlier_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == earlier_task.id,
+        ).one()
+        earlier_slot.plan_start = base_time - timedelta(hours=4)
+        earlier_slot.plan_end = base_time - timedelta(hours=1)
+        self.db.flush()
+        movable = _load_lower_priority_movable_tasks(
+            self.db,
+            insert_priority=2,
+            excluded_task_ids={selected.id},
+            selected_instrument_ids={1},
+            include_same_priority=True,
+            same_priority_after=selected_slot.plan_start,
+        )
+        self.assertEqual([later_task.id], [task.id for task in movable])
+
+    def test_same_priority_movable_task_keeps_original_after_order(self):
+        selected_project, selected = self._scheduled_project("A", 2, 1)
+        selected_project.project_kind = "detection"
+        _, movable = self._scheduled_project("B", 2, 2)
+        base_time = datetime.now() + timedelta(days=2)
+        selected_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == selected.id,
+        ).one()
+        movable_slot = self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == movable.id,
+        ).one()
+        selected_slot.plan_start = base_time
+        movable_slot.plan_start = base_time + timedelta(hours=2)
+        self.db.flush()
+
+        dependencies = build_schedule_priority_dependencies(
+            self.db, selected_project, [selected], [movable],
+        )
+
+        self.assertEqual([(movable.id, selected.id)], dependencies)
+
     def test_closed_historical_pause_does_not_lock_future_slots(self):
         _, task = self._scheduled_project("B", 3, 1)
         task.status = "paused"

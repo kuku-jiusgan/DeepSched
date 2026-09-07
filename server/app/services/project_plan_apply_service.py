@@ -44,6 +44,7 @@ from app.services.schedule_insert_service import (
     _task_windows,
 )
 from app.services.schedule_resource_closure_service import (
+    earliest_active_slot_start,
     load_resource_closure_movable_tasks,
 )
 
@@ -370,12 +371,17 @@ def _load_insert_movable_tasks(
     selected_ids = {task.id for task in selected_tasks}
     is_detection_priority_insert = project.project_kind == "detection"
     insert_priority = int(project.priority or 3)
+    same_priority_after = (
+        earliest_active_slot_start(db, selected_tasks) or datetime.now()
+        if is_detection_priority_insert else None
+    )
     movable = load_resource_closure_movable_tasks(
         db,
         insert_priority,
         selected_tasks,
-        include_same_priority=not is_detection_priority_insert,
+        include_same_priority=True,
         minimum_start=approval_context.anchor_at if approval_context else None,
+        same_priority_after=same_priority_after,
     )
     approval_movable = load_approval_resource_queue_tasks(
         db,

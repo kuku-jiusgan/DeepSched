@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.models import Project, Task
+from app.services.schedule_resource_closure_service import active_slot_starts
 
 
 def build_schedule_priority_dependencies(
@@ -12,23 +13,38 @@ def build_schedule_priority_dependencies(
     movable_tasks: list[Task],
 ) -> list[tuple[int, int]]:
     replan_tasks = _unique_tasks([*selected_tasks, *movable_tasks])
-    dependencies = _inserted_detection_dependencies(project, selected_tasks, movable_tasks)
+    dependencies = _inserted_detection_dependencies(
+        db, project, selected_tasks, movable_tasks,
+    )
     dependencies.update(_fixed_detection_dependencies(db, replan_tasks))
     return sorted(dependencies)
 
 
 def _inserted_detection_dependencies(
+    db,
     project: Project,
     selected_tasks: list[Task],
     movable_tasks: list[Task],
 ) -> set[tuple[int, int]]:
     if project.project_kind != "detection":
         return set()
+    starts = active_slot_starts(db, [*selected_tasks, *movable_tasks])
+    selected_start = min(
+        (starts[task.id] for task in selected_tasks if task.id in starts),
+        default=datetime.now(),
+    )
     return {
         (movable.id, selected.id)
         for movable in movable_tasks
         for selected in selected_tasks
-        if int(movable.project.priority or 3) > int(project.priority or 3)
+        if (
+            int(movable.project.priority or 3) > int(project.priority or 3)
+            or (
+                int(movable.project.priority or 3) == int(project.priority or 3)
+                and starts.get(movable.id, selected_start)
+                >= starts.get(selected.id, selected_start)
+            )
+        )
         and _shares_resource(movable, selected)
     }
 

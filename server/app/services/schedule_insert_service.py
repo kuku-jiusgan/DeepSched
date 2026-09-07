@@ -408,6 +408,7 @@ def _load_lower_priority_movable_tasks(
     include_same_priority: bool = False,
     unstarted_projects_only: bool = False,
     minimum_start: datetime | None = None,
+    same_priority_after: datetime | None = None,
 ) -> list[Task]:
     selected_assignee_ids = selected_assignee_ids or set()
     priority_filter = (
@@ -454,6 +455,30 @@ def _load_lower_priority_movable_tasks(
             (resource_filters[0] if len(resource_filters) == 1 else resource_filters[0] | resource_filters[1]),
         ).distinct().all()
     }
+    if same_priority_after is not None:
+        same_priority_ids = {
+            task.id for task in candidate_tasks
+            if int(task.project.priority or 3) == insert_priority
+        }
+        if same_priority_ids:
+            earlier_same_priority_ids = {
+                task_id for (task_id,) in db.query(TimeSlot.task_id).join(Task).filter(
+                    TimeSlot.task_id.in_(same_priority_ids),
+                    TimeSlot.lifecycle_status == "active",
+                    TimeSlot.tier.in_(["confirmed", "forecast"]),
+                    TimeSlot.status.in_(
+                        ["scheduled", "paused", "blocked", "interrupted"],
+                    ),
+                    TimeSlot.plan_end > (minimum_start or datetime.now()),
+                    TimeSlot.plan_start < same_priority_after,
+                    (
+                        resource_filters[0]
+                        if len(resource_filters) == 1
+                        else resource_filters[0] | resource_filters[1]
+                    ),
+                ).distinct().all()
+            }
+            future_slot_task_ids.difference_update(earlier_same_priority_ids)
     return [
         task for task in candidate_tasks
         if task.project_id not in started_project_ids
