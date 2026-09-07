@@ -91,6 +91,26 @@ class PauseSwitchContext:
             for index in range(1, len(competing))
             if competing[index].task.id != competing[index - 1].task.id
         ]
+        # 目标任务的连续后续必须在暂停任务恢复前完成。普通的业务前置只保证
+        # “方法开发结束后才能开始方案撰写”，但不会阻止暂停任务插在两者之间；
+        # 切换动作既然已经选定目标任务，就把目标后续链作为一个整体推进。
+        target_index = next(
+            (index for index, entry in enumerate(self.queue)
+             if entry.task.id == self.target_task_id),
+            None,
+        )
+        source_index = next(
+            (index for index, entry in enumerate(self.queue)
+             if entry.task.id == self.source_task_id),
+            None,
+        )
+        if target_index is not None and source_index is not None and target_index < source_index:
+            target_followups = self.queue[target_index + 1:source_index]
+            if target_followups:
+                dependencies.append((
+                    self.source_task_id,
+                    target_followups[-1].task.id,
+                ))
         return list(dict.fromkeys(dependencies))
 
 

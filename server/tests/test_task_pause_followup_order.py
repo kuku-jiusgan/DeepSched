@@ -91,6 +91,10 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
             [target.id, target_followup.id, source.id, source_followup.id],
             [entry.task.id for entry in context.queue],
         )
+        self.assertEqual(
+            [(source.id, target.id), (source.id, target_followup.id)],
+            context.queue_dependencies,
+        )
         self.assertEqual(source.id, context.paused_source_task_id)
         self.assertEqual(set(context.remaining_duration_minutes), context.task_ids)
         self.assertEqual(source_parent.id, source_followup.parent_id)
@@ -115,8 +119,11 @@ class TaskPauseFollowupOrderTest(unittest.TestCase):
 
         context = build_pause_switch_context(self.db, source_slot, target_slot, now)
 
-        # 人工任务根本不进队列锁，自然也就挡不住任何仪器任务。
-        self.assertEqual([(source.id, target.id)], context.queue_dependencies)
+        # 人工任务不进仪器队列锁；但目标连续后续链仍必须在暂停任务恢复前完成。
+        self.assertEqual(
+            [(source.id, target.id), (source.id, target_followup.id)],
+            context.queue_dependencies,
+        )
         self.assertEqual(source_parent.id, source.parent_id)
 
     def test_switch_context_includes_target_assignee_slots_when_source_is_nonhuman(self):
