@@ -57,15 +57,34 @@ class InstrumentBridgeSyncServiceTest(unittest.TestCase):
         self.following_slot.plan_end = datetime(2026, 8, 26, 14)
         other = self._task(
             self.manual_slot.task.project_id,
-            self.manual_slot.task.assignee_id,
+            self.manual_slot.task.assignee_id + 1,
             "中间工作",
-            False,
+            True,
         )
         self.db.flush()
-        self._slot(other.id, None, 10, 11)
+        self._slot(other.id, self.previous_slot.instrument_id, 10, 11)
         self.db.commit()
 
         self.assertEqual(0, rebuild_instrument_bridge_reservations(self.db, "run-2"))
+
+    def test_consecutive_manual_tasks_are_both_reserved(self):
+        second_manual = self._task(
+            self.manual_slot.task.project_id,
+            self.manual_slot.task.assignee_id,
+            "方案撰写二",
+            False,
+        )
+        self.db.flush()
+        self._slot(second_manual.id, None, 11, 12)
+        self.following_slot.plan_start = datetime(2026, 8, 26, 12)
+        self.following_slot.plan_end = datetime(2026, 8, 26, 13)
+        self.db.commit()
+
+        self.assertEqual(2, rebuild_instrument_bridge_reservations(self.db, "run-2"))
+        task_ids = {
+            row.task_id for row in self.db.query(InstrumentBridgeReservation).all()
+        }
+        self.assertEqual({self.manual_slot.task_id, second_manual.id}, task_ids)
 
     def _task(self, project_id: int, assignee_id: int, name: str, instrument: bool) -> Task:
         task = Task(

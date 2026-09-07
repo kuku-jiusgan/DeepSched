@@ -8,7 +8,12 @@ from app.services.scheduler_helpers import task_duration_hours
 
 
 def instrument_bridge_candidates(tasks, task_dependencies, compatibility):
-    """Return manual tasks bracketed by the same assignee and instrument."""
+    """Return manual tasks bracketed by the same assignee and instrument.
+
+    A bridge may contain several consecutive manual tasks. Walk through manual
+    predecessors and successors so every task in that block reserves the
+    instrument, rather than allowing the adjacent manual task to hide one side.
+    """
     tasks_by_id = {task.id: task for task in tasks}
     predecessors = defaultdict(list)
     successors = defaultdict(list)
@@ -25,8 +30,14 @@ def instrument_bridge_candidates(tasks, task_dependencies, compatibility):
             or not getattr(task, "assignee_id", None)
         ):
             continue
-        for previous_id in predecessors.get(task.id, []):
-            for following_id in successors.get(task.id, []):
+        previous_ids = _reachable_instrument_ids(
+            task.id, predecessors, tasks_by_id,
+        )
+        following_ids = _reachable_instrument_ids(
+            task.id, successors, tasks_by_id,
+        )
+        for previous_id in previous_ids:
+            for following_id in following_ids:
                 previous = tasks_by_id[previous_id]
                 following = tasks_by_id[following_id]
                 if not _same_assignee(task, previous, following):
@@ -36,6 +47,26 @@ def instrument_bridge_candidates(tasks, task_dependencies, compatibility):
                 for instrument_id in sorted(previous_ids & following_ids):
                     candidates.append((task.id, previous_id, following_id, instrument_id))
     return candidates
+
+
+def _reachable_instrument_ids(start_id, graph, tasks_by_id) -> list[int]:
+    """Find instrument tasks through a chain of non-instrument tasks."""
+    result = []
+    pending = list(graph.get(start_id, []))
+    visited = set()
+    while pending:
+        task_id = pending.pop()
+        if task_id in visited:
+            continue
+        visited.add(task_id)
+        task = tasks_by_id.get(task_id)
+        if task is None:
+            continue
+        if getattr(task, "requires_instrument", False):
+            result.append(task_id)
+            continue
+        pending.extend(graph.get(task_id, []))
+    return sorted(result)
 
 
 def add_instrument_bridge_intervals(

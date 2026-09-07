@@ -63,6 +63,19 @@ class SchedulerInstrumentBridgingTest(unittest.TestCase):
             ),
         )
 
+    def test_consecutive_manual_tasks_share_the_same_bridge(self):
+        middle = _task(4, 7, False, 3)
+        tasks = [self.previous, self.manual, middle, self.following]
+        dependencies = [(2, 1), (4, 2), (3, 4)]
+        compatibility = {1: [self.instrument], 2: [], 3: [self.instrument], 4: []}
+
+        candidates = instrument_bridge_candidates(tasks, dependencies, compatibility)
+
+        self.assertEqual(
+            [(2, 1, 3, 101), (4, 1, 3, 101)],
+            candidates,
+        )
+
     def test_different_instruments_do_not_bridge(self):
         compatibility = {
             1: [self.instrument],

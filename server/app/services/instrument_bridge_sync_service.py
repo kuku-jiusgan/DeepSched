@@ -187,7 +187,7 @@ def _bridge_for_manual_task(db, slot: TimeSlot, cache: dict | None = None) -> tu
             TimeSlot.lifecycle_status == "active",
             TimeSlot.status.in_(BRIDGE_SLOT_STATUSES),
             Task.requires_human.is_(True),
-            Task.assignee_id == assignee_id,
+            Task.requires_instrument.is_(True),
         ).order_by(TimeSlot.plan_end.desc(), TimeSlot.id.desc()).all()
     candidates = [item for item in by_assignee[assignee_id] if item.task_id != slot.task_id]
     previous = max(
@@ -206,6 +206,8 @@ def _bridge_for_manual_task(db, slot: TimeSlot, cache: dict | None = None) -> tu
         following is None
         or previous.instrument_id is None
         or previous.instrument_id != following.instrument_id
+        or previous.task.assignee_id != assignee_id
+        or following.task.assignee_id != assignee_id
         or not previous.task.requires_instrument
         or not following.task.requires_instrument
     ):
