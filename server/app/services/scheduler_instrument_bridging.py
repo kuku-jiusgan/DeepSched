@@ -42,9 +42,15 @@ def instrument_bridge_candidates(tasks, task_dependencies, compatibility):
                 following = tasks_by_id[following_id]
                 if not _same_assignee(task, previous, following):
                     continue
-                previous_ids = {item.id for item in compatibility.get(previous_id, [])}
-                following_ids = {item.id for item in compatibility.get(following_id, [])}
-                for instrument_id in sorted(previous_ids & following_ids):
+                previous_instrument_ids = {
+                    item.id for item in compatibility.get(previous_id, [])
+                }
+                following_instrument_ids = {
+                    item.id for item in compatibility.get(following_id, [])
+                }
+                for instrument_id in sorted(
+                    previous_instrument_ids & following_instrument_ids,
+                ):
                     candidates.append((task.id, previous_id, following_id, instrument_id))
     return candidates
 

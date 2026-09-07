@@ -13,6 +13,7 @@ from app.services.scheduler_data import (
 )
 from app.services.scheduler_diagnostics import _project_instrument_intervals
 from app.services.scheduler_helpers import build_compatibility, build_dependencies
+from app.services.scheduler_instrument_bridging import instrument_bridge_candidates
 
 
 class DiagnosticResourceTasksTest(unittest.TestCase):
@@ -202,6 +203,36 @@ class BridgedInstrumentOccupancyTest(unittest.TestCase):
         self.assertEqual(8.0, breakdown["slot"])
         self.assertEqual(0.0, breakdown["bridge"])
         self.assertEqual(0.0, breakdown["forecast"])
+
+    def test_multiple_bridge_candidates_do_not_treat_instrument_as_task(self):
+        second_writing = Task(
+            id=35, project_id=2, parent_id=30, name="报告撰写", task_type="ZXBG_001",
+            requires_instrument=False, requires_human=True, assignee_id=1,
+            est_duration_hours=1, status="scheduled",
+        )
+        second_validation = Task(
+            id=36, project_id=2, parent_id=30, name="第二次方法验证", task_type="FFYZ_001",
+            requires_instrument=True, requires_human=True, assignee_id=1,
+            est_duration_hours=1, instrument_ids=[10], status="waiting_external",
+        )
+        self.db.add_all([second_writing, second_validation])
+        self.db.add_all([
+            TaskDependency(task_id=35, predecessor_id=34),
+            TaskDependency(task_id=36, predecessor_id=35),
+        ])
+        self.db.flush()
+        tasks = [
+            self.group, self.development, self.writing, self.gate,
+            self.validation, second_writing, second_validation,
+        ]
+        compatibility = build_compatibility(tasks, [self.instrument], True)
+        dependencies = build_dependencies(tasks, {
+            30: [31, 32, 33, 34, 35, 36],
+        })
+
+        candidates = instrument_bridge_candidates(tasks, dependencies, compatibility)
+
+        self.assertTrue(candidates)
 
 
 if __name__ == "__main__":
