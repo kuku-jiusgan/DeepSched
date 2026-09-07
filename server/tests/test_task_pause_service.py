@@ -607,7 +607,10 @@ class TaskPauseServiceTest(unittest.TestCase):
         self.assertLess(future_slots[0].plan_start, original_future_start)
 
     def test_pause_and_switch_rejects_task_that_exceeds_project_end_date(self):
-        self.source_task.project.end_date = datetime.now() + timedelta(hours=1)
+        now = datetime.now()
+        self.source_task.project.end_date = (now - timedelta(days=1)).replace(
+            hour=23, minute=59, second=59, microsecond=0,
+        )
         self.db.commit()
 
         with self.assertRaises(DomainConflictError) as raised:

@@ -77,7 +77,12 @@ class PauseSwitchFailureDiagnosisTest(unittest.TestCase):
         self.db.commit()
         # 源任务所在项目的结题日期近在眼前：切换让出仪器之后，剩下的工时无论
         # 怎么排都会越过它。
-        self.project_a.end_date = datetime.now() + timedelta(hours=1)
+        # 结题日固定在排程日之前，确保建议日期至少跨过一个自然日；不能用
+        # "当前时刻后一小时"，因为同一工作日 23:59 仍可能容纳这次延期。
+        deadline_now = datetime.now()
+        self.project_a.end_date = (deadline_now - timedelta(days=1)).replace(
+            hour=23, minute=59, second=59, microsecond=0,
+        )
         self.db.commit()
 
     def tearDown(self):

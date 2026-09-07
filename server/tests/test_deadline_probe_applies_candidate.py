@@ -40,7 +40,8 @@ class DeadlineProbeAppliesCandidateTest(unittest.TestCase):
             status="idle",
         ))
         self.project = Project(
-            code="PROBE-1", name="候选日期探测", priority=3, end_date=self.near,
+            code="PROBE-1", name="候选日期探测", priority=3,
+            start_date=self.start, end_date=self.near,
         )
         self.db.add(self.project)
         self.db.flush()
