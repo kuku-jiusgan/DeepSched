@@ -40,6 +40,11 @@ class SlotExecutionStatusTest(unittest.TestCase):
         self.assertEqual("running", _slot_execution_status(running, task("paused")))
         self.assertEqual("scheduled", _slot_execution_status(slot("scheduled"), task("paused")))
 
+    def test_paused_slot_keeps_pause_state_when_replan_reset_task_to_pending(self):
+        paused = slot("paused", actual_start=datetime(2026, 9, 1, 8, 30),
+                      actual_end=datetime(2026, 9, 1, 10, 0))
+        self.assertEqual("paused", _slot_execution_status(paused, task("pending")))
+
 
 if __name__ == "__main__":
     unittest.main()

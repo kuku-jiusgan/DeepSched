@@ -463,6 +463,12 @@ def _slot_execution_status(slot: TimeSlot, task: Task | None) -> str:
         return "running"
     if slot.status == "scheduled":
         return "scheduled"
+    # 重排会把未重新生成的任务状态重置为 pending，但不能抹掉已有暂停/中断段的
+    # 执行语义；首页预警和甘特图需要告诉用户任务是暂停，而不是待处理。
+    if slot.status in {"paused", "interrupted"} and (
+        task is None or task.status not in {"done", "completed"}
+    ):
+        return slot.status
     return resolve_task_execution_status(task)
 
 
