@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 
-from app.models import TaskExecutionSegment, TimeSlot
+from app.domain.errors import DomainConflictError
+from app.models import Task, TaskExecutionSegment, TimeSlot
 from app.services.instrument_working_time_service import load_working_time_context
 from app.services.scheduler_helpers import is_allowed_calendar_day
 
@@ -37,7 +38,13 @@ def task_actual_hours_map(db, task_ids) -> dict[int, float]:
         return totals
     segments = db.query(TaskExecutionSegment).filter(TaskExecutionSegment.task_id.in_(task_ids)).all()
     slots = db.query(TimeSlot).filter(TimeSlot.task_id.in_(task_ids)).all()
-    ranges_by_task = _actual_ranges_by_task(task_ids, segments, slots)
+    tasks = db.query(Task).filter(Task.id.in_(task_ids)).all()
+    completed_task_ids = {
+        task.id for task in tasks if task.status in {"done", "completed"}
+    }
+    ranges_by_task = _actual_ranges_by_task(
+        task_ids, segments, slots, completed_task_ids,
+    )
     all_ranges = [item for ranges in ranges_by_task.values() for item in ranges]
     if not all_ranges:
         return totals
@@ -58,12 +65,30 @@ def task_actual_hours_map(db, task_ids) -> dict[int, float]:
     return {task_id: round(hours, 2) for task_id, hours in totals.items()}
 
 
-def _actual_ranges_by_task(task_ids, segments, slots) -> dict[int, list[ResourceRange]]:
+def _actual_ranges_by_task(
+    task_ids,
+    segments,
+    slots,
+    completed_task_ids: set[int] | None = None,
+) -> dict[int, list[ResourceRange]]:
     now = datetime.now()
+    completed_task_ids = completed_task_ids or set()
     result = {task_id: [] for task_id in task_ids}
     slots_by_id = {slot.id: slot for slot in slots}
     segmented_task_ids = set()
     for segment in segments:
+        if segment.ended_at is None and segment.task_id in completed_task_ids:
+            task = segment.task
+            project = task.project if task else None
+            project_label = " · ".join(
+                value for value in [project.code if project else None, project.name if project else None]
+                if value
+            )
+            task_label = task.name if task else str(segment.task_id)
+            raise DomainConflictError(
+                f"项目【{project_label or '未归属项目'}】任务【{task_label}】已完成，"
+                "但仍有未结束的执行记录，请联系系统管理员修复"
+            )
         instrument_id = segment.instrument_id
         if instrument_id is None and segment.slot_id in slots_by_id:
             instrument_id = slots_by_id[segment.slot_id].instrument_id

@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import AuditLog, Task, TaskExecutionSegment, TimeSlot
+from app.models import AuditLog, Task, TimeSlot
 from app.services.instrument_status_service import refresh_instrument_status
 from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.services.schedule_advance_notification_service import notify_advanced_task_assignees
@@ -20,6 +20,7 @@ from app.services.task_delay_status_service import mark_task_delayed
 from app.services.schedule_delay_propagation_service import propagate_actual_delay
 from app.services.schedule_delay_service import ScheduleDelayInvalidError
 from app.services.task_progress_service import planned_task_minutes
+from app.services.execution_segment_lifecycle_service import close_open_execution_segment
 
 def complete_task_and_shift(
     db: Session,
@@ -136,18 +137,9 @@ def _recent_pause_switch_logs(db: Session) -> list[AuditLog]:
 
 
 def _close_running_execution_segment(db, task_id: int, ended_at: datetime) -> None:
-    segment = (
-        db.query(TaskExecutionSegment)
-        .filter(
-            TaskExecutionSegment.task_id == task_id,
-            TaskExecutionSegment.ended_at.is_(None),
-        )
-        .order_by(TaskExecutionSegment.started_at.desc(), TaskExecutionSegment.id.desc())
-        .first()
-    )
-    if segment:
-        segment.ended_at = ended_at
-        segment.end_reason = "completed"
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if task:
+        close_open_execution_segment(task, ended_at, "completed")
 
 
 def _propagate_delay_safely(

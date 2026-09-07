@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
+from app.domain.errors import DomainConflictError
 from app.models import Instrument, Project, Task, TaskExecutionSegment, TaskNightRun, TimeSlot
 from app.services.project_actual_hours_service import project_actual_hours_map, task_actual_hours_map
 
@@ -66,6 +67,20 @@ class ProjectActualHoursServiceTest(unittest.TestCase):
         self.db.commit()
 
         self.assertEqual(1.0, task_actual_hours_map(self.db, [self.task.id])[self.task.id])
+
+    def test_completed_task_with_open_segment_is_rejected(self):
+        self.db.add(TaskExecutionSegment(
+            task_id=self.task.id,
+            slot_id=self.slot.id,
+            started_at=datetime(2026, 7, 31, 20, 0),
+        ))
+        self.db.commit()
+
+        with self.assertRaisesRegex(
+            DomainConflictError,
+            "P-001.*检测.*已完成.*未结束",
+        ):
+            task_actual_hours_map(self.db, [self.task.id])
 
 
 if __name__ == "__main__":

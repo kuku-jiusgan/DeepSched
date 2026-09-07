@@ -7,6 +7,11 @@ from app.services.instrument_status_service import mark_instrument_running
 from app.services.instrument_occupancy_service import current_occupying_task
 from app.services.task_delay_status_service import mark_task_delayed
 from app.domain.errors import DomainConflictError, DomainNotFoundError
+from app.repositories.task_execution_repository import lock_task
+from app.services.execution_segment_lifecycle_service import (
+    ExecutionSegmentStateError,
+    ensure_no_open_execution_segment,
+)
 
 
 COMPLETED_TASK_STATUSES = {"done", "completed"}
@@ -33,9 +38,16 @@ def start_task_execution(
     slot = db.query(TimeSlot).filter(TimeSlot.id == slot_id).first()
     if not slot:
         raise TaskExecutionNotFoundError("时间槽不存在")
-    task = db.query(Task).filter(Task.id == slot.task_id).first()
+    task = lock_task(db, slot.task_id)
     if not task:
         raise TaskExecutionNotFoundError("任务不存在")
+    # A running session can span several calendar-split slots. The slot worker
+    # may have closed the preceding slot, but the open execution segment still
+    # means the task is running and must not be started a second time.
+    try:
+        ensure_no_open_execution_segment(task)
+    except ExecutionSegmentStateError as exc:
+        raise TaskExecutionInvalidError(str(exc)) from exc
     reconcile_task_status_from_slots(task, slot)
     # 暂停切换要把切换那一刻传进来。那条路径上目标时间槽被压成零长度锚点钉在切换
     # 时刻，而重排求解要跑几秒；这里若自己再取一次当前时间，锚点就永远落在它之前，

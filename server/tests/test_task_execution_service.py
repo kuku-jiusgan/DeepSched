@@ -287,6 +287,42 @@ class TaskExecutionServiceTest(unittest.TestCase):
         with self.assertRaisesRegex(TaskExecutionInvalidError, "已经开始"):
             start_task_execution(self.db, self.slot.id)
 
+    def test_open_segment_blocks_starting_next_calendar_slot(self):
+        self.predecessor.status = "done"
+        self.task.status = "running"
+        previous_slot = TimeSlot(
+            id=2,
+            task_id=self.task.id,
+            instrument_id=1,
+            plan_start=datetime.now() - timedelta(days=1, hours=2),
+            plan_end=datetime.now() - timedelta(days=1),
+            actual_start=datetime.now() - timedelta(days=1, hours=2),
+            actual_end=datetime.now() - timedelta(days=1),
+            status="completed",
+            tier="confirmed",
+        )
+        self.db.add(previous_slot)
+        self.db.flush()
+        self.db.add(TaskExecutionSegment(
+            task_id=self.task.id,
+            slot_id=previous_slot.id,
+            instrument_id=1,
+            started_at=previous_slot.actual_start,
+        ))
+        self.db.commit()
+
+        with self.assertRaisesRegex(TaskExecutionInvalidError, "未结束的执行记录"):
+            start_task_execution(self.db, self.slot.id)
+
+        self.assertEqual("running", self.task.status)
+        self.assertEqual("scheduled", self.slot.status)
+        self.assertEqual(
+            1,
+            self.db.query(TaskExecutionSegment).filter(
+                TaskExecutionSegment.task_id == self.task.id,
+            ).count(),
+        )
+
     def test_start_repairs_stale_running_task_with_paused_slots(self):
         self.predecessor.status = "done"
         self.task.status = "running"

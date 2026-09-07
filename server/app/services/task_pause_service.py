@@ -10,6 +10,7 @@ from app.services.task_execution_service import predecessors_completed, start_ta
 from app.services.schedule_working_time_service import working_hours_between
 from app.services.task_progress_service import planned_task_minutes
 from app.services.task_pause_solver_service import replan_pause_switch
+from app.services.execution_segment_lifecycle_service import close_open_execution_segment
 from app.services.task_pause_window_service import (
     CANDIDATE_SLOT_STATUSES,
 )
@@ -265,19 +266,13 @@ def _close_execution_segment(
     reason: str,
     operator_id: int,
 ) -> None:
-    segment = (
-        db.query(TaskExecutionSegment)
-        .filter(
-            TaskExecutionSegment.task_id == slot.task_id,
-            TaskExecutionSegment.ended_at.is_(None),
-        )
-        .order_by(TaskExecutionSegment.started_at.desc(), TaskExecutionSegment.id.desc())
-        .first()
+    segment = close_open_execution_segment(
+        slot.task,
+        ended_at,
+        "paused",
+        pause_reason=reason,
     )
     if segment:
-        segment.ended_at = ended_at
-        segment.end_reason = "paused"
-        segment.pause_reason = reason
         return
     db.add(TaskExecutionSegment(
         task_id=slot.task_id,
