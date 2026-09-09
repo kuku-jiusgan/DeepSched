@@ -60,7 +60,7 @@ def _immediate_approval_failure_message(project: Project, result: dict) -> str:
     task_name = (failure.get("window") or {}).get("task_name")
     workload_label = f"任务【{task_name}】及后续任务" if task_name else "方法验证及后续任务"
     return (
-        f"排程失败：项目【{label}】即使立即完成签批，{workload_label}也无法在 "
+        f"项目【{label}】即使立即完成签批，{workload_label}也无法在 "
         f"{deadline} 结题日前完成，请先延长项目结题日期或调整排程资源。"
     )
 
