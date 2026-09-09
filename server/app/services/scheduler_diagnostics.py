@@ -152,7 +152,9 @@ def unavailable_instrument_message(db, tasks, compatibility: dict[int, list[Inst
             return f"排程失败：仪器【{names}】故障，任务【{task.name}】排程失败。"
 
         names = "、".join(_instrument_label(instrument) for instrument in instruments)
-        return f"排程失败：指定仪器【{names or '未知仪器'}】当前不可用，任务【{task.name}】排程失败。"
+        if names:
+            return f"排程失败：任务【{task.name}】指定的仪器【{names}】当前没有可用候选，排程失败。"
+        return f"排程失败：任务【{task.name}】指定的仪器不存在或当前没有可用候选，排程失败。"
     return None
 
 
