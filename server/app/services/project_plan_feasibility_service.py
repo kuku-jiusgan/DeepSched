@@ -18,6 +18,12 @@ def validate_immediate_approval_feasibility(
 
     task_ids = {task.id for task in replan_tasks}
     project_ids = {task.project_id for task in replan_tasks if task.project_id}
+    # 立即签批按全厂未收尾项目同时释放待签批工时，避免跨项目产能被高估。
+    occupancy_project_ids = {
+        row[0] for row in db.query(Project.id).filter(
+            Project.status.notin_(("completed", "cancelled", "archived")),
+        ).all()
+    }
     probe_savepoint = db.begin_nested()
     try:
         result = SchedulerService(db).generate(
@@ -31,6 +37,7 @@ def validate_immediate_approval_feasibility(
             include_pending_approval_tasks=True,
             emit_advance_notifications=False,
             include_failure_diagnostics=True,
+            occupancy_project_ids=occupancy_project_ids,
         )
     finally:
         probe_savepoint.rollback()

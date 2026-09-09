@@ -163,6 +163,7 @@ class SchedulerService:
         feasibility_only: bool = False,
         project_end_date_overrides: dict[int, datetime] | None = None,
         include_pending_approval_tasks: bool = False,
+        occupancy_project_ids: set[int] | None = None,
     ) -> dict:
         replan_request = replayable_kwargs(locals())
         if current_project_id is None:
@@ -175,6 +176,7 @@ class SchedulerService:
             replaceable_task_ids,
             occupancy_project_ids={
                 current_project_id, *(project_ids or ()),
+                *(occupancy_project_ids or ()),
             },
         )
         # 任务改用值对象：不绑会话、属性访问不会偷偷发 SQL、能跨进程传。
