@@ -131,8 +131,15 @@ def _slot_label(slot: TimeSlot, start: datetime, end: datetime) -> dict:
     }
 
 
-def unavailable_instrument_message(db, tasks, compatibility: dict[int, list[Instrument]]) -> str | None:
+def unavailable_instrument_message(
+    db,
+    tasks,
+    compatibility: dict[int, list[Instrument]],
+    current_project_id: int | None = None,
+) -> str | None:
     for task in tasks:
+        if current_project_id is not None and task.project_id != current_project_id:
+            continue
         if not task.requires_instrument or compatibility.get(task.id):
             continue
 

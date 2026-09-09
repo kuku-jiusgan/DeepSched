@@ -6,7 +6,6 @@ from dataclasses import replace
 from datetime import datetime
 from typing import List, Optional
 from ortools.sat.python import cp_model
-from app.models import Project
 from app.core.config import get_settings
 from app.services.scheduler_fixed_slots import (
     add_human_capacity_constraints,
@@ -169,12 +168,6 @@ class SchedulerService:
         replan_request = replayable_kwargs(locals())
         if current_project_id is None:
             return {"status": "error", "message": "排程请求缺少当前项目ID"}
-        # 待签批任务按“立即签批”估计参与跨项目资源约束；不生成正式时间槽。
-        active_occupancy_project_ids = {
-            row[0] for row in self.db.query(Project.id).filter(
-                Project.status.notin_(("completed", "cancelled", "archived")),
-            ).all()
-        }
         orm_tasks, _ = load_scheduler_data(
             self.db,
             project_ids,
@@ -184,7 +177,6 @@ class SchedulerService:
             occupancy_project_ids={
                 current_project_id, *(project_ids or ()),
                 *(occupancy_project_ids or ()),
-                *active_occupancy_project_ids,
             },
         )
         # 任务改用值对象：不绑会话、属性访问不会偷偷发 SQL、能跨进程传。
@@ -272,7 +264,9 @@ class SchedulerService:
         )
         if fixed_instrument_error:
             return fixed_instrument_error
-        diagnostic_message = unavailable_instrument_message(self.db, tasks, compat)
+        diagnostic_message = unavailable_instrument_message(
+            self.db, tasks, compat, current_project_id=current_project_id,
+        )
         if diagnostic_message:
             return {"status": "error", "message": diagnostic_message}
 
