@@ -16,8 +16,7 @@ from app.schemas.schemas import (
 from app.services.schedule_working_time_service import working_time_spans
 from app.services.scheduler import SchedulerService
 from app.services.instrument_bridge_sync_service import (
-    historical_bridge_reservations,
-    valid_bridge_reservations,
+    bridge_reservation_rows,
 )
 from app.services.schedule_delay_service import (
     report_task_delay,
@@ -137,22 +136,13 @@ def list_instrument_bridge_reservations(
     end_date: Optional[datetime] = Query(None),
     db: Session = Depends(get_db),
 ):
-    q = db.query(InstrumentBridgeReservation).options(
-        joinedload(InstrumentBridgeReservation.task).joinedload(Task.project),
-        joinedload(InstrumentBridgeReservation.task).joinedload(Task.assignee),
-    )
-    if start_date:
-        q = q.filter(InstrumentBridgeReservation.plan_end > start_date)
-    if end_date:
-        q = q.filter(InstrumentBridgeReservation.plan_start < end_date)
-    reservations = valid_bridge_reservations(
-        db, q.order_by(InstrumentBridgeReservation.plan_start),
-    )
-    historical = historical_bridge_reservations(db, start_date, end_date)
-    return [
-        *(_enrich_bridge_reservation(item) for item in reservations),
-        *(_enrich_bridge_history(item) for item in historical),
-    ]
+    return [_enrich_bridge_row(item) for item in bridge_reservation_rows(db, start_date, end_date)]
+
+
+def _enrich_bridge_row(item):
+    if isinstance(item, InstrumentBridgeReservation):
+        return _enrich_bridge_reservation(item)
+    return _enrich_bridge_history(item)
 
 
 def _enrich_bridge_reservation(item: InstrumentBridgeReservation) -> InstrumentBridgeReservationOut:

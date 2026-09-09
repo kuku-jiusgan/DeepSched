@@ -38,6 +38,10 @@ from app.services.solver_log_cleanup_worker import (
     start_solver_log_cleanup_worker,
     stop_solver_log_cleanup_worker,
 )
+from app.services.schedule_request_worker import (
+    start_schedule_request_worker,
+    stop_schedule_request_worker,
+)
 from app.api import protected_router, users, wecom_auth
 from app.api.exception_handlers import register_domain_exception_handlers
 
@@ -75,6 +79,7 @@ def start_background_workers():
     start_instrument_utilization_snapshot_worker()
     start_task_slot_transition_worker()
     start_solver_log_cleanup_worker()
+    start_schedule_request_worker()
 
 
 @app.on_event("shutdown")
@@ -87,6 +92,7 @@ def stop_background_workers():
     stop_instrument_utilization_snapshot_worker()
     stop_task_slot_transition_worker()
     stop_solver_log_cleanup_worker()
+    stop_schedule_request_worker()
 
 app.add_middleware(
     CORSMiddleware,

@@ -285,6 +285,16 @@ const slotsByQuarter = computed(() => {
   return map
 })
 
+const pendingSegmentsByInstrument = computed(() => {
+  const map = new Map<number, PendingApprovalSegment[]>()
+  for (const segment of pendingSegments.value) {
+    const items = map.get(segment.instrument_id) || []
+    items.push(segment)
+    map.set(segment.instrument_id, items)
+  }
+  return map
+})
+
 const faultDisplaySlots = computed<TimeSlot[]>(() =>
   faults.value
     .map(faultToDisplaySlot)
@@ -314,7 +324,8 @@ function computeLanes() {
   const map: Record<number, Record<number, number>> = {}
   const counts: Record<number, number> = {}
   for (const inst of instruments.value) {
-    const instSlots = displaySlots.value.filter(s => s.instrument_id === inst.id).sort((a, b) => dayjs(a.plan_start).valueOf() - dayjs(b.plan_start).valueOf())
+    const instSlots = [...(slotsByInstrument.value.get(inst.id) || [])]
+      .sort((a, b) => dayjs(a.plan_start).valueOf() - dayjs(b.plan_start).valueOf())
     const lanes: { end: dayjs.Dayjs }[] = []
     const assign: Record<number, number> = {}
     for (const slot of instSlots) {
@@ -437,8 +448,7 @@ function buildQuarterFragments(slot: GanttSlot, quarter: number) {
     后端算好起止时刻，前端按普通时间块的方式渲染，长度即真实占用跨度，
     一眼能看出这些活会做到哪一天。每个项目单独一段，不合并。 */
 function getPendingSegments(instrumentId: number, quarter?: number) {
-  return pendingSegments.value
-    .filter(segment => segment.instrument_id === instrumentId)
+  return (pendingSegmentsByInstrument.value.get(instrumentId) || [])
     .map(segment => ({
       segment,
       style: getBarStyle(

@@ -31,6 +31,11 @@ class Project(Base):
         back_populates="project",
         cascade="all, delete-orphan",
     )
+    schedule_run_requests = relationship(
+        "ScheduleRunRequest",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
     manager = relationship("User")
     @property
     def manager_name(self):
@@ -486,6 +491,34 @@ class ScheduleEpoch(Base):
     id = Column(Integer, primary_key=True)
     version = Column(Integer, nullable=False, default=0)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+
+class ScheduleRunRequest(Base):
+    """持久化的排程请求；求解器仍在 Worker 内存中运行。"""
+    __tablename__ = "schedule_run_request"
+    id = Column(String(36), primary_key=True)
+    project_id = Column(Integer, ForeignKey("project.id"), nullable=False, index=True)
+    request_type = Column(String(40), nullable=False, default="project_plan")
+    requested_by = Column(Integer, ForeignKey("user.id"))
+    priority = Column(Integer, nullable=False, default=50)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    # 仅对 queued/running 请求做服务层去重；历史完成记录必须允许再次发起。
+    dedupe_key = Column(String(160), nullable=False, index=True)
+    base_schedule_epoch = Column(Integer)
+    payload = Column(JSON, nullable=False, default=dict)
+    result = Column(JSON)
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    heartbeat_at = Column(DateTime)
+
+    __table_args__ = (
+        Index("ix_schedule_request_active", "project_id", "request_type", "status", "created_at"),
+    )
+
+    project = relationship("Project", back_populates="schedule_run_requests")
+    requester = relationship("User")
 
 
 class ScheduleDeadlineRecommendationJob(Base):

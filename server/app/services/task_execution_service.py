@@ -73,14 +73,22 @@ def start_task_execution(
     _normalize_future_continuations(task, slot)
     ensure_running_state_consistent(task, slot)
     ensure_running_continuation_consistent(task, slot)
+    execution_operator_id = operator_id or _default_execution_operator_id(task)
     db.add(TaskExecutionSegment(
         task_id=task.id,
         slot_id=slot.id,
         instrument_id=slot.instrument_id,
-        operator_id=operator_id,
+        operator_id=execution_operator_id,
         started_at=started_at,
     ))
     return {"status": "ok"}
+
+
+def _default_execution_operator_id(task: Task) -> int | None:
+    """Use the assigned operator when an internal resume has no actor id."""
+    if task.requires_human and task.assignee_id:
+        return task.assignee_id
+    return None
 
 
 def ensure_running_state_consistent(task: Task, slot: TimeSlot) -> None:

@@ -451,7 +451,7 @@ DetectionTaskOut.model_rebuild()
 
 
 class ProjectPlanApplyResponse(BaseModel):
-    status: Literal["applied", "no_changes", "insert_confirmation_required", "error"]
+    status: Literal["queued", "applied", "no_changes", "insert_confirmation_required", "error"]
     message: Optional[str] = None
     project_id: int
     schedule_run_id: Optional[str] = None
@@ -464,6 +464,7 @@ class ProjectPlanApplyResponse(BaseModel):
     created: int = 0
     id_map: List[dict] = []
     schedule_failure: Optional[dict] = None
+    request_id: Optional[str] = None
 
 
 class ScheduleDeadlineRecommendationJobResponse(BaseModel):
@@ -542,6 +543,13 @@ class NightRunRequest(BaseModel):
     remark: Optional[str] = None
 
 # ---- Stats ----
+class InstrumentOperatorUtilization(BaseModel):
+    operator_id: Optional[int] = None
+    operator_name: str
+    planned_hours: float
+    actual_run_hours: float
+    utilization_rate: float
+
 class UtilizationStats(BaseModel):
     instrument_id: Optional[int] = None
     instrument_name: str
@@ -553,6 +561,7 @@ class UtilizationStats(BaseModel):
     actual_utilization_rate: float
     utilization_rate: float
     buffer_consumed_rate: float
+    operators: List[InstrumentOperatorUtilization] = Field(default_factory=list)
 
 class DashboardData(BaseModel):
     total_instruments: int

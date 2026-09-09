@@ -86,6 +86,7 @@ class ApprovalGateActionOut(BaseModel):
     schedule_status: str
     schedule_message: str | None = None
     preview_token: str | None = None
+    request_id: str | None = None
 
 
 class PendingApprovalSegmentOut(BaseModel):

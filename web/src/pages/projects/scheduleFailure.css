@@ -10,11 +10,28 @@
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  padding: 0;
+  align-items: flex-start;
+  padding: 14px 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
   color: #334155;
 }
-.schedule-failure-header strong { color: #0f172a; }
-.schedule-failure-header span { font-variant-numeric: tabular-nums; }
+.schedule-failure-header-main { display: grid; gap: 3px; min-width: 0; }
+.schedule-failure-header strong { color: #991b1b; font-size: 16px; }
+.schedule-failure-header-main span { color: #475569; font-size: 13px; }
+.schedule-failure-deadline { display: grid; gap: 2px; flex: 0 0 auto; text-align: right; }
+.schedule-failure-deadline small { color: #64748b; font-size: 11px; }
+.schedule-failure-deadline b { color: #0f172a; font-size: 13px; font-variant-numeric: tabular-nums; }
+.schedule-failure-summary {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+}
+.schedule-failure-summary strong { color: #9a3412; font-size: 14px; }
+.schedule-failure-summary p { margin: 4px 0 0; color: #7c2d12; font-size: 13px; }
 .schedule-failure-plain { white-space: pre-line; }
 .schedule-failure-section { margin-top: 18px; }
 .schedule-failure-section h3 {
@@ -114,6 +131,7 @@
     max-width: calc(100vw - 32px);
   }
   .schedule-failure-header { flex-direction: column; gap: 3px; }
+  .schedule-failure-deadline { text-align: left; }
   .schedule-failure-recommendation { padding-right: 12px; }
   .schedule-failure-recommendation > span { position: static; display: block; margin-top: 5px; }
 }

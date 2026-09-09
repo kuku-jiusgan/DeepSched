@@ -171,7 +171,8 @@ function confirmApprove(gate: ApprovalGate) {
     async onOk() {
       try {
         const result = await approveApprovalGate(gate.id, { approval_note: gate.approval_note })
-        if (result.schedule_status === 'confirmation_required') message.warning(result.schedule_message || '签批已记录，请继续确认跨项目排程影响')
+        if (result.schedule_status === 'queued') message.info(result.schedule_message || '排程正在进行中，签批请求已进入队列')
+        else if (result.schedule_status === 'confirmation_required') message.warning(result.schedule_message || '签批已记录，请继续确认跨项目排程影响')
         else message.success(result.schedule_message || '已记录客户审核同意')
         emit('refreshed')
       } catch (error: unknown) { message.error(errorDetail(error, '记录签批同意失败')); throw error }

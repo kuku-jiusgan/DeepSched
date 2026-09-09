@@ -12,7 +12,7 @@
         format="YYYY-MM-DD"
       />
       <a-button type="primary" :loading="loading" @click="loadDashboard">查询</a-button>
-      <a-button @click="resetRange">最近 7 天</a-button>
+      <a-button @click="resetRange">本月</a-button>
     </div>
 
     <div class="stat-grid">
@@ -41,7 +41,7 @@
           <div class="chart-card-body">
             <a-empty v-if="!utilization.length" description="暂无数据" />
             <div v-else class="utilization-chart">
-              <div v-for="item in utilization" :key="item.instrument_id" class="utilization-item">
+              <div v-for="item in utilization" :key="item.instrument_id ?? item.instrument_code ?? item.instrument_name" class="utilization-item">
                 <div class="bar-area">
                   <div class="bar-pair">
                     <a-tooltip :title="`预期使用率 ${rateText(item.expected_utilization_rate)}（计划 ${item.scheduled_hours}h / 可用 ${item.total_available_hours}h）`">
@@ -83,7 +83,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 const data = ref<DashboardData | null>(null)
 const utilization = ref<UtilizationStats[]>([])
 const loading = ref(false)
-const dateRange = ref<[Dayjs, Dayjs]>([dayjs().subtract(7, 'day'), dayjs()])
+const dateRange = ref<[Dayjs, Dayjs]>([dayjs().startOf('month'), dayjs()])
 const router = useRouter()
 
 onMounted(loadDashboard)
@@ -115,7 +115,7 @@ function disabledFutureDate(current: Dayjs) {
 }
 
 function resetRange() {
-  dateRange.value = [dayjs().subtract(7, 'day'), dayjs()]
+  dateRange.value = [dayjs().startOf('month'), dayjs()]
   loadDashboard()
 }
 

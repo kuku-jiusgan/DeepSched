@@ -300,6 +300,7 @@ const baseMenuItems = [
   ]},
   { key: '/reports', icon: icon('BarChartOutlined'), label: '报表中心', mobile: true, mobileLabel: '管理查看', children: [
     { key: '/operations/reports', icon: icon('FileTextOutlined'), label: '项目工时统计报表', mobile: true },
+    { key: '/operations/instrument-utilization', icon: icon('BarChartOutlined'), label: '仪器利用率报表', mobile: true },
   ]},
   { key: '/schedule', icon: icon('ScheduleOutlined'), label: '排程管理', children: [
     { key: '/schedule/rules', icon: icon('ToolOutlined'), label: '排程规则配置' },

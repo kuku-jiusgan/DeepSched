@@ -21,6 +21,9 @@ from app.services.schedule_insert_resources import (
 from app.services.project_plan_apply_helpers import clear_replanned_project_dirty
 from app.services.task_delay_status_service import reset_task_delay
 from app.services.schedule_working_time_service import working_hours_between
+from app.services.schedule_priority_dependency_service import (
+    _tasks_with_unfinished_predecessors,
+)
 
 
 class ScheduleInsertNotFoundError(Exception):
@@ -409,6 +412,7 @@ def _load_lower_priority_movable_tasks(
     unstarted_projects_only: bool = False,
     minimum_start: datetime | None = None,
     same_priority_after: datetime | None = None,
+    exclude_tasks_with_unfinished_predecessors: bool = False,
 ) -> list[Task]:
     selected_assignee_ids = selected_assignee_ids or set()
     priority_filter = (
@@ -435,6 +439,12 @@ def _load_lower_priority_movable_tasks(
     ).order_by(Project.priority, Task.created_at, Task.id).all()
     if not candidate_tasks:
         return []
+
+    unfinished_predecessor_task_ids = set()
+    if exclude_tasks_with_unfinished_predecessors:
+        unfinished_predecessor_task_ids = _tasks_with_unfinished_predecessors(
+            db, {task.id for task in candidate_tasks},
+        )
 
     # 下面三项原本都是在循环里逐个任务查的，一次排程光这个函数就发了 40 多条
     # SQL。判定规则一字未改，只是把"每个任务问一遍"换成"一次问清楚这批任务
@@ -484,6 +494,7 @@ def _load_lower_priority_movable_tasks(
         if task.project_id not in started_project_ids
         and task.id not in protected_task_ids
         and task.id in future_slot_task_ids
+        and task.id not in unfinished_predecessor_task_ids
     ]
 
 

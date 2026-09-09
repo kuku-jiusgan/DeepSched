@@ -66,29 +66,40 @@ export function useInstrumentGanttData(options: InstrumentGanttDataOptions) {
 
   async function performLoad(silent: boolean) {
     if (!silent) loading.value = true
+    let initialDataLoaded = false
     try {
       const range = visibleRange(options.viewMode.value, options.cursorDate.value)
-      // 待签批工时段以前是等前面全部返回之后再单独发一次，白白多串一个来回。
-      // 它和其余请求之间没有依赖，一起并发即可。
-      const [[timeslots, reservations], [instrumentItems, faultItems, types], pending] = await Promise.all([
+      // 首屏只等待甘特图绘制所需的数据；辅助标记随后补齐，避免慢接口阻塞整个页面。
+      const [[timeslots, reservations], instrumentItems] = await Promise.all([
         Promise.all([getTimeslots(range, REQUEST_TIMEOUT_MS), getInstrumentBridgeReservations(range, REQUEST_TIMEOUT_MS)]),
-        Promise.all([getInstruments(), getInstrumentFaults(), getTaskTypes()]),
-        getPendingApprovalSegments(),
+        getInstruments(),
       ])
-      pendingSegments.value = pending
       slots.value = timeslots
       bridgeReservations.value = reservations
       instruments.value = instrumentItems
-      faults.value = faultItems
-      taskTypeMap.value = Object.fromEntries(types.map(type => [type.code, type.name]))
+      initialDataLoaded = true
+      if (!silent) loading.value = false
+      await options.afterLoad()
+
+      const [faultResult, typeResult, pendingResult] = await Promise.allSettled([
+        getInstrumentFaults(),
+        getTaskTypes(),
+        getPendingApprovalSegments(),
+      ])
+      if (faultResult.status === 'fulfilled') faults.value = faultResult.value
+      if (typeResult.status === 'fulfilled') taskTypeMap.value = Object.fromEntries(typeResult.value.map(type => [type.code, type.name]))
+      if (pendingResult.status === 'fulfilled') pendingSegments.value = pendingResult.value
+      await options.afterLoad()
     } catch (error: unknown) {
       if (!silent) {
         const isTimeout = error instanceof Error && error.message.toLowerCase().includes('timeout')
         message.error(isTimeout ? '甘特图数据加载超时，请稍后重试' : '甘特图数据加载失败')
       }
     } finally {
-      if (!silent) loading.value = false
-      await options.afterLoad()
+      if (!silent && !initialDataLoaded) {
+        loading.value = false
+        await options.afterLoad()
+      }
     }
   }
 

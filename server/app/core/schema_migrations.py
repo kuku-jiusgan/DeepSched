@@ -12,6 +12,7 @@ def ensure_runtime_schema(engine) -> None:
         ScheduleDeadlineRecommendationJob,
         InstrumentBridgeReservation,
         ScheduleEpoch,
+        ScheduleRunRequest,
         ScheduleSlotChangeLog,
         TaskNightRun,
     )
@@ -25,6 +26,8 @@ def ensure_runtime_schema(engine) -> None:
     ScheduleDeadlineRecommendationJob.__table__.create(bind=engine, checkfirst=True)
     InstrumentBridgeReservation.__table__.create(bind=engine, checkfirst=True)
     ScheduleEpoch.__table__.create(bind=engine, checkfirst=True)
+    ScheduleRunRequest.__table__.create(bind=engine, checkfirst=True)
+    _ensure_schedule_request_indexes(engine)
     _ensure_schedule_epoch_row(engine)
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
@@ -182,6 +185,27 @@ def ensure_runtime_schema(engine) -> None:
                 "UPDATE task SET assignee_id = ("
                 "SELECT project.manager_id FROM project WHERE project.id = task.project_id"
                 ") WHERE is_external_gate = 1 AND assignee_id IS NULL"
+            ))
+
+    # Historical execution rows created by automatic resume/completion paths did not
+    # always carry the actor id.  For human tasks, the assigned operator is the only
+    # deterministic source available; fill only NULL values and never overwrite an
+    # explicitly recorded operator.
+    if "task_execution_segment" in table_names and "task" in table_names:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE task_execution_segment AS segment "
+                "JOIN task ON task.id = segment.task_id "
+                "SET segment.operator_id = task.assignee_id "
+                "WHERE segment.operator_id IS NULL "
+                "AND task.requires_human = 1 "
+                "AND task.assignee_id IS NOT NULL"
+            ) if engine.dialect.name == "mysql" else text(
+                "UPDATE task_execution_segment SET operator_id = ("
+                "SELECT task.assignee_id FROM task "
+                "WHERE task.id = task_execution_segment.task_id "
+                "AND task.requires_human = 1 AND task.assignee_id IS NOT NULL"
+                ") WHERE operator_id IS NULL"
             ))
 
     if "instrument_fault" in table_names:
@@ -386,3 +410,19 @@ def _ensure_schedule_epoch_row(engine) -> None:
                 ),
                 {"now": datetime.now()},
             )
+
+
+def _ensure_schedule_request_indexes(engine) -> None:
+    """兼容早期已创建的 dedupe 唯一索引，允许历史请求后再次排程。"""
+    inspector = inspect(engine)
+    if "schedule_run_request" not in inspector.get_table_names() or engine.dialect.name != "mysql":
+        return
+    unique_indexes = [
+        index["name"] for index in inspector.get_indexes("schedule_run_request")
+        if index.get("unique") and index.get("column_names") == ["dedupe_key"]
+    ]
+    if not unique_indexes:
+        return
+    with engine.begin() as connection:
+        for index_name in unique_indexes:
+            connection.execute(text(f"ALTER TABLE schedule_run_request DROP INDEX `{index_name}`"))

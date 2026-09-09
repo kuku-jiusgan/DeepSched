@@ -34,18 +34,29 @@ async function pollRecommendation() {
   try {
     const job = await getDeadlineRecommendation(props.projectId, jobId)
     jobStatus.value = job.status
-    if (job.status === 'completed' && diagnostic.value) {
+    if (diagnostic.value) {
       diagnostic.value = {
         ...diagnostic.value,
-        recommendations: job.recommendations || (job.recommendation ? [job.recommendation] : []),
         recommendation_job: {
           ...(diagnostic.value.recommendation_job || { id: jobId }),
-          status: 'completed',
+          status: job.status,
         },
+      }
+      if (job.status === 'completed') {
+        diagnostic.value.recommendations = job.recommendations || (job.recommendation ? [job.recommendation] : [])
       }
     }
   } catch {
     jobStatus.value = 'failed'
+    if (diagnostic.value) {
+      diagnostic.value = {
+        ...diagnostic.value,
+        recommendation_job: {
+          ...(diagnostic.value.recommendation_job || { id: jobId }),
+          status: 'failed',
+        },
+      }
+    }
   }
   if (['pending', 'running'].includes(jobStatus.value)) {
     timer = setTimeout(pollRecommendation, 1500)

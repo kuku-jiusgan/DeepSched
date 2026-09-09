@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.database import Base
 from app.models import Instrument, InstrumentBridgeReservation, Project, Task, TimeSlot, User
 from app.services.instrument_bridge_sync_service import (
+    active_bridge_reservation_views,
     rebuild_instrument_bridge_reservations,
     valid_bridge_reservations,
 )
@@ -50,6 +51,13 @@ class InstrumentBridgeSyncServiceTest(unittest.TestCase):
         self.assertEqual(0, self.db.query(InstrumentBridgeReservation).count())
         self.assertEqual(0, rebuild_instrument_bridge_reservations(self.db, "run-2"))
 
+    def test_active_view_recovers_missing_persisted_reservation(self):
+        views = active_bridge_reservation_views(self.db)
+
+        self.assertEqual(1, len(views))
+        self.assertEqual(self.manual_slot.task_id, views[0]["task_id"])
+        self.assertEqual(self.previous_slot.instrument_id, views[0]["instrument_id"])
+
     def test_other_assignee_work_between_tasks_prevents_bridge(self):
         self.manual_slot.plan_start = datetime(2026, 8, 26, 11)
         self.manual_slot.plan_end = datetime(2026, 8, 26, 12)
@@ -66,6 +74,22 @@ class InstrumentBridgeSyncServiceTest(unittest.TestCase):
         self.db.commit()
 
         self.assertEqual(0, rebuild_instrument_bridge_reservations(self.db, "run-2"))
+
+    def test_other_instrument_task_does_not_hide_following_task(self):
+        other_instrument = Instrument(code="I-2", name="另一台仪器")
+        self.db.add(other_instrument)
+        self.db.flush()
+        other = self._task(
+            self.manual_slot.task.project_id,
+            self.manual_slot.task.assignee_id + 1,
+            "另一台仪器任务",
+            True,
+        )
+        self.db.flush()
+        self._slot(other.id, other_instrument.id, 11, 12)
+        self.db.commit()
+
+        self.assertEqual(1, rebuild_instrument_bridge_reservations(self.db, "run-2"))
 
     def test_consecutive_manual_tasks_are_both_reserved(self):
         second_manual = self._task(

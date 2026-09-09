@@ -39,7 +39,9 @@ def dashboard(
     _force_refresh: bool = False,
 ):
     settings = get_settings()
-    window_start, window_end = _stats_window(start_date, end_date, settings)
+    window_start, window_end = _stats_window(
+        start_date, end_date, settings, default_to_current_month=False,
+    )
     snapshot_key = _dashboard_snapshot_key(window_start, window_end)
     snapshot_payload = load_dashboard_snapshot(db, snapshot_key)
     if snapshot_payload is None and not _force_refresh:
@@ -130,7 +132,9 @@ def utilization(
     db: Session = Depends(get_db),
 ):
     settings = get_settings()
-    window_start, window_end = _stats_window(start_date, end_date, settings)
+    window_start, window_end = _stats_window(
+        start_date, end_date, settings, default_to_current_month=True,
+    )
     cache_key = _utilization_snapshot_key(window_start, window_end)
     snapshot = load_utilization_snapshot(db, cache_key)
     if snapshot is None:
@@ -149,9 +153,20 @@ def _utilization_snapshot_key(window_start: datetime, window_end: datetime) -> s
     return f"{start.isoformat()}|{end.isoformat()}"
 
 
-def _stats_window(start_date: datetime | None, end_date: datetime | None, settings) -> tuple[datetime, datetime]:
+def _stats_window(
+    start_date: datetime | None,
+    end_date: datetime | None,
+    settings,
+    *,
+    default_to_current_month: bool,
+) -> tuple[datetime, datetime]:
     now = datetime.now()
-    window_start = start_date or (now - timedelta(days=settings.STATS_WINDOW_DAYS))
+    default_start = (
+        now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if default_to_current_month
+        else now - timedelta(days=settings.STATS_WINDOW_DAYS)
+    )
+    window_start = start_date or default_start
     window_end = end_date or now
     if window_end.date() > now.date():
         raise HTTPException(status_code=400, detail="筛选结束日期不能晚于当前日期")

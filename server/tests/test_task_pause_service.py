@@ -256,14 +256,24 @@ class TaskPauseServiceTest(unittest.TestCase):
 
         self.assertEqual("paused", self.source_task.status)
         self.assertEqual("running", self.target_task.status)
-        self.assertIsNotNone(self.target_slot.actual_start)
-        self.assertIsNone(self.target_slot.actual_end)
-        self.assertLess(self.target_slot.plan_start, original_target_start)
-        self.assertLessEqual(self.target_slot.plan_start, self.target_slot.actual_start)
+        running_slot = next(
+            slot for slot in self.target_task.time_slots
+            if slot.lifecycle_status == "active" and slot.status == "running"
+        )
+        self.assertIsNotNone(running_slot.actual_start)
+        self.assertIsNone(running_slot.actual_end)
+        self.assertLess(running_slot.plan_start, original_target_start)
         self.assertLess(
-            self.target_slot.actual_start - self.target_slot.plan_start,
+            abs(running_slot.actual_start - running_slot.plan_start),
             timedelta(minutes=30),
         )
+        self.assertEqual("superseded", self.target_slot.lifecycle_status)
+        self.assertIsNone(self.target_slot.actual_start)
+        target_segment = self.db.query(TaskExecutionSegment).filter(
+            TaskExecutionSegment.task_id == self.target_task.id,
+            TaskExecutionSegment.ended_at.is_(None),
+        ).one()
+        self.assertEqual(running_slot.id, target_segment.slot_id)
         self.assertEqual(2, self.db.query(TaskExecutionSegment).count())
 
     def test_pause_and_switch_moves_the_whole_target_before_source_remainder(self):

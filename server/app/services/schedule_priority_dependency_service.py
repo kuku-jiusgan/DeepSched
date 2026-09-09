@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.models import Project, Task
-from app.services.schedule_resource_closure_service import active_slot_starts
+from app.models import Project, Task, TaskDependency
 
 
 def build_schedule_priority_dependencies(
@@ -28,25 +27,50 @@ def _inserted_detection_dependencies(
 ) -> set[tuple[int, int]]:
     if project.project_kind != "detection":
         return set()
-    starts = active_slot_starts(db, [*selected_tasks, *movable_tasks])
-    selected_start = min(
-        (starts[task.id] for task in selected_tasks if task.id in starts),
-        default=datetime.now(),
+    blocked_movable_ids = _tasks_with_unfinished_predecessors(
+        db, {task.id for task in movable_tasks},
     )
     return {
         (movable.id, selected.id)
         for movable in movable_tasks
         for selected in selected_tasks
-        if (
-            int(movable.project.priority or 3) > int(project.priority or 3)
-            or (
-                int(movable.project.priority or 3) == int(project.priority or 3)
-                and starts.get(movable.id, selected_start)
-                >= starts.get(selected.id, selected_start)
-            )
-        )
+        if movable.id not in blocked_movable_ids
+        if int(movable.project.priority or 3) > int(project.priority or 3)
         and _shares_resource(movable, selected)
     }
+
+
+def _tasks_with_unfinished_predecessors(
+    db,
+    task_ids: set[int],
+    allowed_predecessor_ids: set[int] | None = None,
+) -> set[int]:
+    if not task_ids:
+        return set()
+    status_by_id = {task.id: task.status for task in db.query(Task).all()}
+    predecessors: dict[int, set[int]] = {}
+    for dependency in db.query(TaskDependency).all():
+        predecessors.setdefault(dependency.task_id, set()).add(
+            dependency.predecessor_id,
+        )
+    blocked: set[int] = set()
+    allowed_predecessor_ids = allowed_predecessor_ids or set()
+    for task_id in task_ids:
+        pending = list(predecessors.get(task_id, set()))
+        visited: set[int] = set()
+        while pending:
+            predecessor_id = pending.pop()
+            if predecessor_id in visited:
+                continue
+            visited.add(predecessor_id)
+            if (
+                predecessor_id not in allowed_predecessor_ids
+                and status_by_id.get(predecessor_id) not in {"done", "completed"}
+            ):
+                blocked.add(task_id)
+                break
+            pending.extend(predecessors.get(predecessor_id, set()))
+    return blocked
 
 
 def _fixed_detection_dependencies(db, replan_tasks: list[Task]) -> set[tuple[int, int]]:

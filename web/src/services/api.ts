@@ -76,6 +76,17 @@ export const getProjectHoursReport = (params?: ProjectHoursReportQuery): Promise
 export const exportProjectHoursReport = (params?: ProjectHoursReportQuery): Promise<Blob> =>
   api.get('/reports/project-hours/export', { params, responseType: 'blob' }).then(response => response.data as Blob)
 
+export interface InstrumentUtilizationReportQuery {
+  start_date?: string
+  end_date?: string
+}
+
+export const getInstrumentUtilizationReport = (params?: InstrumentUtilizationReportQuery): Promise<UtilizationStats[]> =>
+  api.get<UtilizationStats[]>('/reports/instrument-utilization', { params }).then(response => response.data)
+
+export const exportInstrumentUtilizationReport = (params?: InstrumentUtilizationReportQuery): Promise<Blob> =>
+  api.get('/reports/instrument-utilization/export', { params, responseType: 'blob' }).then(response => response.data as Blob)
+
 export const deleteProject = (id: number): Promise<void> =>
   api.delete(`/projects/${id}`)
 
@@ -311,6 +322,17 @@ export const confirmProjectPlanInsert = (projectId: number, previewToken: string
     project_id: projectId,
     preview_token: previewToken,
   }).then(r => r.data)
+
+export const getScheduleRequest = (requestId: string) =>
+  api.get<{
+    id: string; project_id: number; request_type: string; priority: number;
+    status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'superseded';
+    message?: string | null; result?: Record<string, unknown> | null; error_message?: string | null;
+    created_at: string; started_at?: string | null; finished_at?: string | null;
+  }>(`/schedules/schedule-requests/${requestId}`).then(r => r.data)
+
+export const cancelScheduleRequest = (requestId: string) =>
+  api.post(`/schedules/schedule-requests/${requestId}/cancel`).then(r => r.data)
 
 export const startTask = (slotId: number): Promise<{ status: string }> =>
   api.post(`/schedules/timeslots/${slotId}/start`).then(r => r.data);

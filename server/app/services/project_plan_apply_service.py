@@ -21,6 +21,7 @@ from app.services.project_plan_apply_helpers import (
 from app.services.scheduler_persistence import ACTIVE_EXECUTION_STATUSES
 from app.services.task_delay_status_service import reset_task_delay
 from app.services.schedule_priority_dependency_service import build_schedule_priority_dependencies
+from app.services.schedule_priority_dependency_service import _tasks_with_unfinished_predecessors
 from app.services.schedule_slot_protection_service import (
     task_has_immovable_slot,
     tasks_with_immovable_slot,
@@ -43,23 +44,13 @@ from app.services.schedule_insert_service import (
     _selected_instrument_ids,
     _task_windows,
 )
-from app.services.schedule_resource_closure_service import (
-    earliest_active_slot_start,
-    load_resource_closure_movable_tasks,
-)
+from app.services.schedule_resource_closure_service import load_resource_closure_movable_tasks
+from app.services.project_plan_errors import ProjectPlanInvalidError, ProjectPlanNotFoundError
+from app.services.project_plan_feasibility_service import validate_immediate_approval_feasibility
 
 
 MOVABLE_TIERS = ["confirmed", "forecast"]
 MOVABLE_SLOT_STATUSES = ["scheduled", "paused", "blocked", "interrupted"]
-
-
-class ProjectPlanNotFoundError(Exception):
-    pass
-
-
-class ProjectPlanInvalidError(Exception):
-    pass
-
 
 def apply_project_plan(
     db,
@@ -110,6 +101,7 @@ def confirm_project_plan_insert(
     db,
     data: ProjectPlanInsertConfirmRequest,
     approval_context: ApprovalScheduleContext | None = None,
+    preserve_existing: bool = False,
 ) -> ProjectPlanApplyResponse:
     project, selected_tasks = _load_project_candidates(db, data.project_id)
     if not selected_tasks:
@@ -132,7 +124,7 @@ def confirm_project_plan_insert(
     if preview_token != data.preview_token:
         raise ProjectPlanInvalidError("计划或排程数据已变化，请重新计算影响")
     result = _execute_replan(
-        db, project, selected_tasks, movable_tasks, commit=True,
+        db, project, selected_tasks, movable_tasks, commit=not preserve_existing,
         approval_context=approval_context,
     )
     if result.status != "applied":
@@ -233,6 +225,20 @@ def _execute_replan(
             db, replan_task_ids,
         ).with_entities(TimeSlot.id).all()
     }
+
+    try:
+        validate_immediate_approval_feasibility(
+            db,
+            project=project,
+            replan_tasks=replan_tasks,
+            released_slot_ids=released_slot_ids,
+        )
+    except Exception:
+        if savepoint:
+            savepoint.rollback()
+        elif rollback_on_failure:
+            db.rollback()
+        raise
     # 顺延这些任务的时间是对的，改它们的执行状态不是。暂停/进行中的任务原本也允许
     # 被顺延（候选筛选特意放行了 paused），但这里一路重置成 pending、求解后又落成
     # scheduled，别人项目的一次保存并排程就把这个任务的暂停状态和暂停原因抹掉了。
@@ -371,17 +377,13 @@ def _load_insert_movable_tasks(
     selected_ids = {task.id for task in selected_tasks}
     is_detection_priority_insert = project.project_kind == "detection"
     insert_priority = int(project.priority or 3)
-    same_priority_after = (
-        earliest_active_slot_start(db, selected_tasks) or datetime.now()
-        if is_detection_priority_insert else None
-    )
     movable = load_resource_closure_movable_tasks(
         db,
         insert_priority,
         selected_tasks,
-        include_same_priority=True,
+        include_same_priority=not is_detection_priority_insert,
         minimum_start=approval_context.anchor_at if approval_context else None,
-        same_priority_after=same_priority_after,
+        exclude_tasks_with_unfinished_predecessors=is_detection_priority_insert,
     )
     approval_movable = load_approval_resource_queue_tasks(
         db,
@@ -398,6 +400,12 @@ def _load_insert_movable_tasks(
     )
     candidates = _unique_tasks(movable + deadline_movable + approval_movable)
     candidates = expand_movable_downstream_tasks(db, candidates)
+    if is_detection_priority_insert:
+        candidate_ids = {task.id for task in candidates}
+        blocked_ids = _tasks_with_unfinished_predecessors(
+            db, candidate_ids, allowed_predecessor_ids=candidate_ids,
+        )
+        candidates = [task for task in candidates if task.id not in blocked_ids]
     if approval_context:
         candidates = [
             task for task in candidates

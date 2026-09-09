@@ -51,7 +51,11 @@ def calculate_instrument_utilization(
         # 利用率分母是筛选窗口的自然总时长；只有分子按有效工作时段计数。
         available_hours = _covered_hours(calendar_ranges)
         scheduled_hours = _hours_within(
-            [(slot.plan_start, slot.plan_end) for slot in slots],
+            [
+                (slot.plan_start, slot.plan_end)
+                for slot in slots
+                if _slot_counts_as_planned(slot)
+            ],
             effective_ranges,
         )
         actual_ranges = _subtract_ranges([
@@ -82,8 +86,13 @@ def calculate_instrument_utilization(
 def _load_slots_by_instrument(db, window_start, window_end):
     rows = db.query(TimeSlot).filter(
         TimeSlot.instrument_id.isnot(None),
-        TimeSlot.plan_end > window_start,
-        TimeSlot.plan_start < window_end,
+        (
+            (TimeSlot.plan_end > window_start) & (TimeSlot.plan_start < window_end)
+        ) | (
+            TimeSlot.actual_start.isnot(None)
+            & (TimeSlot.actual_start < window_end)
+            & (TimeSlot.actual_end.is_(None) | (TimeSlot.actual_end > window_start))
+        ),
     ).all()
     return _group_slots(rows)
 
@@ -144,18 +153,40 @@ def _group_by_instrument(rows):
 
 def _actual_ranges_from_data(slots, segments, window_start, window_end):
     segmented_task_ids = {segment.task_id for segment in segments}
+    segmented_slot_ids = {segment.slot_id for segment in segments}
     ranges = [
         (max(segment.started_at, window_start), min(segment.ended_at or window_end, window_end))
         for segment in segments
+        if segment.ended_at is not None or _slot_can_have_open_actual(slots, segment.slot_id)
     ]
     ranges.extend(
         (max(slot.actual_start, window_start), min(slot.actual_end or window_end, window_end))
         for slot in slots
         if slot.task_id not in segmented_task_ids
         and slot.actual_start is not None
+        and (slot.actual_end is not None or _slot_can_have_open_actual(slots, slot.id))
         and (slot.actual_end or window_end) > window_start
     )
     return ranges
+
+
+def _slot_can_have_open_actual(slots, slot_id: int) -> bool:
+    slot = next((item for item in slots if item.id == slot_id), None)
+    return bool(
+        slot
+        and slot.lifecycle_status == "active"
+        and slot.status == "running"
+    )
+
+
+def _slot_counts_as_planned(slot: TimeSlot) -> bool:
+    return bool(
+        slot.lifecycle_status == "active"
+        and slot.status != "cancelled"
+        and slot.plan_start
+        and slot.plan_end
+        and slot.plan_end > slot.plan_start
+    )
 
 
 def _effective_work_ranges(

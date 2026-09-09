@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.users import auth_token, get_current_user
@@ -17,10 +18,12 @@ from app.services.project_plan_draft_service import (
     commit_project_plan_drafts,
     save_and_schedule_project_plan,
 )
+from app.services.project_plan_errors import ProjectPlanInvalidError
 from app.services.schedule_deadline_recommendation_job_service import (
     get_deadline_recommendation_job,
 )
 from app.services.schedule_run_lock_service import ScheduleBusyError
+from app.services.schedule_request_service import enqueue_schedule_request, request_message
 
 
 router = APIRouter(prefix="/api/v1/projects", tags=["project-plan-drafts"])
@@ -37,9 +40,27 @@ def save_and_schedule(project_id: int, data: ProjectPlanSaveAndScheduleRequest, 
         raise HTTPException(status_code=403, detail=str(exc))
     except ProjectPlanDraftInvalidError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except ProjectPlanInvalidError as exc:
+        db.rollback()
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "message": str(exc),
+                "schedule_failure": exc.schedule_failure,
+            },
+        )
     except ScheduleBusyError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc))
+        user = get_current_user(token, db)
+        request = enqueue_schedule_request(
+            db, project_id, user.id, request_type="save_and_schedule",
+            payload={"project_id": project_id, "requested_by": user.id, "data": data.model_dump(mode="json")},
+        )
+        return ProjectPlanApplyResponse(
+            status="queued", project_id=project_id, request_id=request.id,
+            message=request_message(request),
+        )
     except Exception:
         db.rollback()
         logger.exception("项目计划保存并排程失败 project_id=%s", project_id)

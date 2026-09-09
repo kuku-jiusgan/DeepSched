@@ -138,6 +138,40 @@ class SchedulerApprovalGateForecastTest(unittest.TestCase):
         solved_task_ids = {task.id for task in spy.call_args.kwargs["tasks"]}
         self.assertNotIn(verify.id, solved_task_ids)
 
+    def test_immediate_approval_probe_keeps_downstream_tasks_in_solver(self):
+        project, _develop, verify = self._build_plan(
+            self.horizon_start + timedelta(days=4),
+        )
+        verify_gate = self.db.query(Task).filter(
+            Task.project_id == project.id,
+            Task.is_external_gate.is_(True),
+        ).one()
+        verify_gate.gate_status = "waiting_approval"
+        verify_gate.expected_approval_at = self.horizon_start + timedelta(days=20)
+        self.db.commit()
+
+        with patch(
+            "app.services.scheduler.build_task_variables",
+            wraps=__import__(
+                "app.services.scheduler", fromlist=["build_task_variables"],
+            ).build_task_variables,
+        ) as spy:
+            result = SchedulerService(self.db).generate(
+                project_ids=[project.id],
+                current_project_id=project.id,
+                commit=False,
+                feasibility_only=True,
+                include_pending_approval_tasks=True,
+            )
+
+        self.assertEqual("ok", result["status"])
+        solved_task_ids = {task.id for task in spy.call_args.kwargs["tasks"]}
+        self.assertIn(verify.id, solved_task_ids)
+        self.assertEqual(0, self.db.query(TimeSlot).filter(
+            TimeSlot.task_id == verify.id,
+        ).count())
+        self.assertEqual("waiting_external", verify.status)
+
 
 if __name__ == "__main__":
     unittest.main()

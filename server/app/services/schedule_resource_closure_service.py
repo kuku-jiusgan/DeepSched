@@ -17,6 +17,7 @@ def load_resource_closure_movable_tasks(
     include_same_priority: bool,
     minimum_start: datetime | None = None,
     same_priority_after: datetime | None = None,
+    exclude_tasks_with_unfinished_predecessors: bool = False,
 ) -> list[Task]:
     """Expand an insert's movable set through newly affected resources."""
     selected_ids = {task.id for task in selected_tasks}
@@ -31,6 +32,7 @@ def load_resource_closure_movable_tasks(
             include_same_priority,
             minimum_start,
             same_priority_after,
+            exclude_tasks_with_unfinished_predecessors,
         )
         frontier = []
         for task in candidates:
@@ -49,6 +51,7 @@ def _load_resource_candidates(
     include_same_priority: bool,
     minimum_start: datetime | None,
     same_priority_after: datetime | None,
+    exclude_tasks_with_unfinished_predecessors: bool,
 ) -> list[Task]:
     assignee_ids = {
         task.assignee_id
@@ -64,6 +67,7 @@ def _load_resource_candidates(
         include_same_priority=include_same_priority,
         minimum_start=minimum_start,
         same_priority_after=same_priority_after,
+        exclude_tasks_with_unfinished_predecessors=exclude_tasks_with_unfinished_predecessors,
     )
 
 
@@ -74,7 +78,9 @@ def active_slot_starts(db, tasks: list[Task]) -> dict[int, datetime]:
     rows = db.query(TimeSlot.task_id, TimeSlot.plan_start).filter(
         TimeSlot.task_id.in_(task_ids),
         TimeSlot.lifecycle_status == "active",
-        TimeSlot.tier.in_(["confirmed", "forecast"]),
+        # Frozen slots cannot be moved, but they still define the task's
+        # original queue position when comparing same-priority work.
+        TimeSlot.tier.in_(["frozen", "confirmed", "forecast"]),
         TimeSlot.status.in_(
             ["scheduled", "paused", "blocked", "interrupted"],
         ),

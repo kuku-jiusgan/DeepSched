@@ -6,7 +6,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Project, Task, TaskDependency, TimeSlot, User
+from app.domain.errors import DomainConflictError
+from app.models import AuditLog, Project, Task, TaskDependency, TimeSlot, User
 from app.schemas.approval_gate_schemas import ApprovalGateCreate, ApprovalGateSubmit
 from app.services.approval_gate_service import (
     ApprovalGateInvalidError,
@@ -443,6 +444,42 @@ class ApprovalGateServiceTest(unittest.TestCase):
         self.assertEqual("approved", result.gate.gate_status)
         self.assertIsNotNone(result.gate.submitted_at)
         self.assertEqual(result.gate.submitted_at, result.gate.approved_at)
+
+    @patch("app.services.approval_gate_service.apply_gate_schedule")
+    def test_schedule_failure_does_not_mark_gate_approved(self, apply_gate_schedule):
+        apply_gate_schedule.side_effect = DomainConflictError("排程计算正在进行中，请稍后重试")
+        gate_out = create_approval_gate(
+            self.db,
+            1,
+            ApprovalGateCreate(predecessor_task_id=1, unlock_task_ids=[2]),
+            self.manager,
+        )
+        gate = self.db.get(Task, gate_out.id)
+        gate.gate_status = "waiting_approval"
+        gate.status = "waiting_approval"
+        self.plan.status = "done"
+        self.db.commit()
+
+        with self.assertRaisesRegex(ApprovalGateInvalidError, "签批未完成.*排程计算正在进行中"):
+            approve_approval_gate(self.db, gate.id, None, self.manager)
+
+        self.db.expire_all()
+        failed_gate = self.db.get(Task, gate.id)
+        self.assertEqual("waiting_approval", failed_gate.gate_status)
+        self.assertEqual("waiting_approval", failed_gate.status)
+        self.assertIsNone(failed_gate.approved_at)
+        self.assertIsNone(failed_gate.approved_by)
+        self.assertEqual("schedule_failed", failed_gate.approval_schedule_status)
+        approved_audit = self.db.query(AuditLog).filter(
+            AuditLog.target_id == gate.id,
+            AuditLog.action == "approval_gate_approved",
+        ).count()
+        self.assertEqual(0, approved_audit)
+        failed_audit = self.db.query(AuditLog).filter(
+            AuditLog.target_id == gate.id,
+            AuditLog.action == "approval_gate_schedule_failed",
+        ).one()
+        self.assertIn("排程计算正在进行中", failed_audit.detail["reason"])
 
 
 if __name__ == "__main__":

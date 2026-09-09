@@ -23,6 +23,7 @@ const routes = [
       { path: 'operations/cockpit', component: () => import('@/pages/operations/LabOperationsCockpit.vue') },
       { path: 'operations/lab-dashboard', redirect: '/operations/cockpit' },
       { path: 'operations/reports', component: () => import('@/pages/operations/DetailedReports.vue') },
+      { path: 'operations/instrument-utilization', component: () => import('@/pages/operations/InstrumentUtilizationReport.vue') },
       { path: 'operations/project-tasks', component: () => import('@/pages/operations/ProjectTaskDetail.vue') },
       { path: 'operations/lab-status', component: () => import('@/pages/operations/LabStatusScreen.vue') },
       { path: 'kanban/instrument-gantt', component: () => import('@/pages/InstrumentGantt.vue') },

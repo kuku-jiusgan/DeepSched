@@ -203,6 +203,7 @@ export interface ApprovalGateAction {
   schedule_status: string;
   schedule_message?: string | null;
   preview_token?: string | null;
+  request_id?: string | null;
 }
 
 export interface StandardPlanTask {
@@ -343,8 +344,16 @@ export interface DashboardData {
   milestone_risks: { project: string; milestone: string; due_date: string }[];
 }
 
+export interface InstrumentOperatorUtilization {
+  operator_id: number | null
+  operator_name: string
+  planned_hours: number
+  actual_run_hours: number
+  utilization_rate: number
+}
+
 export interface UtilizationStats {
-  instrument_id: number;
+  instrument_id: number | null;
   instrument_name: string;
   instrument_code?: string | null;
   total_available_hours: number;
@@ -354,6 +363,7 @@ export interface UtilizationStats {
   actual_utilization_rate: number;
   utilization_rate: number;
   buffer_consumed_rate: number;
+  operators: InstrumentOperatorUtilization[];
 }
 
 export interface DAGData {
@@ -390,7 +400,7 @@ export interface ProjectScheduleImpact {
   pending_approval_hours: number;
 }
 
-export type ProjectPlanApplyStatus = 'applied' | 'no_changes' | 'insert_confirmation_required' | 'error';
+export type ProjectPlanApplyStatus = 'queued' | 'applied' | 'no_changes' | 'insert_confirmation_required' | 'error';
 
 export interface ProjectPlanApplyResult {
   status: ProjectPlanApplyStatus;
@@ -404,6 +414,7 @@ export interface ProjectPlanApplyResult {
   impacts: InsertOrderImpact[];
   project_impacts: ProjectScheduleImpact[];
   schedule_failure?: ScheduleFailureDiagnostic | null;
+  request_id?: string | null;
 }
 
 /** 排程失败弹窗只需要这两个字段。检测任务返回的是 DetectionTask、计划排程返回

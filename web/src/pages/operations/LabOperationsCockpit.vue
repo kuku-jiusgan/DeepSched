@@ -63,7 +63,7 @@
           <section class="summary-card ranking-card">
             <h2>利用率 TOP3</h2>
             <ol>
-              <li v-for="(item, index) in topInstruments" :key="item.instrument_id">
+              <li v-for="(item, index) in topInstruments" :key="item.instrument_id ?? item.instrument_code ?? item.instrument_name">
                 <span :class="`rank-${index + 1}`">{{ index + 1 }}</span>
                 <p><small>{{ item.instrument_code || '-' }}</small><span>{{ item.instrument_name }}</span></p>
                 <strong>{{ roundedRate(item.actual_utilization_rate) }}%</strong>
@@ -221,7 +221,10 @@ const kpis = computed(() => [
 ])
 const cockpitInstrumentIds = computed(() => new Set(instruments.value.map(item => item.id)))
 const topInstruments = computed(() => utilization.value
-  .filter(item => cockpitInstrumentIds.value.has(item.instrument_id))
+  .filter(item => {
+    const instrumentId = item.instrument_id
+    return instrumentId !== null && cockpitInstrumentIds.value.has(instrumentId)
+  })
   .sort((a, b) => b.actual_utilization_rate - a.actual_utilization_rate)
   .slice(0, 3))
 const utilizationMap = computed(() => new Map(utilization.value.map(item => [item.instrument_id, roundedRate(item.actual_utilization_rate)])))
@@ -321,7 +324,10 @@ async function loadData() {
     getDashboard().then(value => { dashboard.value = value }),
     Promise.all([getLabStatus(), getInstruments({ include_unavailable: true })])
       .then(([statusList, baseList]) => { instruments.value = mergeInstruments(statusList, baseList) }),
-    getUtilization().then(value => { utilization.value = value }),
+    getUtilization({
+      start_date: dayjs().startOf('month').format('YYYY-MM-DDTHH:mm:ss'),
+      end_date: dayjs().format('YYYY-MM-DDTHH:mm:ss'),
+    }).then(value => { utilization.value = value }),
     getTimeslots().then(value => { slots.value = value }),
   ]
   if (isLoading.value) void Promise.race(requests).finally(() => { isLoading.value = false })

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
@@ -43,7 +43,7 @@ def _refresh_loop() -> None:
             if acquire_worker_lease(db, LEASE_NAME, _worker_owner_id, LEASE_SECONDS):
                 settings = get_settings()
                 end = datetime.now()
-                start = end - timedelta(days=settings.STATS_WINDOW_DAYS)
+                start = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
                 rows = calculate_instrument_utilization(db, start, end, settings.PERCENT_SCALE)
                 save_utilization_snapshot(db, _snapshot_key(start, end), [row.model_dump(mode="json") for row in rows])
         except Exception:

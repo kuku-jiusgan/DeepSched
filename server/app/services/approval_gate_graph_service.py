@@ -76,7 +76,19 @@ def task_completed_at(task: Task) -> datetime | None:
     actual_ends = [slot.actual_end for slot in task.time_slots if slot.actual_end]
     return max(actual_ends, default=task.updated_at)
 
-def unapproved_gate_context(db, tasks: list[Task]) -> tuple[dict[int, datetime], set[int]]:
+def unapproved_gate_context(
+    db,
+    tasks: list[Task],
+    *,
+    include_pending_approval_tasks: bool = False,
+) -> tuple[dict[int, datetime], set[int]]:
+    """Return approval lower bounds and tasks hidden behind an unapproved gate.
+
+    The normal scheduler keeps those descendants out of the interval model and
+    uses their workload to tighten the project's completion window.  A
+    feasibility probe may instead model them as if the gate passed immediately;
+    in that mode only an actually approved gate contributes a lower bound.
+    """
     task_ids = {task.id for task in tasks}
     if not task_ids:
         return {}, set()
@@ -93,9 +105,14 @@ def unapproved_gate_context(db, tasks: list[Task]) -> tuple[dict[int, datetime],
     forecast_ids: set[int] = set()
     for task_id in task_ids:
         for gate in upstream_gates(task_id, predecessors, task_by_id):
-            bound = gate.approved_at if gate.gate_status == "approved" else gate.expected_approval_at
+            if gate.gate_status == "approved":
+                bound = gate.approved_at
+            elif include_pending_approval_tasks:
+                bound = None
+            else:
+                bound = gate.expected_approval_at
             if bound and (task_id not in bounds or bound > bounds[task_id]):
                 bounds[task_id] = bound
-            if gate.gate_status != "approved":
+            if gate.gate_status != "approved" and not include_pending_approval_tasks:
                 forecast_ids.add(task_id)
     return bounds, forecast_ids

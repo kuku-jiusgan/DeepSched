@@ -84,7 +84,6 @@ _REPLAY_EXCLUDED_KWARGS = frozenset({
     "original_schedule_windows",    # 只影响目标函数的稳定性惩罚，不影响可行性
 })
 
-
 def replayable_kwargs(scope: dict) -> dict:
     """从 generate 入口的局部作用域里取出可回放的实参。
 
@@ -163,6 +162,7 @@ class SchedulerService:
         released_slot_intervals: dict[int, list[tuple]] | None = None,
         feasibility_only: bool = False,
         project_end_date_overrides: dict[int, datetime] | None = None,
+        include_pending_approval_tasks: bool = False,
     ) -> dict:
         replan_request = replayable_kwargs(locals())
         if current_project_id is None:
@@ -226,7 +226,11 @@ class SchedulerService:
         if preflight_error:
             return preflight_error
 
-        approval_bounds, forecast_task_ids = unapproved_gate_context(self.db, tasks)
+        approval_bounds, forecast_task_ids = unapproved_gate_context(
+            self.db,
+            tasks,
+            include_pending_approval_tasks=include_pending_approval_tasks,
+        )
         forecast_tasks = [task for task in tasks if task.id in forecast_task_ids]
         if forecast_tasks:
             tasks = [task for task in tasks if task.id not in forecast_task_ids]

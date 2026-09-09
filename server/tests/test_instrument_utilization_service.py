@@ -206,6 +206,23 @@ class InstrumentUtilizationServiceTest(unittest.TestCase):
 
         self.assertEqual(2.0, result.actual_run_hours)
 
+    def test_cancelled_open_slot_does_not_extend_to_window_end(self):
+        self.db.add(TimeSlot(
+            task_id=self.task.id, instrument_id=self.instrument.id,
+            plan_start=datetime(2026, 8, 17, 10, 0),
+            plan_end=datetime(2026, 8, 17, 10, 0),
+            actual_start=datetime(2026, 8, 16, 10, 0), actual_end=None,
+            status="cancelled", lifecycle_status="superseded",
+        ))
+        self.db.commit()
+
+        [result] = calculate_instrument_utilization(
+            self.db, datetime(2026, 8, 17, 0, 0), datetime(2026, 8, 19, 0, 0),
+        )
+
+        self.assertEqual(0.0, result.scheduled_hours)
+        self.assertEqual(0.0, result.actual_run_hours)
+
 
 if __name__ == "__main__":
     unittest.main()

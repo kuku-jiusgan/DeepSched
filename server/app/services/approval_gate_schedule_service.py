@@ -39,7 +39,7 @@ def create_post_approval_tasks(db, gate: Task) -> list[Task]:
     db.flush()
     return created
 
-def apply_gate_schedule(db, gate: Task, is_forecast: bool):
+def apply_gate_schedule(db, gate: Task, is_forecast: bool, commit: bool = True):
     from app.services.project_plan_apply_service import (
         apply_project_plan,
         confirm_project_plan_insert,
@@ -51,6 +51,7 @@ def apply_gate_schedule(db, gate: Task, is_forecast: bool):
         db,
         gate.project_id,
         approval_context=approval_context,
+        preserve_existing=not commit,
     )
     # 预计签批和正式签批都直接落地下游排程，不把跨项目影响确认暴露给前端。
     if result.status == "insert_confirmation_required" and result.preview_token:
@@ -61,10 +62,12 @@ def apply_gate_schedule(db, gate: Task, is_forecast: bool):
                 preview_token=result.preview_token,
             ),
             approval_context=approval_context,
+            preserve_existing=not commit,
         )
     gate = gate_or_404(db, gate.id)
     store_schedule_result(db, gate, result, is_forecast)
-    db.commit()
+    if commit:
+        db.commit()
     return result
 
 def store_schedule_result(db, gate: Task, result, is_forecast: bool) -> None:

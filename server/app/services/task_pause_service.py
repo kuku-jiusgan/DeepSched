@@ -101,7 +101,7 @@ def pause_and_switch_task(
         start_task_execution(
             db, target_slot.id, operator.id, allow_queue_insert=True, started_at=switch_time,
         )
-        _promote_switched_instrument_slot(db, target_slot.task_id, paused_at)
+        _promote_switched_instrument_slot(db, target_slot, paused_at)
         _discard_zero_length_anchor(db, target_slot.task_id)
 
     record_audit_log(
@@ -134,13 +134,14 @@ def _insert_target_into_source_schedule(
     return replan_pause_switch(db, source_slot, target_slot, started_at)
 
 
-def _promote_switched_instrument_slot(db, task_id: int, started_at: datetime) -> None:
-    task = db.query(Task).filter(Task.id == task_id).first()
+def _promote_switched_instrument_slot(db, anchor: TimeSlot, started_at: datetime) -> None:
+    db.flush()
+    task = db.query(Task).filter(Task.id == anchor.task_id).first()
     if not task or not task.requires_instrument:
         return
     active_slots = (
         db.query(TimeSlot)
-        .filter(TimeSlot.task_id == task_id, TimeSlot.lifecycle_status == "active")
+        .filter(TimeSlot.task_id == anchor.task_id, TimeSlot.lifecycle_status == "active")
         .order_by(TimeSlot.plan_start, TimeSlot.id)
         .all()
     )
@@ -153,6 +154,15 @@ def _promote_switched_instrument_slot(db, task_id: int, started_at: datetime) ->
     candidate.status = "running"
     candidate.actual_start = started_at
     candidate.actual_end = None
+    open_segment = db.query(TaskExecutionSegment).filter(
+        TaskExecutionSegment.slot_id == anchor.id,
+        TaskExecutionSegment.ended_at.is_(None),
+    ).one_or_none()
+    if open_segment is not None:
+        open_segment.slot_id = candidate.id
+    anchor.actual_start = None
+    anchor.actual_end = None
+    db.flush()
 
 
 def _discard_zero_length_anchor(db, task_id: int) -> None:
@@ -172,6 +182,12 @@ def _discard_zero_length_anchor(db, task_id: int) -> None:
     if not anchors or len(anchors) == len(active_slots):
         return
     for anchor in anchors:
+        has_execution = db.query(TaskExecutionSegment.id).filter(
+            TaskExecutionSegment.slot_id == anchor.id,
+        ).first() is not None
+        if not has_execution:
+            anchor.actual_start = None
+            anchor.actual_end = None
         anchor.lifecycle_status = "superseded"
         anchor.superseded_reason = "暂停切换锚点"
         anchor.status = "cancelled"

@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Instrument, Project, Task, TimeSlot
+from app.models import Instrument, Project, Task, TaskDependency, TimeSlot
 from app.services.project_plan_apply_service import _build_project_impacts, _project_impact_message
 from app.services.project_pending_workload_service import PendingWorkload
 from app.services.schedule_priority_dependency_service import build_schedule_priority_dependencies
@@ -119,7 +119,7 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
 
         self.assertEqual([(movable.id, selected.id)], dependencies)
 
-    def test_detection_insert_moves_same_priority_task_after_selected(self):
+    def test_detection_insert_keeps_same_priority_task_in_place(self):
         selected_project, selected = self._scheduled_project("A", 2, 1)
         selected_project.project_kind = "detection"
         _, later_task = self._scheduled_project("B", 2, 2)
@@ -141,10 +141,9 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
             insert_priority=2,
             excluded_task_ids={selected.id},
             selected_instrument_ids={1},
-            include_same_priority=True,
-            same_priority_after=selected_slot.plan_start,
+            include_same_priority=False,
         )
-        self.assertEqual([later_task.id], [task.id for task in movable])
+        self.assertEqual([], [task.id for task in movable])
 
         _, earlier_task = self._scheduled_project("C", 2, 3)
         earlier_slot = self.db.query(TimeSlot).filter(
@@ -158,12 +157,11 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
             insert_priority=2,
             excluded_task_ids={selected.id},
             selected_instrument_ids={1},
-            include_same_priority=True,
-            same_priority_after=selected_slot.plan_start,
+            include_same_priority=False,
         )
-        self.assertEqual([later_task.id], [task.id for task in movable])
+        self.assertEqual([], [task.id for task in movable])
 
-    def test_same_priority_movable_task_keeps_original_after_order(self):
+    def test_detection_dependency_only_moves_lower_priority_task(self):
         selected_project, selected = self._scheduled_project("A", 2, 1)
         selected_project.project_kind = "detection"
         _, movable = self._scheduled_project("B", 2, 2)
@@ -182,7 +180,91 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
             self.db, selected_project, [selected], [movable],
         )
 
-        self.assertEqual([(movable.id, selected.id)], dependencies)
+        self.assertEqual([], dependencies)
+
+    def test_detection_insert_does_not_reorder_successor_of_unfinished_task(self):
+        detection_project = Project(
+            code="D-A", name="二级检测", priority=2, project_kind="detection",
+        )
+        project_a = Project(code="A", name="测试项目A", priority=3)
+        method = Task(
+            id=10, project=project_a, name="方法开发", task_type="method",
+            requires_instrument=True, instrument_ids=[1], assignee_id=1,
+            status="running",
+        )
+        report = Task(
+            id=11, project=project_a, name="方案撰写", task_type="report",
+            requires_instrument=False, assignee_id=1, status="scheduled",
+        )
+        detection = Task(
+            id=12, project=detection_project, name="检测任务", task_type="test",
+            requires_instrument=True, instrument_ids=[1], assignee_id=1,
+            status="pending",
+        )
+        self.db.add_all([detection_project, project_a, method, report, detection])
+        self.db.flush()
+        self.db.add(TaskDependency(task_id=report.id, predecessor_id=method.id))
+        now = datetime.now()
+        self.db.add_all([
+            TimeSlot(
+                task_id=method.id, instrument_id=1,
+                plan_start=now - timedelta(hours=1), plan_end=now + timedelta(hours=1),
+                tier="confirmed", status="running", actual_start=now - timedelta(hours=1),
+            ),
+            TimeSlot(
+                task_id=report.id, plan_start=now + timedelta(days=1),
+                plan_end=now + timedelta(days=1, hours=1), tier="confirmed", status="scheduled",
+            ),
+        ])
+        self.db.flush()
+
+        movable = _load_lower_priority_movable_tasks(
+            self.db,
+            insert_priority=2,
+            excluded_task_ids={detection.id},
+            selected_instrument_ids={1},
+            selected_assignee_ids={1},
+            exclude_tasks_with_unfinished_predecessors=True,
+        )
+        self.assertNotIn(report.id, [task.id for task in movable])
+
+        dependencies = build_schedule_priority_dependencies(
+            self.db, detection_project, [detection], [report],
+        )
+        self.assertNotIn((report.id, detection.id), dependencies)
+
+    def test_unscheduled_detection_does_not_force_same_priority_tasks_after_it(self):
+        selected_project = Project(
+            code="NEW-A", name="新建检测项目", priority=2, project_kind="detection",
+        )
+        movable_project, movable = self._scheduled_project("B", 2, 2)
+        self.db.add(selected_project)
+        selected = Task(
+            id=1,
+            project=selected_project,
+            name="测试1",
+            task_type="test",
+            requires_instrument=True,
+            instrument_ids=[1],
+            status="pending",
+        )
+        self.db.add(selected)
+        self.db.flush()
+
+        dependencies = build_schedule_priority_dependencies(
+            self.db, selected_project, [selected], [movable],
+        )
+
+        self.assertEqual([], dependencies)
+
+        movable_tasks = _load_lower_priority_movable_tasks(
+            self.db,
+            insert_priority=2,
+            excluded_task_ids={selected.id},
+            selected_instrument_ids={1},
+            include_same_priority=False,
+        )
+        self.assertEqual([], [task.id for task in movable_tasks])
 
     def test_closed_historical_pause_does_not_lock_future_slots(self):
         _, task = self._scheduled_project("B", 3, 1)

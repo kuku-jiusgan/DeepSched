@@ -110,8 +110,21 @@ function recommendations(diagnostic: ScheduleFailureDiagnostic) {
 function failureHeader(diagnostic: ScheduleFailureDiagnostic, deadline: string) {
   const days = diagnostic.days_remaining === undefined ? '' : `（距今 ${diagnostic.days_remaining} 天）`
   return h('header', { class: 'schedule-failure-header' }, [
-    h('strong', diagnostic.project_label || '当前项目'),
-    h('span', `项目结题日：${deadline}${days}`),
+    h('div', { class: 'schedule-failure-header-main' }, [
+      h('strong', diagnostic.title || '排程失败'),
+      h('span', diagnostic.project_label || '当前项目'),
+    ]),
+    h('div', { class: 'schedule-failure-deadline' }, [
+      h('small', '项目结题日'),
+      h('b', `${deadline}${days}`),
+    ]),
+  ])
+}
+
+function failureSummary(diagnostic: ScheduleFailureDiagnostic) {
+  return h('div', { class: 'schedule-failure-summary' }, [
+    h('strong', diagnostic.summary || '当前排程无法满足全部约束。'),
+    h('p', '系统已检查共享仪器、负责人、任务依赖和可用时间，并将在下方给出可执行的调整方案。'),
   ])
 }
 
@@ -140,6 +153,7 @@ function capacityContent(diagnostic: ScheduleFailureDiagnostic) {
   const deadline = diagnostic.deadline || diagnostic.groups[0]?.deadline || '未知'
   return h('div', { class: 'schedule-failure-content' }, [
     failureHeader(diagnostic, deadline),
+    failureSummary(diagnostic),
     instrumentTable(diagnostic.instruments ?? []),
     occupancyTable(diagnostic.occupancy ?? []),
     recommendations(diagnostic),
@@ -156,6 +170,7 @@ function constraintContent(diagnostic: ScheduleFailureDiagnostic) {
   // 后端算出来的仪器余量、占用明细和求解器验证过的调整方案全被丢掉了。
   return h('div', { class: 'schedule-failure-content' }, [
     failureHeader(diagnostic, deadline),
+    failureSummary(diagnostic),
     window
       ? windowSection(window, deadline)
       : h('div', { class: 'schedule-failure-plain schedule-failure-section' }, diagnostic.summary),
@@ -172,7 +187,11 @@ export function scheduleFailureContent(result: ScheduleFailureResult) {
   const diagnostic = result.schedule_failure
   if (!diagnostic) {
     return h('div', { class: 'schedule-failure-content' }, [
-      h('div', { class: 'schedule-failure-plain' }, result.message || '当前计划无法在已有排程中安排。'),
+      h('div', { class: 'schedule-failure-summary' }, [
+        h('strong', '当前计划无法完成排程'),
+        h('p', result.message || '系统未能在现有资源和时间约束下找到可行方案，请检查任务依赖、资源和结题日期。'),
+      ]),
+      h('div', { class: 'schedule-failure-action' }, '调整项目结题日期或排程资源后，请重新执行排程。'),
     ])
   }
   if (diagnostic.kind === 'instrument_capacity' && diagnostic.instruments) {

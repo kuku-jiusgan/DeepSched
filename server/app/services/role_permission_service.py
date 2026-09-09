@@ -6,6 +6,7 @@ ADMIN_ROLE = "系统管理员"
 PAGE_CATALOG = [
     ("/operations/cockpit", "首页", "运营数据中台", []),
     ("/operations/reports", "项目工时统计报表", "报表中心", []),
+    ("/operations/instrument-utilization", "仪器利用率报表", "报表中心", []),
     ("/operations/lab-status", "实验室状态大屏", "运营数据中台", []),
     ("/kanban/instrument-gantt", "仪器甘特图", "资源看板", []),
     ("/kanban/project-gantt", "项目甘特图", "资源看板", []),

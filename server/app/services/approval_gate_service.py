@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.models import Task, TaskDependency, User
+from app.domain.errors import DomainConflictError
 from app.schemas.approval_gate_schemas import (
     ApprovalGateActionOut,
     ApprovalGateCreate,
@@ -56,6 +57,9 @@ from app.services.approval_gate_schedule_service import (
     create_post_approval_tasks,
 )
 from app.services.task_delay_status_service import reset_task_delay
+from app.services.project_plan_apply_service import ProjectPlanInvalidError
+from app.services.schedule_run_lock_service import ScheduleBusyError
+from app.services.schedule_request_service import enqueue_schedule_request
 
 
 # 路由层与既有调用方统一从本模块导入签批能力，拆分后保持入口不变。
@@ -168,6 +172,7 @@ def approve_approval_gate(db, gate_id: int, note: str | None, user: User) -> App
     if gate.gate_status not in {"not_submitted", "waiting_approval"}:
         raise ApprovalGateInvalidError("该方案已经完成签批")
     previous_status = gate.gate_status
+    previous_task_status = gate.status
     approved_at = datetime.now()
     gate.gate_status = "approved"
     gate.status = "completed"
@@ -184,15 +189,94 @@ def approve_approval_gate(db, gate_id: int, note: str | None, user: User) -> App
             task.status = "pending"
             reset_task_delay(task)
             task.schedule_dirty = True
+    # 签批和后续排程必须在同一个事务里完成。若排程锁被占用、求解失败或
+    # 没有生成任何时间槽，不能留下“已签批但未排程”的半成品状态。
+    try:
+        result = apply_gate_schedule(db, gate, is_forecast=False, commit=False)
+    except ScheduleBusyError as exc:
+        request_id = _queue_approval_gate(db, gate_id, previous_status, previous_task_status, note, user)
+        return ApprovalGateActionOut(
+            gate=gate_out(db, gate_or_404(db, gate_id), user),
+            schedule_status="queued",
+            schedule_message="排程计算正在进行中，签批已进入排程队列",
+            request_id=request_id,
+        )
+    except (DomainConflictError, ProjectPlanInvalidError) as exc:
+        _record_schedule_failure(
+            db, gate_id, previous_status, previous_task_status, str(exc), user,
+        )
+        raise ApprovalGateInvalidError(
+            f"签批未完成，后续排程失败：{exc}",
+        ) from exc
+    if result.status != "applied":
+        message = result.message or "未生成后续排程"
+        _record_schedule_failure(
+            db, gate_id, previous_status, previous_task_status, message, user,
+        )
+        raise ApprovalGateInvalidError(f"签批未完成，后续排程失败：{message}")
     record_gate_audit(db, user, "approval_gate_approved", gate, {
         "approved_at": gate.approved_at.isoformat(),
         "direct_confirmation": previous_status == "not_submitted",
     })
     db.commit()
-    result = apply_gate_schedule(db, gate, is_forecast=False)
     return ApprovalGateActionOut(
         gate=gate_out(db, gate, user),
         schedule_status=gate.approval_schedule_status or result.status,
         schedule_message=result.message,
         preview_token=gate.approval_preview_token,
     )
+
+
+def _record_schedule_failure(
+    db,
+    gate_id: int,
+    previous_gate_status: str,
+    previous_task_status: str | None,
+    message: str,
+    user: User,
+) -> None:
+    """回滚试排改动，只保留可重试的签批失败状态。"""
+    db.rollback()
+    gate = gate_or_404(db, gate_id)
+    gate.gate_status = previous_gate_status
+    gate.status = previous_task_status
+    gate.approved_at = None
+    gate.approved_by = None
+    gate.approval_schedule_status = "schedule_failed"
+    gate.approval_schedule_message = f"签批未完成，后续排程失败：{message}"
+    record_gate_audit(db, user, "approval_gate_schedule_failed", gate, {
+        "reason": message,
+        "gate_status": previous_gate_status,
+    })
+    db.commit()
+
+
+def _queue_approval_gate(
+    db, gate_id: int, previous_gate_status: str, previous_task_status: str | None,
+    note: str | None, user: User,
+) -> str:
+    """锁冲突时撤销试批改动，持久化队列请求，成功后再完成签批。"""
+    db.rollback()
+    gate = gate_or_404(db, gate_id)
+    gate.gate_status = previous_gate_status
+    gate.status = previous_task_status
+    gate.approved_at = None
+    gate.approved_by = None
+    gate.approval_schedule_status = "queued"
+    gate.approval_schedule_message = "排程计算正在进行中，签批已进入排程队列"
+    record_gate_audit(db, user, "approval_gate_schedule_queued", gate, {})
+    db.commit()
+    request = enqueue_schedule_request(
+        db,
+        gate.project_id,
+        user.id,
+        request_type="approval_gate",
+        priority=20,
+        payload={
+            "project_id": gate.project_id,
+            "gate_id": gate.id,
+            "requested_by": user.id,
+            "note": note,
+        },
+    )
+    return request.id

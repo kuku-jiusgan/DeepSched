@@ -510,6 +510,8 @@ async function handleStartSchedule() {
     if (result.status === 'applied') {
       message.success(result.message || '排程完成')
       await fetchProject()
+    } else if (result.status === 'queued') {
+      message.info(result.message || '排程已进入队列，请稍后查看结果')
     } else if (result.status === 'no_changes') {
       message.info(result.message || '当前没有需要重新排程的任务')
       await fetchProject()
@@ -528,6 +530,7 @@ async function handleStartSchedule() {
     const responseData = isAxiosError<ProjectPlanApplyResult & { detail?: string }>(error)
       ? error.response?.data
       : undefined
+    const responseStatus = isAxiosError(error) ? error.response?.status : undefined
     if (responseData?.schedule_failure) {
       Modal.error({
         title: '排程失败',
@@ -535,6 +538,8 @@ async function handleStartSchedule() {
         wrapClassName: 'schedule-failure-modal',
         content: h(ScheduleFailureModal, { projectId, result: responseData }),
       })
+    } else if (responseStatus === 409 && responseData?.detail) {
+      Modal.error({ title: '排程失败', content: responseData.detail })
     } else {
       Modal.error({ title: '排程请求失败', content: errorDetail(error, '服务器内部错误，请稍后重试。') })
     }

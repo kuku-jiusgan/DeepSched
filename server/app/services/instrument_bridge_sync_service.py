@@ -63,6 +63,70 @@ def valid_bridge_reservations(db, query) -> list[InstrumentBridgeReservation]:
     ]
 
 
+def active_bridge_reservation_views(db, start_date=None, end_date=None) -> list[dict]:
+    """Derive bridge rows for active slots when persisted rows predate the sync hook."""
+    query = db.query(TimeSlot).join(Task).options(
+        joinedload(TimeSlot.task).joinedload(Task.project),
+        joinedload(TimeSlot.task).joinedload(Task.assignee),
+    ).filter(
+        TimeSlot.instrument_id.is_(None),
+        TimeSlot.lifecycle_status == "active",
+        TimeSlot.status.in_(BRIDGE_SLOT_STATUSES),
+        Task.requires_instrument.is_(False),
+        Task.requires_human.is_(True),
+        Task.assignee_id.isnot(None),
+        Task.status.notin_(["completed", "done"]),
+    )
+    if start_date is not None:
+        query = query.filter(TimeSlot.plan_end > start_date)
+    if end_date is not None:
+        query = query.filter(TimeSlot.plan_start < end_date)
+
+    result = []
+    cache: dict = {}
+    for slot in query.order_by(TimeSlot.plan_start, TimeSlot.id).all():
+        bridge = _bridge_for_manual_task(db, slot, cache)
+        if bridge is None:
+            continue
+        previous, following = bridge
+        result.append({
+            "id": -slot.id,
+            "schedule_run_id": slot.schedule_run_id,
+            "task_id": slot.task_id,
+            "instrument_id": previous.instrument_id,
+            "previous_task_id": previous.task_id,
+            "following_task_id": following.task_id,
+            "plan_start": slot.plan_start,
+            "plan_end": slot.plan_end,
+            "task": slot.task,
+            "kind": "human_bridge_reservation",
+        })
+    return result
+
+
+def bridge_reservation_rows(db, start_date=None, end_date=None) -> list:
+    query = db.query(InstrumentBridgeReservation).options(
+        joinedload(InstrumentBridgeReservation.task).joinedload(Task.project),
+        joinedload(InstrumentBridgeReservation.task).joinedload(Task.assignee),
+    )
+    if start_date is not None:
+        query = query.filter(InstrumentBridgeReservation.plan_end > start_date)
+    if end_date is not None:
+        query = query.filter(InstrumentBridgeReservation.plan_start < end_date)
+    reservations = valid_bridge_reservations(
+        db, query.order_by(InstrumentBridgeReservation.plan_start),
+    )
+    persisted_keys = {
+        (item.task_id, item.instrument_id, item.plan_start, item.plan_end)
+        for item in reservations
+    }
+    reservations.extend(
+        item for item in active_bridge_reservation_views(db, start_date, end_date)
+        if (item["task_id"], item["instrument_id"], item["plan_start"], item["plan_end"]) not in persisted_keys
+    )
+    return [*reservations, *historical_bridge_reservations(db, start_date, end_date)]
+
+
 def historical_bridge_reservations(db, start_date=None, end_date=None) -> list[dict]:
     """Build read-only bridge intervals from completed manual task execution windows."""
     query = db.query(TimeSlot).join(Task).options(
@@ -190,29 +254,39 @@ def _bridge_for_manual_task(db, slot: TimeSlot, cache: dict | None = None) -> tu
             Task.requires_instrument.is_(True),
         ).order_by(TimeSlot.plan_end.desc(), TimeSlot.id.desc()).all()
     candidates = [item for item in by_assignee[assignee_id] if item.task_id != slot.task_id]
-    previous = max(
-        (item for item in candidates if (item.actual_end or item.plan_end) <= source_start),
-        key=lambda item: (item.actual_end or item.plan_end, item.id),
-        default=None,
-    )
-    if previous is None:
-        return None
-    following = min(
-        (item for item in candidates if item.plan_start >= source_end),
-        key=lambda item: (item.plan_start, item.id),
-        default=None,
-    )
-    if (
-        following is None
-        or previous.instrument_id is None
-        or previous.instrument_id != following.instrument_id
-        or previous.task.assignee_id != assignee_id
-        or following.task.assignee_id != assignee_id
-        or not previous.task.requires_instrument
-        or not following.task.requires_instrument
-    ):
-        return None
-    return previous, following
+    candidates_by_instrument: dict[int, list[TimeSlot]] = {}
+    for item in candidates:
+        if item.instrument_id is None:
+            continue
+        candidates_by_instrument.setdefault(item.instrument_id, []).append(item)
+
+    # 逐台仪器判断相邻任务。另一台仪器上的更早任务不能遮蔽目标仪器上真正的
+    # 后续任务；但同一台仪器上插入其他负责人的任务仍会打断桥接。
+    for instrument_id, instrument_candidates in sorted(candidates_by_instrument.items()):
+        previous = max(
+            (
+                item for item in instrument_candidates
+                if (item.actual_end or item.plan_end) <= source_start
+            ),
+            key=lambda item: (item.actual_end or item.plan_end, item.id),
+            default=None,
+        )
+        following = min(
+            (item for item in instrument_candidates if item.plan_start >= source_end),
+            key=lambda item: (item.plan_start, item.id),
+            default=None,
+        )
+        if (
+            previous is not None
+            and following is not None
+            and previous.instrument_id == instrument_id
+            and previous.task.assignee_id == assignee_id
+            and following.task.assignee_id == assignee_id
+            and previous.task.requires_instrument
+            and following.task.requires_instrument
+        ):
+            return previous, following
+    return None
 
 
 def _is_current(db, reservation: InstrumentBridgeReservation, cache: dict | None = None) -> bool:

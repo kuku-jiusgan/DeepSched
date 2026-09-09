@@ -7,5 +7,6 @@
     AuthSession, WeComOAuthState, LoginFailure, WorkerLease, RolePermission,
     ScheduleDeadlineRecommendationJob,
     ScheduleEpoch,
+    ScheduleRunRequest,
     SysCalendar, ScheduleCalendarSnapshot, DashboardStatsSnapshot, LabStatusSnapshot, InstrumentUtilizationSnapshot
 )
