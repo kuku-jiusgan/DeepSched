@@ -323,13 +323,15 @@ export const confirmProjectPlanInsert = (projectId: number, previewToken: string
     preview_token: previewToken,
   }).then(r => r.data)
 
-export const getScheduleRequest = (requestId: string) =>
-  api.get<{
-    id: string; project_id: number; request_type: string; priority: number;
-    status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'superseded';
-    message?: string | null; result?: Record<string, unknown> | null; error_message?: string | null;
-    created_at: string; started_at?: string | null; finished_at?: string | null;
-  }>(`/schedules/schedule-requests/${requestId}`).then(r => r.data)
+export interface ScheduleRequestStatus {
+  id: string; project_id: number; request_type: string; priority: number;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'superseded';
+  message?: string | null; result?: Record<string, unknown> | null; error_message?: string | null;
+  created_at: string; started_at?: string | null; finished_at?: string | null;
+}
+
+export const getScheduleRequest = (requestId: string): Promise<ScheduleRequestStatus> =>
+  api.get<ScheduleRequestStatus>(`/schedules/schedule-requests/${requestId}`).then(r => r.data)
 
 export const cancelScheduleRequest = (requestId: string) =>
   api.post(`/schedules/schedule-requests/${requestId}/cancel`).then(r => r.data)

@@ -63,7 +63,7 @@ class SchedulerHelpersTest(unittest.TestCase):
         class AlignedDateTime(datetime):
             @classmethod
             def now(cls, tz=None):
-                return cls(2026, 8, 3, 10, 30, 20)
+                return cls(2026, 8, 3, 10, 30)
 
         with patch(
             "app.services.scheduler_helpers.datetime",
@@ -72,6 +72,19 @@ class SchedulerHelpersTest(unittest.TestCase):
             horizon_start, _, _ = time_horizon()
 
         self.assertEqual(datetime(2026, 8, 3, 10, 30), horizon_start)
+
+    def test_time_horizon_never_precedes_requested_timestamp(self):
+        cases = [
+            (datetime(2026, 9, 9, 10, 0, 20, 464087), datetime(2026, 9, 9, 10, 30)),
+            (datetime(2026, 9, 9, 10, 30, 0, 1), datetime(2026, 9, 9, 11)),
+            (datetime(2026, 9, 9, 23, 30, 1), datetime(2026, 9, 10)),
+        ]
+        for requested, expected in cases:
+            for argument in ("start_at", "now"):
+                with self.subTest(requested=requested, argument=argument):
+                    start, _, _ = time_horizon(**{argument: requested})
+                    self.assertEqual(expected, start)
+                    self.assertGreaterEqual(start, requested)
 
 if __name__ == "__main__":
     unittest.main()

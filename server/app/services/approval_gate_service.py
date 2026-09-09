@@ -194,11 +194,14 @@ def approve_approval_gate(db, gate_id: int, note: str | None, user: User) -> App
     try:
         result = apply_gate_schedule(db, gate, is_forecast=False, commit=False)
     except ScheduleBusyError as exc:
-        request_id = _queue_approval_gate(db, gate_id, previous_status, previous_task_status, note, user)
+        request_id = _queue_approval_gate(
+            db, gate_id, previous_status, previous_task_status, note, user,
+            busy_message=str(exc),
+        )
         return ApprovalGateActionOut(
             gate=gate_out(db, gate_or_404(db, gate_id), user),
             schedule_status="queued",
-            schedule_message="排程计算正在进行中，签批已进入排程队列",
+            schedule_message=gate.approval_schedule_message,
             request_id=request_id,
         )
     except (DomainConflictError, ProjectPlanInvalidError) as exc:
@@ -253,7 +256,7 @@ def _record_schedule_failure(
 
 def _queue_approval_gate(
     db, gate_id: int, previous_gate_status: str, previous_task_status: str | None,
-    note: str | None, user: User,
+    note: str | None, user: User, busy_message: str | None = None,
 ) -> str:
     """锁冲突时撤销试批改动，持久化队列请求，成功后再完成签批。"""
     db.rollback()
@@ -263,7 +266,10 @@ def _queue_approval_gate(
     gate.approved_at = None
     gate.approved_by = None
     gate.approval_schedule_status = "queued"
-    gate.approval_schedule_message = "排程计算正在进行中，签批已进入排程队列"
+    gate.approval_schedule_message = (
+        f"{busy_message}；签批请求已进入排程队列"
+        if busy_message else "排程计算正在进行中，签批已进入排程队列"
+    )
     record_gate_audit(db, user, "approval_gate_schedule_queued", gate, {})
     db.commit()
     request = enqueue_schedule_request(

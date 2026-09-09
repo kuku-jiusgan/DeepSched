@@ -12,18 +12,20 @@ def validate_immediate_approval_feasibility(
     released_slot_ids: set[int],
 ) -> None:
     """Probe the replan with pending approval work treated as immediate."""
+    # 检测任务是独立任务，不包含普通项目的方案签批门；将其纳入“立即签批”
+    # 探测会把方法验证等任务错误地当成签批后的下游任务，产生不适用的结题
+    # 日期错误提示。
+    if project.project_kind == "detection":
+        return
     if not replan_tasks:
         return
     from app.services.scheduler import SchedulerService
 
     task_ids = {task.id for task in replan_tasks}
     project_ids = {task.project_id for task in replan_tasks if task.project_id}
-    # 立即签批按全厂未收尾项目同时释放待签批工时，避免跨项目产能被高估。
-    occupancy_project_ids = {
-        row[0] for row in db.query(Project.id).filter(
-            Project.status.notin_(("completed", "cancelled", "archived")),
-        ).all()
-    }
+    # 试排只应纳入本次重排涉及的项目。无关项目的待签批任务不属于当前
+    # 请求的硬约束，否则任意一个全局不可排项目都会阻断本项目签批。
+    occupancy_project_ids = {project.id, *project_ids}
     probe_savepoint = db.begin_nested()
     try:
         result = SchedulerService(db).generate(

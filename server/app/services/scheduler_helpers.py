@@ -39,12 +39,14 @@ def time_horizon(
     等价。求解入口现在在最开头取一次 now 往下传，生产行为不变（仍是当前时刻），
     但对照工具可以把它钉死。
     """
-    now = (start_at or now or datetime.now()).replace(second=0, microsecond=0)
-    remaining_minutes = (-now.minute) % TIME_UNIT_MINUTES
-    if remaining_minutes:
-        now += timedelta(minutes=remaining_minutes)
-    horizon_start = now
-    default_end = now + timedelta(days=HORIZON_DAYS)
+    now = start_at or now or datetime.now()
+    horizon_start = now.replace(second=0, microsecond=0)
+    horizon_start += timedelta(minutes=(-now.minute) % TIME_UNIT_MINUTES)
+    # An aligned minute with seconds still lies before the release instant.
+    # Keep the full timestamp until the upward rounding is complete.
+    if horizon_start < now:
+        horizon_start += timedelta(minutes=TIME_UNIT_MINUTES)
+    default_end = horizon_start + timedelta(days=HORIZON_DAYS)
     horizon_end = min(default_end, end_at) if end_at else default_end
     if horizon_end <= horizon_start:
         raise ValueError("排程时间窗口结束时间必须晚于开始时间")

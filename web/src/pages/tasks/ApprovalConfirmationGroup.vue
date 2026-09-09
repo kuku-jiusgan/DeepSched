@@ -25,10 +25,11 @@
         </div>
         <div class="today-card-choice">请选择：</div>
         <div class="today-card-actions">
-          <a-button v-if="gate.gate_status !== 'approved'" v-operation="'submit'" size="small" class="workspace-action-button workspace-action-button-secondary" @click="openExpectedApproval(gate)">预计签批时间</a-button>
+          <div v-if="isApprovalPending(gate)" class="approval-schedule-pending">排程正在计算，请稍候，完成后会自动更新结果</div>
+          <a-button v-if="gate.gate_status !== 'approved'" v-operation="'submit'" size="small" class="workspace-action-button workspace-action-button-secondary" :disabled="isApprovalPending(gate)" @click="openExpectedApproval(gate)">预计签批时间</a-button>
           <a-tooltip v-if="gate.gate_status !== 'approved'" :title="prerequisiteBlockReason(gate)">
             <span v-operation="'approve'" class="disabled-action-wrapper">
-              <a-button size="small" class="workspace-action-button workspace-action-button-success" :disabled="!predecessorsCompleted(gate)" @click="confirmApprove(gate)">确认签批</a-button>
+              <a-button size="small" class="workspace-action-button workspace-action-button-success" :disabled="!predecessorsCompleted(gate) || isApprovalPending(gate)" @click="confirmApprove(gate)">确认签批</a-button>
             </span>
           </a-tooltip>
           <a-button v-if="gate.schedule_status === 'confirmation_required'" v-operation="'confirm_impact'" size="small" class="workspace-action-button workspace-action-button-warning" @click="confirmImpact(gate)">确认排程影响</a-button>
@@ -69,11 +70,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { approveApprovalGate, confirmApprovalScheduleImpact, submitApprovalGate } from '@/services/api'
+import { approveApprovalGate, confirmApprovalScheduleImpact, getScheduleRequest, submitApprovalGate } from '@/services/api'
 import type { ApprovalGate, ApprovalGateStatus, ApprovalGateTaskRef, ApprovalRiskStatus } from '@/types'
 import { isTaskCompleted } from '@/utils/statusMeta'
 
@@ -86,6 +87,11 @@ const expectedModalOpen = ref(false)
 const expectedSubmitting = ref(false)
 const expectedGate = ref<ApprovalGate | null>(null)
 const expectedApprovalAt = ref<Dayjs | null>(null)
+const pendingApprovalIds = ref(new Set<number>())
+const schedulePollTimers = new Map<string, ReturnType<typeof setTimeout>>()
+let isDisposed = false
+const SCHEDULE_POLL_INTERVAL_MS = 1500
+const SCHEDULE_POLL_MAX_ATTEMPTS = 120
 function gateDisplayName(gate: ApprovalGate) {
   if (!gate.top_level_task_name || gate.name.startsWith(`${gate.top_level_task_name} ·`)) {
     return gate.name
@@ -171,7 +177,11 @@ function confirmApprove(gate: ApprovalGate) {
     async onOk() {
       try {
         const result = await approveApprovalGate(gate.id, { approval_note: gate.approval_note })
-        if (result.schedule_status === 'queued') message.info(result.schedule_message || '排程正在进行中，签批请求已进入队列')
+        if (result.schedule_status === 'queued') {
+          message.info(result.schedule_message || '排程正在进行中，签批请求已进入队列')
+          pendingApprovalIds.value = new Set([...pendingApprovalIds.value, gate.id])
+          if (result.request_id) void monitorApprovalSchedule(result.request_id, gate.id)
+        }
         else if (result.schedule_status === 'confirmation_required') message.warning(result.schedule_message || '签批已记录，请继续确认跨项目排程影响')
         else message.success(result.schedule_message || '已记录客户审核同意')
         emit('refreshed')
@@ -179,6 +189,52 @@ function confirmApprove(gate: ApprovalGate) {
     },
   })
 }
+
+function isApprovalPending(gate: ApprovalGate) {
+  return gate.schedule_status === 'queued' || pendingApprovalIds.value.has(gate.id)
+}
+
+async function monitorApprovalSchedule(requestId: string, gateId: number, attempt = 0): Promise<void> {
+  if (attempt >= SCHEDULE_POLL_MAX_ATTEMPTS) {
+    pendingApprovalIds.value = removePendingApproval(pendingApprovalIds.value, gateId)
+    schedulePollTimers.delete(requestId)
+    message.warning('排程计算等待时间较长，请刷新工作台查看最终结果')
+    return
+  }
+  try {
+    const request = await getScheduleRequest(requestId)
+    if (isDisposed) return
+    if (request.status === 'queued' || request.status === 'running') {
+      const timer = setTimeout(() => void monitorApprovalSchedule(requestId, gateId, attempt + 1), SCHEDULE_POLL_INTERVAL_MS)
+      schedulePollTimers.set(requestId, timer)
+      return
+    }
+    pendingApprovalIds.value = removePendingApproval(pendingApprovalIds.value, gateId)
+    schedulePollTimers.delete(requestId)
+    emit('refreshed')
+    if (request.status === 'succeeded') {
+      message.success('签批及后续排程已完成')
+    } else {
+      message.error(request.error_message || request.message || '签批后的排程未完成')
+    }
+  } catch (error: unknown) {
+    pendingApprovalIds.value = removePendingApproval(pendingApprovalIds.value, gateId)
+    schedulePollTimers.delete(requestId)
+    message.error(errorDetail(error, '查询签批排程结果失败，请刷新工作台重试'))
+  }
+}
+
+function removePendingApproval(ids: Set<number>, gateId: number) {
+  const next = new Set(ids)
+  next.delete(gateId)
+  return next
+}
+
+onUnmounted(() => {
+  isDisposed = true
+  schedulePollTimers.forEach(timer => clearTimeout(timer))
+  schedulePollTimers.clear()
+})
 
 function confirmImpact(gate: ApprovalGate) {
   if (!gate.preview_token) return
@@ -237,6 +293,7 @@ function errorDetail(error: unknown, fallback: string) {
 .today-card-choice { margin: var(--space-sm) 0 var(--space-xs); color: var(--color-text-secondary); font-size: 0.78rem; }
 .today-card-actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
 .approval-prerequisite-warning { margin-top: var(--space-sm); padding: 6px 8px; color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: var(--radius-sm); font-size: 0.78rem; line-height: 1.45; }
+.approval-schedule-pending { flex: 1 1 100%; color: #92400e; font-size: 0.78rem; line-height: 1.45; }
 .disabled-action-wrapper { display: inline-block; }
 .today-card-empty { min-height: 120px; display: flex; align-items: center; justify-content: center; color: var(--color-text-tertiary); background: var(--color-surface); border: 1px dashed var(--color-border); border-radius: var(--radius-sm); font-size: 0.82rem; }
 .expected-approval-help { margin: 0; color: var(--color-text-secondary); font-size: 0.84rem; line-height: 1.55; }
