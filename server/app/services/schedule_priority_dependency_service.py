@@ -16,7 +16,34 @@ def build_schedule_priority_dependencies(
         db, project, selected_tasks, movable_tasks,
     )
     dependencies.update(_fixed_detection_dependencies(db, replan_tasks))
+    dependencies.update(_manual_queue_dependencies(selected_tasks, movable_tasks))
     return sorted(dependencies)
+
+
+def _manual_queue_dependencies(
+    selected_tasks: list[Task],
+    movable_tasks: list[Task],
+) -> set[tuple[int, int]]:
+    """Keep a selected instrument task behind a movable manual task.
+
+    Manual work has no instrument alternative, but it still occupies its
+    assignee.  Instrument-only queue rules cannot order this pair, so a plan
+    save could otherwise leave the manual slot and the selected instrument
+    slot with the same start.  The selected task is the insertion being
+    served; the existing manual task is its predecessor in the resource
+    queue.
+    """
+    return {
+        (selected.id, movable.id)
+        for selected in selected_tasks
+        for movable in movable_tasks
+        if selected.project_id != movable.project_id
+        if selected.requires_instrument
+        and movable.requires_human
+        and not movable.requires_instrument
+        and selected.assignee_id
+        and selected.assignee_id == movable.assignee_id
+    }
 
 
 def _inserted_detection_dependencies(

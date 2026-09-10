@@ -12,6 +12,8 @@ from app.services.project_pending_workload_service import (
 )
 from app.services.schedule_working_time_service import advance_working_hours
 from app.domain.task_status import resolve_task_execution_status
+from app.services.task_progress_service import remaining_task_minutes
+from app.services.project_health_scoring import calculate_health_score
 
 
 HEALTH_EVENT_ACTIONS = {
@@ -31,7 +33,7 @@ def get_project_health(
     pending_workload: PendingWorkload | None = None,
 ) -> ProjectHealthOut:
     tasks = _leaf_tasks(project.tasks or [])
-    slots = [slot for task in tasks for slot in task.time_slots]
+    slots = [slot for task in tasks for slot in task.time_slots if slot.lifecycle_status == "active"]
     now = datetime.now()
     delay_details = _delay_details(db, {task.id for task in tasks})
     due_date = project.end_date
@@ -48,7 +50,13 @@ def get_project_health(
     delayed_over_three = [item for item in delayed if item["delay_days"] > 3]
     due_this_week = _due_this_week(tasks, slots, now, delay_details)
     blockers = _blockers(tasks, slots, now, delay_details)
-    health_score, health_level = _health_score(delivery_status, counts, delayed_over_three, blockers, schedule_state)
+    slots_by_task = _slots_by_task(tasks, slots)
+    remaining_hours = {task.id: remaining_task_minutes(task) / 60 for task in tasks if task.status not in COMPLETED_STATUSES}
+    critical_task_ids = _critical_path_task_ids(db, tasks)
+    health_result = calculate_health_score(
+        tasks, slots_by_task, delivery_status, predicted_end, due_date, now,
+        critical_task_ids, remaining_hours, schedule_state,
+    )
     timeline = _timeline(db, project.id, project, tasks, slots, now)
     return ProjectHealthOut(
         project_id=project.id,
@@ -60,8 +68,8 @@ def get_project_health(
         end_date=project.end_date,
         summary={
             "project_status": calculate_project_status(project),
-            "health_score": health_score,
-            "health_level": health_level,
+            "health_score": health_result.score,
+            "health_level": health_result.level,
             "delivery_status": delivery_status,
             "due_date": due_date,
             "predicted_end": predicted_end,
@@ -69,6 +77,8 @@ def get_project_health(
             "schedule_state": schedule_state,
             "metric_mode": timeline["metric_mode"],
             "task_counts": counts,
+            "health_factors": [item.__dict__ for item in health_result.factors],
+            "risk_reasons": health_result.reasons,
         },
         due_this_week_open=due_this_week,
         delayed_over_three_days=delayed_over_three,
@@ -102,14 +112,45 @@ def _predicted_end(
     pending_workload: PendingWorkload,
     now: datetime,
 ) -> datetime | None:
-    # 已排时间槽与未排任务的交期必须取并集。原先的 or 短路意味着：只要项目
-    # 有任意一个已排任务，未排任务的交期就被整体丢弃，"还没排进去的工作"
-    # 因此完全不体现在交付预测里。
-    open_slots = [slot.plan_end for slot in slots if slot.task.status not in COMPLETED_STATUSES]
-    unscheduled_due = [task.latest_due for task in tasks if task.status not in COMPLETED_STATUSES and task.latest_due]
-    values = [*open_slots, *unscheduled_due] or ([due_date] if due_date else [])
-    predicted_end = max(values) if values else None
+    open_tasks = [
+        task for task in tasks
+        if task.status not in COMPLETED_STATUSES
+        and not (task.is_external_gate and task.gate_status == "approved")
+    ]
+    slots_by_task = _slots_by_task(tasks, slots)
+    values = [
+        (slot.plan_end if slot.task.status not in COMPLETED_STATUSES else (slot.actual_end or slot.plan_end))
+        for slot in slots
+    ]
+    predicted_end = max(values, default=None)
+    if predicted_end is None and due_date:
+        predicted_end = max(now, due_date)
+    for task in sorted(open_tasks, key=lambda item: (min((slot.plan_start for slot in slots_by_task.get(item.id, [])), default=datetime.max), item.plan_order, item.id)):
+        if task.status == "waiting_external" and _has_approved_external_predecessor(task):
+            continue
+        task_slots = slots_by_task.get(task.id, [])
+        if task_slots:
+            latest = max(slot.plan_end for slot in task_slots)
+            if task.status in {"paused", "blocked", "interrupted", "waiting_external"} and remaining_task_minutes(task) > 0:
+                tail = max(now, latest, predicted_end or now)
+                predicted_end = advance_working_hours(db, tail, remaining_task_minutes(task) / 60)
+            else:
+                predicted_end = max(predicted_end or latest, latest)
+            continue
+        remaining_hours = remaining_task_minutes(task) / 60
+        if remaining_hours > 0:
+            predicted_end = advance_working_hours(db, max(predicted_end or now, now), remaining_hours)
+        elif task.latest_due:
+            predicted_end = max(predicted_end or task.latest_due, task.latest_due)
     return _append_pending_workload(db, predicted_end, pending_workload, now)
+
+
+def _has_approved_external_predecessor(task: Task) -> bool:
+    return any(
+        dependency.predecessor.is_external_gate
+        and dependency.predecessor.gate_status == "approved"
+        for dependency in task.predecessors
+    )
 
 
 def _append_pending_workload(
@@ -207,17 +248,42 @@ def _blockers(tasks: list[Task], slots: list[TimeSlot], now: datetime, delay_det
     return sorted(result, key=lambda item: (-item["delay_days"], item["plan_end"] or datetime.max))
 
 
-def _health_score(delivery_status, counts, delayed, blockers, schedule_state):
-    if counts["total"] == 0:
-        return 40, "red"
-    score = 100
-    if delivery_status == "overdue": score -= 50
-    score -= min(30, len(delayed) * 10)
-    score -= 15 if any(item["blocker_type"] in {"delayed", "waiting_external"} for item in blockers) else 0
-    score -= min(20, sum(item["blocker_type"] == "unscheduled" for item in blockers) * 10)
-    score -= 10 if schedule_state == "not_scheduled" and counts["pending"] else 0
-    score = max(0, min(100, score))
-    return score, "green" if score >= 80 else "yellow" if score >= 50 else "red"
+def _slots_by_task(tasks: list[Task], slots: list[TimeSlot]) -> dict[int, list[TimeSlot]]:
+    task_ids = {task.id for task in tasks}
+    result = {task_id: [] for task_id in task_ids}
+    for slot in slots:
+        if slot.task_id in result and slot.lifecycle_status == "active":
+            result[slot.task_id].append(slot)
+    return result
+
+
+def _critical_path_task_ids(db, tasks: list[Task]) -> set[int]:
+    task_ids = {task.id for task in tasks}
+    predecessors = {task.id: [item.predecessor_id for item in task.predecessors if item.predecessor_id in task_ids] for task in tasks}
+    remaining = {task.id for task in tasks if task.status not in COMPLETED_STATUSES}
+    if not remaining:
+        return set()
+    lengths: dict[int, float] = {}
+    chains: dict[int, list[int]] = {}
+    visiting: set[int] = set()
+
+    def longest(task_id: int) -> tuple[float, list[int]]:
+        if task_id in lengths:
+            return lengths[task_id], chains[task_id]
+        if task_id in visiting:
+            return 0.0, [task_id]
+        visiting.add(task_id)
+        task = next(task for task in tasks if task.id == task_id)
+        candidates = [longest(item)[0:2] for item in predecessors.get(task_id, []) if item in remaining]
+        previous = max(candidates, key=lambda item: item[0], default=(0.0, []))
+        value = previous[0] + remaining_task_minutes(task) / 60
+        chain = [*previous[1], task_id]
+        visiting.discard(task_id)
+        lengths[task_id], chains[task_id] = value, chain
+        return value, chain
+
+    result = max((longest(task_id) for task_id in remaining), key=lambda item: item[0], default=(0.0, []))
+    return set(result[1])
 
 
 def _timeline(db, project_id, project, tasks, slots, now):
@@ -265,7 +331,10 @@ def _timeline_task(task, slots):
 def _arrangement_items(tasks: list[Task]) -> list[dict]:
     items = []
     for task in tasks:
-        task_slots = sorted(task.time_slots, key=lambda slot: (slot.plan_start, slot.id))
+        task_slots = sorted(
+            (slot for slot in task.time_slots if slot.lifecycle_status == "active"),
+            key=lambda slot: (slot.plan_start, slot.id),
+        )
         if task_slots:
             items.extend(_arrangement_slot_item(task, slot) for slot in task_slots)
         else:

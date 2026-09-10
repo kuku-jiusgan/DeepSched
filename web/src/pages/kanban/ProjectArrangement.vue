@@ -9,7 +9,7 @@
           <strong>{{ day.date.format('MM月DD日') }}</strong>
           <span>周{{ weekdayLabel(day.date.day()) }}</span>
         </template>
-        <strong v-else>未排程</strong>
+        <strong v-else>{{ day.label || '未排程' }}</strong>
         <a-tag v-if="day.date?.isSame(dayjs(), 'day')" color="blue">今天</a-tag>
       </header>
       <div class="project-arrangement-list">
@@ -65,7 +65,11 @@ function taskName(item: ProjectArrangementDisplayItem) {
 }
 function weekdayLabel(day: number) { return ['日', '一', '二', '三', '四', '五', '六'][day] }
 function planTime(item: ProjectArrangementDisplayItem) {
-  if (!item.plan_start || !item.plan_end) return item.expected_approval_at ? `预计 ${dayjs(item.expected_approval_at).format('HH:mm')}` : '未排程'
+  if (!item.plan_start || !item.plan_end) {
+    if (item.is_external_gate && ['done', 'completed'].includes(item.task_status)) return '已完成签批'
+    if (item.is_external_gate) return item.expected_approval_at ? `预计 ${dayjs(item.expected_approval_at).format('HH:mm')}` : '待确认签批时间'
+    return '未排程'
+  }
   return `${dayjs(item.plan_start).format('HH:mm')}–${dayjs(item.plan_end).format('HH:mm')}`
 }
 function actualTime(item: ProjectArrangementDisplayItem) {

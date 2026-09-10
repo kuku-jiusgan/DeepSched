@@ -309,7 +309,8 @@ const bridgeDisplaySlots = computed<GanttSlot[]>(() =>
     return {
     id: -bridge.id, task_id: bridge.task_id, instrument_id: bridge.instrument_id,
     plan_start: bridge.plan_start, plan_end: bridge.plan_end,
-    actual_start: sourceSlot?.actual_start, actual_end: sourceSlot?.actual_end,
+    actual_start: bridge.actual_start ?? sourceSlot?.actual_start,
+    actual_end: bridge.actual_end ?? sourceSlot?.actual_end,
     tier: sourceSlot?.tier || 'confirmed', status: sourceSlot?.status || 'scheduled',
     execution_status: sourceSlot?.execution_status || sourceSlot?.status || 'scheduled', is_night_run: false,
     task_name: bridge.task_name, task_type: bridge.task_type, task_status: 'scheduled',

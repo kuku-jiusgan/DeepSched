@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta
 
 from app.models import Project, Task, TaskDependency, TimeSlot
+from app.repositories.task_delay_repository import has_reported_task_delay
 from app.services.instrument_status_service import delete_time_slots_and_refresh
 from app.services.schedule_advance_notification_service import (
     capture_task_schedule_windows,
@@ -36,6 +37,20 @@ def propagate_actual_delay(
 ) -> dict:
     if actual_end <= planned_end:
         return {"shifted_slots": 0, "affected_tasks": 0}
+
+    # Overdue status also comes from automatic detection; only a submitted
+    # delay report authorizes shifting other tasks on late completion.
+    if not has_reported_task_delay(db, task.id):
+        _logger.info(
+            "schedule_delay_propagation_skipped task_id=%s planned_end=%s "
+            "actual_end=%s reason=unreported_delay",
+            task.id, planned_end, actual_end,
+        )
+        return {
+            "shifted_slots": 0,
+            "affected_tasks": 0,
+            "skipped_reason": "unreported_delay",
+        }
 
     task_ids = _affected_task_ids(db, task, planned_end)
     slots = _movable_slots(db, task_ids, planned_end)

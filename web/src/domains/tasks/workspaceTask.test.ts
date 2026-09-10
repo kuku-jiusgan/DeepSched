@@ -6,6 +6,8 @@ import {
   normalizeWorkspaceTask,
   isWorkspaceActiveTask,
   isWorkspacePendingTask,
+  canStartWorkspaceTask,
+  workspaceActionStatus,
   type WorkspaceTask,
 } from './workspaceTask'
 import {
@@ -111,5 +113,21 @@ describe('workspace task selectors', () => {
     expect(normalized.actionable_slot?.id).toBe(57)
     expect(normalized.delay.status).toBe('delayed')
     expect(isWorkspaceExceptionConfirmTask(normalized, now)).toBe(true)
+  })
+
+  it('does not offer start for a running task on a scheduled continuation slot', () => {
+    const runningContinuation = task({
+      execution_status: 'running',
+      actual_window: { start: '2026-07-17T21:05:00', end: null },
+      actionable_slot: {
+        ...task().actionable_slot!,
+        status: 'scheduled',
+        plan_start: '2026-07-20T08:30:00',
+        plan_end: '2026-07-20T09:30:00',
+      },
+    })
+
+    expect(workspaceActionStatus(runningContinuation)).toBe('running')
+    expect(canStartWorkspaceTask(runningContinuation)).toBe(false)
   })
 })

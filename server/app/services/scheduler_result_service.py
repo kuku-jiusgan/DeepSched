@@ -129,9 +129,32 @@ def persist_schedule_result(
     )
     # 求解时被排除掉的那些槽，到这一步才真正作废——写回阶段的一条指令，而不是
     # 求解前的一次删除。
+    # 只有实际进入本次落盘计划的任务，才能作废其旧槽。求解器可能因签批
+    # 预测等原因把任务从落盘集合中剔除；此时保留旧槽，避免出现“旧槽已作废、
+    # 新槽却没有生成”的数据丢失。
+    persisted_task_ids = {task.id for task in tasks}
+    releasable_ids = {
+        slot_id for slot_id, task_id in db.query(
+            TimeSlot.id, TimeSlot.task_id,
+        ).filter(TimeSlot.id.in_(released_slot_ids or set())).all()
+        if task_id in persisted_task_ids
+    }
+    # Forecast tasks are deliberately omitted from the CP-SAT variables, but
+    # their old slots were still included in the released set by the resource
+    # closure.  Supersede those stale slots as well; otherwise the solver can
+    # place the selected task over an occupancy it never modeled.
+    if forecast_task_ids and released_slot_ids:
+        releasable_ids.update(
+            slot_id for slot_id, task_id in db.query(
+                TimeSlot.id, TimeSlot.task_id,
+            ).filter(TimeSlot.id.in_(released_slot_ids)).all()
+            if task_id in forecast_task_ids
+        )
+    superseded_ids = {action.slot_id for action in supersedes}
     supersedes = tuple(supersedes) + tuple(
         SupersedeSlot(slot_id, "排程重排")
-        for slot_id in sorted(released_slot_ids or ())
+        for slot_id in sorted(releasable_ids)
+        if slot_id not in superseded_ids
     )
     schedule_run_id = new_schedule_run_id()
     created, plan = persist_slots(

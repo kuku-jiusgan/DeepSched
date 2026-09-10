@@ -366,6 +366,8 @@ class InstrumentBridgeReservationOut(BaseModel):
     following_task_id: int
     plan_start: datetime
     plan_end: datetime
+    actual_start: Optional[datetime] = None
+    actual_end: Optional[datetime] = None
     task_name: str
     task_type: Optional[str] = None
     project_id: Optional[int] = None

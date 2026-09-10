@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  bridgeActualRangeText,
   showsExecutionSections,
   slotActualRangeText,
   slotPlanRangeText,
@@ -72,6 +73,11 @@ describe('仪器甘特图悬浮框时间文案', () => {
     })
 
     expect(slotPlanRangeText(item)).toBe('09-02 08:30 – 09-02 20:00')
+  })
+
+  it('非仪器任务显示实际时间且没有执行记录时明确未开始', () => {
+    expect(bridgeActualRangeText(slot({ actual_start: undefined, actual_end: undefined }))).toBe('未开始')
+    expect(bridgeActualRangeText(slot({ actual_start: '2026-09-02T09:00:00', actual_end: '2026-09-02T10:30:00' }))).toBe('09-02 09:00 – 09-02 10:30')
   })
 
   it('仪器故障和桥接占位不套这套分组', () => {

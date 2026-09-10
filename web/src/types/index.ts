@@ -324,6 +324,8 @@ export interface InstrumentBridgeReservation {
   following_task_id: number;
   plan_start: string;
   plan_end: string;
+  actual_start?: string | null;
+  actual_end?: string | null;
   task_name: string;
   task_type?: string | null;
   project_id?: number | null;

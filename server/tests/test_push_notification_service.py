@@ -1,4 +1,5 @@
 import unittest
+from itertools import product
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -68,9 +69,9 @@ class PushNotificationServiceTest(unittest.TestCase):
 
         notifications = self.db.query(Notification).order_by(Notification.id).all()
         self.assertEqual(sent, 1)
-        self.assertEqual([item.user_name for item in notifications], ["analyst", "analyst"])
-        self.assertEqual([item.channel for item in notifications], ["site", "wecom"])
-        self.assertEqual([item.delivery_status for item in notifications], ["success", "pending"])
+        self.assertEqual([item.user_name for item in notifications], ["analyst"])
+        self.assertEqual([item.channel for item in notifications], ["site"])
+        self.assertEqual([item.delivery_status for item in notifications], ["success"])
 
     def test_project_manager_context_is_not_a_user_role(self):
         manager = User(
@@ -102,8 +103,8 @@ class PushNotificationServiceTest(unittest.TestCase):
 
         self.assertEqual(sent, 1)
         notifications = self.db.query(Notification).order_by(Notification.id).all()
-        self.assertEqual([item.user_name for item in notifications], ["manager", "manager"])
-        self.assertEqual([item.channel for item in notifications], ["site", "wecom"])
+        self.assertEqual([item.user_name for item in notifications], ["manager"])
+        self.assertEqual([item.channel for item in notifications], ["site"])
 
     def test_empty_notify_roles_send_to_no_users(self):
         analyst = User(
@@ -135,7 +136,7 @@ class PushNotificationServiceTest(unittest.TestCase):
         self.assertEqual(sent, 0)
         self.assertEqual(self.db.query(Notification).count(), 0)
 
-    def test_every_notification_uses_site_and_wecom_when_configured(self):
+    def test_enabled_channels_deliver_in_background(self):
         analyst = User(
             username="analyst",
             display_name="分析员",
@@ -147,8 +148,8 @@ class PushNotificationServiceTest(unittest.TestCase):
             name="排程变更",
             rule_type="schedule_changed",
             enabled=True,
-            enable_site=False,
-            enable_wecom=False,
+            enable_site=True,
+            enable_wecom=True,
             notify_roles='["分析员"]',
         )
         config = PushChannelConfig(
@@ -217,6 +218,36 @@ class PushNotificationServiceTest(unittest.TestCase):
         self.assertEqual(1, processed)
         self.assertEqual("failed", pending_notification.delivery_status)
         self.assertIn("未配置完整", pending_notification.error_message)
+
+    def test_channel_switches_and_external_delivery_control_created_notifications(self):
+        user = User(username="recipient", display_name="接收人", role="技术员", is_active=True)
+        rule = AlertRule(name="排程变更", rule_type="schedule_changed", notify_roles=None)
+        self.db.add_all([user, rule])
+        self.db.commit()
+
+        for enabled, site, wecom, external in product((False, True), repeat=4):
+            with self.subTest(enabled=enabled, site=site, wecom=wecom, external=external):
+                rule.enabled = enabled
+                rule.enable_site = site
+                rule.enable_wecom = wecom
+                self.db.commit()
+                with patch("app.services.push_notification_service.enqueue_wecom_delivery") as enqueue:
+                    sent = push_by_rule(
+                        self.db, "schedule_changed", [user, user], "测试通知", "测试内容",
+                        external_delivery=external,
+                    )
+                self.db.flush()
+                expected = []
+                if enabled and site:
+                    expected.append("site")
+                if enabled and wecom and external:
+                    expected.append("wecom")
+                rows = self.db.query(Notification).order_by(Notification.id).all()
+                self.assertEqual(expected, [row.channel for row in rows])
+                self.assertEqual(int(bool(expected)), sent)
+                self.assertEqual(int("wecom" in expected), enqueue.call_count)
+                self.db.query(Notification).delete(synchronize_session="fetch")
+                self.db.commit()
 
 
 if __name__ == "__main__":

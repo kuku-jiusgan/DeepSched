@@ -47,3 +47,7 @@ export function slotActualRangeText(slot: TooltipSlot): string {
 export function showsExecutionSections(slot: TooltipSlot & { isBridgeReservation?: boolean }): boolean {
   return slot.status !== 'fault' && !slot.isBridgeReservation
 }
+
+export function bridgeActualRangeText(slot: TooltipSlot): string {
+  return slotActualRangeText(slot)
+}

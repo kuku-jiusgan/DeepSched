@@ -74,7 +74,7 @@
               <div v-for="task in projectDetails[item.project_id].timeline.tasks" :key="task.task_id" class="task-row">
                 <div class="project-column task-identity"><span>{{ task.task_name }}</span><small>{{ task.assignee_name || '未指定执行人' }}</small></div>
                 <div class="timeline-column dual-track">
-                  <TimelineGrid :range-start="rangeStart" :range-end="rangeEnd" :plan-start="task.plan_start || task.expected_approval_at" :plan-end="task.plan_end || task.expected_approval_at" :actual-start="task.actual_start" :actual-end="task.actual_end" :actual-started-at="task.actual_start" :is-milestone="task.is_external_gate" />
+                  <TimelineGrid :range-start="rangeStart" :range-end="rangeEnd" :plan-start="task.plan_start || task.expected_approval_at" :plan-end="task.plan_end || task.expected_approval_at" :actual-start="task.actual_start" :actual-end="task.actual_end" :actual-started-at="task.actual_start" :is-milestone="task.is_external_gate" :is-external-gate="task.is_external_gate" />
                 </div>
                 <div class="result-column task-status">{{ taskStatusLabel(task.status) }}</div>
               </div>
@@ -148,7 +148,7 @@ function formatDate(value: string | null) { return value ? dayjs(value).format('
 function formatDateTime(value: string | null) { return value ? dayjs(value).format('MM-DD HH:mm') : '-' }
 function deviationText(days: number) { return days > 0 ? `晚 ${days} 天` : days < 0 ? `提前 ${Math.abs(days)} 天` : '与交付日一致' }
 function deviationClass(days: number) { return days > 0 ? 'text-danger' : days < 0 ? 'text-success' : '' }
-function taskStatusLabel(status: string) { return ({ pending: '待开始', scheduled: '已排程', running: '进行中', completed: '已完成', done: '已完成', paused: '已暂停', blocked: '受阻' } as Record<string, string>)[status] || status }
+function taskStatusLabel(status: string) { return ({ pending: '待开始', scheduled: '已排程', running: '进行中', completed: '已完成', done: '已完成', paused: '已暂停', blocked: '受阻', waiting_external: '等待客户' } as Record<string, string>)[status] || status }
 onMounted(loadProgress)
 
 const TimelineGrid = defineComponent({
@@ -156,7 +156,7 @@ const TimelineGrid = defineComponent({
     rangeStart: { type: String, required: true }, rangeEnd: { type: String, required: true },
     planStart: String as PropType<string | null>, planEnd: String as PropType<string | null>,
     actualStart: String as PropType<string | null>, actualEnd: String as PropType<string | null>,
-    actualStartedAt: String as PropType<string | null>, dueDate: String as PropType<string | null>, isMilestone: Boolean,
+    actualStartedAt: String as PropType<string | null>, dueDate: String as PropType<string | null>, isMilestone: Boolean, isExternalGate: Boolean,
   },
   setup(props) {
     const position = (value?: string) => value ? Math.max(0, Math.min(100, (dayjs(value).valueOf() - dayjs(props.rangeStart).valueOf()) / Math.max(DAY_MS, dayjs(props.rangeEnd).valueOf() - dayjs(props.rangeStart).valueOf()) * 100)) : 0
@@ -164,7 +164,7 @@ const TimelineGrid = defineComponent({
     return () => h('div', { class: 'timeline-grid' }, [
       h('i', { class: 'today-marker', style: { left: `${position(dayjs().toISOString())}%` } }),
       props.dueDate ? h('i', { class: 'due-marker', style: { left: `${position(props.dueDate)}%` }, title: `交付日期 ${dayjs(props.dueDate).format('YYYY-MM-DD')}` }) : null,
-      props.planStart && props.planEnd ? h('i', { class: ['track-bar', 'plan-bar', { 'milestone-bar': props.isMilestone }], style: barStyle(props.planStart, props.planEnd), title: `预计 ${dayjs(props.planStart).format('MM-DD HH:mm')} - ${dayjs(props.planEnd).format('MM-DD HH:mm')}` }) : h('span', { class: 'no-plan' }, '未排程'),
+      props.planStart && props.planEnd ? h('i', { class: ['track-bar', 'plan-bar', { 'milestone-bar': props.isMilestone }], style: barStyle(props.planStart, props.planEnd), title: `预计 ${dayjs(props.planStart).format('MM-DD HH:mm')} - ${dayjs(props.planEnd).format('MM-DD HH:mm')}` }) : h('span', { class: 'no-plan' }, props.isExternalGate ? '待确认签批时间' : '未排程'),
       props.actualStart && props.actualEnd ? h('i', { class: 'track-bar actual-bar', style: barStyle(props.actualStart, props.actualEnd), title: `实际 ${dayjs(props.actualStart).format('MM-DD HH:mm')} - ${dayjs(props.actualEnd).format('MM-DD HH:mm')}` }) : null,
       props.actualStartedAt ? h('i', { class: 'actual-start-marker', style: { left: `${position(props.actualStartedAt)}%` }, title: `已于 ${dayjs(props.actualStartedAt).format('MM-DD HH:mm')} 开始` }) : null,
     ])

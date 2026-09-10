@@ -152,6 +152,7 @@ def _enrich_bridge_reservation(item: InstrumentBridgeReservation) -> InstrumentB
         id=item.id, schedule_run_id=item.schedule_run_id, task_id=item.task_id,
         instrument_id=item.instrument_id, previous_task_id=item.previous_task_id,
         following_task_id=item.following_task_id, plan_start=item.plan_start, plan_end=item.plan_end,
+        actual_start=_bridge_actual_start(task), actual_end=_bridge_actual_end(task),
         task_name=task.name, task_type=task.task_type, project_id=task.project_id,
         project_code=project.code, project_name=project.name, assignee_id=task.assignee_id,
         assignee_name=task.assignee.display_name if task.assignee else None,
@@ -166,10 +167,21 @@ def _enrich_bridge_history(item: dict) -> InstrumentBridgeReservationOut:
         task_id=item["task_id"], instrument_id=item["instrument_id"],
         previous_task_id=item["previous_task_id"], following_task_id=item["following_task_id"],
         plan_start=item["plan_start"], plan_end=item["plan_end"], task_name=task.name,
+        actual_start=item.get("actual_start"), actual_end=item.get("actual_end"),
         task_type=task.task_type, project_id=task.project_id, project_code=project.code,
         project_name=project.name, assignee_id=task.assignee_id,
         assignee_name=task.assignee.display_name if task.assignee else None,
     )
+
+
+def _bridge_actual_start(task: Task):
+    return min((segment.started_at for segment in task.execution_segments if segment.started_at), default=None)
+
+
+def _bridge_actual_end(task: Task):
+    if task.status not in {"completed", "done"}:
+        return None
+    return max((segment.ended_at for segment in task.execution_segments if segment.ended_at), default=None)
 
 @router.put("/timeslots/{slot_id}", response_model=TimeSlotOut)
 def update_timeslot(

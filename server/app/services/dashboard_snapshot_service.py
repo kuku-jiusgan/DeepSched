@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from app.models import DashboardStatsSnapshot
+from app.repositories.dashboard_snapshot_repository import upsert_dashboard_snapshot
 
 
 SNAPSHOT_TTL = timedelta(minutes=1)
@@ -23,15 +24,7 @@ def load_latest_dashboard_snapshot(db, cache_key: str):
 
 
 def save_dashboard_snapshot(db, cache_key: str, payload: dict) -> None:
-    snapshot = db.query(DashboardStatsSnapshot).filter(
-        DashboardStatsSnapshot.cache_key == cache_key,
-    ).first()
-    if snapshot is None:
-        snapshot = DashboardStatsSnapshot(cache_key=cache_key, payload=payload)
-        db.add(snapshot)
-    else:
-        snapshot.payload = payload
-        snapshot.generated_at = datetime.now()
+    upsert_dashboard_snapshot(db, cache_key, payload)
     db.query(DashboardStatsSnapshot).filter(
         DashboardStatsSnapshot.generated_at < datetime.now() - SNAPSHOT_RETENTION,
     ).delete(synchronize_session=False)

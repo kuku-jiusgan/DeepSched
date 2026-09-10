@@ -22,6 +22,7 @@ export interface ProjectArrangementDay {
   date: Dayjs | null
   items: ProjectArrangementDisplayItem[]
   isUnscheduled: boolean
+  label?: string
 }
 
 export function buildProjectArrangementDays(
@@ -32,8 +33,14 @@ export function buildProjectArrangementDays(
     .filter(item => item.plan_start || item.expected_approval_at || item.actual_start)
     .map(item => toDisplayItem(item, now))
     .sort(compareItems)
+  const approvalWithoutDate = items
+    .filter(item => item.is_external_gate && !item.plan_start && !item.expected_approval_at && !item.actual_start)
+    .map(item => toDisplayItem(item, now))
+    .sort(compareItems)
+  const completedApproval = approvalWithoutDate.filter(item => ['done', 'completed'].includes(item.task_status))
+  const pendingApproval = approvalWithoutDate.filter(item => !['done', 'completed'].includes(item.task_status))
   const unscheduled = items
-    .filter(item => !item.plan_start && !item.expected_approval_at && !item.actual_start)
+    .filter(item => !item.is_external_gate && !item.plan_start && !item.expected_approval_at && !item.actual_start)
     .map(item => toDisplayItem(item, now))
     .sort(compareItems)
   const days: ProjectArrangementDay[] = []
@@ -44,7 +51,9 @@ export function buildProjectArrangementDays(
     if (current) current.items.push(item)
     else days.push({ key, date, items: [item], isUnscheduled: false })
   }
-  if (unscheduled.length) days.push({ key: 'unscheduled', date: null, items: unscheduled, isUnscheduled: true })
+  if (completedApproval.length) days.push({ key: 'completed-approval', date: null, items: completedApproval, isUnscheduled: false, label: '已完成签批' })
+  if (pendingApproval.length) days.push({ key: 'approval', date: null, items: pendingApproval, isUnscheduled: false, label: '待确认签批时间' })
+  if (unscheduled.length) days.push({ key: 'unscheduled', date: null, items: unscheduled, isUnscheduled: true, label: '未排程' })
   return days
 }
 
@@ -74,7 +83,7 @@ function toDisplayItem(item: ProjectArrangementItem, now: Dayjs): ProjectArrange
     ...item,
     displayDate: anchor ? dayjs(anchor) : null,
     dailyState,
-    isUnscheduled: !item.plan_start && !item.expected_approval_at,
+    isUnscheduled: !item.is_external_gate && !item.plan_start && !item.expected_approval_at,
     isOverdue: dailyState === 'missed' || isApprovalOverdue,
   }
 }

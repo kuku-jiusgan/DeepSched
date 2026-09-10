@@ -60,7 +60,6 @@ if [[ "$MODE" == "production" ]]; then
   echo "正在构建正式前端..."
   (cd "$ROOT_DIR/web" && corepack pnpm run build)
   export ENVIRONMENT="production"
-  export AUTO_CREATE_SCHEMA="${AUTO_CREATE_SCHEMA:-true}"
   export CORS_ORIGINS="${CORS_ORIGINS:-https://deepsched.sduzbbri.online,http://127.0.0.1:$PORT}"
   echo "正式模式：http://127.0.0.1:$PORT"
   cd "$ROOT_DIR/server"
@@ -87,8 +86,11 @@ trap cleanup EXIT INT TERM
 
 (
   cd "$ROOT_DIR/server"
+  # 显式排除脚本和测试，避免数据修复期间触发服务重启。
   exec env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
-    "$VENV_DIR/bin/uvicorn" app.main:app --reload --host "$BACKEND_HOST" --port "$BACKEND_PORT"
+    "$VENV_DIR/bin/uvicorn" app.main:app --reload --reload-dir "$ROOT_DIR/server/app" \
+    --reload-exclude "$ROOT_DIR/server/scripts" --reload-exclude "$ROOT_DIR/server/tests" \
+    --host "$BACKEND_HOST" --port "$BACKEND_PORT"
 ) > >(tee -a "$BACKEND_LOG_DIR/uvicorn.out.log") \
   2> >(tee -a "$BACKEND_LOG_DIR/uvicorn.err.log" >&2) &
 BACKEND_PID=$!

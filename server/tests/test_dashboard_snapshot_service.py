@@ -1,5 +1,8 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -32,6 +35,25 @@ class DashboardSnapshotServiceTest(unittest.TestCase):
         self.assertIsNone(load_dashboard_snapshot(self.db, "old"))
         self.assertEqual({"avg_utilization": 3}, load_dashboard_snapshot(self.db, "current"))
         self.assertEqual(1, self.db.query(DashboardStatsSnapshot).count())
+
+    def test_concurrent_requests_save_one_snapshot_without_errors(self):
+        with TemporaryDirectory() as directory:
+            engine = create_engine(f"sqlite:///{Path(directory) / 'snapshots.db'}")
+            DashboardStatsSnapshot.__table__.create(engine)
+            sessions = sessionmaker(bind=engine)
+
+            def save(value):
+                with sessions() as db:
+                    save_dashboard_snapshot(db, "shared", {"avg_utilization": value})
+
+            try:
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    list(pool.map(save, range(12)))
+                with sessions() as db:
+                    self.assertEqual(1, db.query(DashboardStatsSnapshot).count())
+                    self.assertIn(load_dashboard_snapshot(db, "shared")["avg_utilization"], range(12))
+            finally:
+                engine.dispose()
 
 
 if __name__ == "__main__":

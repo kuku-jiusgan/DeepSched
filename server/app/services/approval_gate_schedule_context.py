@@ -43,8 +43,8 @@ def build_approval_schedule_context(db, gate: Task) -> ApprovalScheduleContext:
     branch_anchor_at = _branch_anchor_at(db, branch_ids - downstream_ids)
     if gate.gate_status == "approved":
         # 正式签批立即进入排程：接在相关仪器当前运行任务之后；若没有
-        # 运行任务，则从当前时间开始，不等待原先填写的预计签批时间。
-        anchor_at = _active_resource_anchor(db, downstream_ids)
+        # 运行任务，则从实际签批时间开始，不等待原先填写的预计签批时间。
+        anchor_at = _active_resource_anchor(db, downstream_ids, gate.approved_at)
     else:
         # 预计签批只用于预测，后续任务不能早于预计签批时间。
         approval_at = gate.expected_approval_at
@@ -153,8 +153,14 @@ def _branch_anchor_at(db, task_ids: set[int]) -> datetime | None:
     return max(fallback_ends, default=None)
 
 
-def _active_resource_anchor(db, task_ids: set[int]) -> datetime:
-    now = datetime.now()
+def _active_resource_anchor(
+    db,
+    task_ids: set[int],
+    fallback_at: datetime | None = None,
+) -> datetime:
+    # 没有活动资源时，正式签批的锚点必须可重复计算，否则影响确认令牌会因
+    # 两次请求之间的当前时间变化而失效。
+    now = fallback_at or datetime.now()
     if not task_ids:
         return now
     instrument_ids = {

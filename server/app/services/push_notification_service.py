@@ -58,23 +58,29 @@ def push_by_rule(
     if rule and not rule.enabled:
         return 0
 
+    enable_site = rule is None or rule.enable_site
+    enable_wecom = external_delivery and (rule is None or rule.enable_wecom)
+    if not enable_site and not enable_wecom:
+        return 0
+
     unique_users = _notification_recipients(rule, users, context_roles)
     sent_count = 0
 
     for user in unique_users:
-        db.add(_notification(
-            user=user,
-            rule_type=rule_type,
-            title=title,
-            content=content,
-            channel="site",
-            delivery_status="success",
-            related_entity_type=related_entity_type,
-            related_entity_id=related_entity_id,
-        ))
+        if enable_site:
+            db.add(_notification(
+                user=user,
+                rule_type=rule_type,
+                title=title,
+                content=content,
+                channel="site",
+                delivery_status="success",
+                related_entity_type=related_entity_type,
+                related_entity_id=related_entity_id,
+            ))
         sent_count += 1
 
-        if external_delivery:
+        if enable_wecom:
             db.add(_notification(
                 user=user,
                 rule_type=rule_type,
@@ -86,7 +92,7 @@ def push_by_rule(
                 related_entity_id=related_entity_id,
             ))
 
-    if unique_users and external_delivery:
+    if unique_users and enable_wecom:
         enqueue_wecom_delivery()
 
     return sent_count

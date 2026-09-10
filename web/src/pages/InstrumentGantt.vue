@@ -132,7 +132,10 @@
         <div class="tooltip-row"><span>计划区间</span>{{ slotPlanRangeText(hoveredSlot) }}</div>
         <div class="tooltip-row"><span>本段实际</span>{{ slotActualRangeText(hoveredSlot) }}</div>
       </template>
-      <div v-else class="tooltip-row"><span>计划时间</span>{{ slotPlanRangeText(hoveredSlot) }}</div>
+      <template v-else>
+        <div class="tooltip-row"><span>计划时间</span>{{ slotPlanRangeText(hoveredSlot) }}</div>
+        <div v-if="hoveredSlot.isBridgeReservation" class="tooltip-row"><span>实际时间</span>{{ bridgeActualRangeText(hoveredSlot) }}</div>
+      </template>
       <div v-if="hoveredSlot.status === 'fault' && hoveredSlot.faultDescription" class="tooltip-row">
         <span>原因</span>{{ hoveredSlot.faultDescription }}
       </div>
@@ -144,6 +147,7 @@
 <script setup lang="ts">
 import { useInstrumentGanttPage } from './instrumentGanttPage'
 import {
+  bridgeActualRangeText,
   showsExecutionSections,
   slotActualRangeText,
   slotPlanRangeText,

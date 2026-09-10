@@ -36,6 +36,7 @@ export interface ProjectHealthBlocker extends ProjectHealthTask { blocker_type: 
 export interface ProjectHealthPoint { date: string; ideal: number; actual: number; forecast: number }
 export interface ProjectHealthAnnotation { date: string; title: string; detail: string; task_id: number | null }
 export interface ProjectHealthTimelineTask { task_id: number; task_name: string; status: string; plan_start: string | null; plan_end: string | null; actual_start: string | null; actual_end: string | null; assignee_name: string | null; is_external_gate: boolean; expected_approval_at: string | null }
+export interface ProjectHealthFactor { key: string; label: string; score: number; max_score: number; status: 'good' | 'warning' | 'risk'; detail: string }
 export interface ProjectArrangementItem {
   slot_id: number | null; task_id: number; task_name: string; top_level_task_name: string | null; plan_order: number
   task_status: string; slot_status: string | null; delay_status: string; assignee_id: number | null; assignee_name: string | null
@@ -45,7 +46,7 @@ export interface ProjectArrangementItem {
 }
 export interface ProjectHealth {
   project_id: number; project_code: string; project_name: string; client_name: string | null; manager_name: string | null; start_date: string | null; end_date: string | null
-  summary: { project_status: string; health_score: number; health_level: 'green' | 'yellow' | 'red'; delivery_status: 'on_time' | 'at_risk' | 'overdue'; due_date: string | null; predicted_end: string | null; days_delta: number; schedule_state: 'not_scheduled' | 'scheduled' | 'dirty' | 'executing' | 'completed'; metric_mode: 'estimated_hours' | 'task_count'; task_counts: Record<string, number> }
+  summary: { project_status: string; health_score: number; health_level: 'green' | 'yellow' | 'red'; delivery_status: 'on_time' | 'at_risk' | 'overdue'; due_date: string | null; predicted_end: string | null; days_delta: number; schedule_state: 'not_scheduled' | 'scheduled' | 'dirty' | 'executing' | 'completed'; metric_mode: 'estimated_hours' | 'task_count'; task_counts: Record<string, number>; health_factors?: ProjectHealthFactor[]; risk_reasons?: string[] }
   due_this_week_open: ProjectHealthTask[]; delayed_over_three_days: ProjectHealthTask[]; blockers: ProjectHealthBlocker[]
   timeline: { total_value: number; points: ProjectHealthPoint[]; annotations: ProjectHealthAnnotation[]; tasks: ProjectHealthTimelineTask[] }
   arrangement_items: ProjectArrangementItem[]

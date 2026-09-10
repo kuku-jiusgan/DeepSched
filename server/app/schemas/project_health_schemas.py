@@ -1,7 +1,16 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class HealthFactor(BaseModel):
+    key: str
+    label: str
+    score: int
+    max_score: int
+    status: Literal["good", "warning", "risk"]
+    detail: str
 
 
 class ProjectHealthSummary(BaseModel):
@@ -15,6 +24,8 @@ class ProjectHealthSummary(BaseModel):
     schedule_state: Literal["not_scheduled", "scheduled", "dirty", "executing", "completed"]
     metric_mode: Literal["estimated_hours", "task_count"]
     task_counts: dict[str, int]
+    health_factors: list[HealthFactor] = Field(default_factory=list)
+    risk_reasons: list[str] = Field(default_factory=list)
 
 
 class HealthTaskItem(BaseModel):

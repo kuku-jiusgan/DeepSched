@@ -55,6 +55,8 @@ def apply_gate_schedule(db, gate: Task, is_forecast: bool, commit: bool = True):
     )
     # 预计签批和正式签批都直接落地下游排程，不把跨项目影响确认暴露给前端。
     if result.status == "insert_confirmation_required" and result.preview_token:
+        # 预览和确认在同一事务内连续执行。令牌校验用于用户稍后确认影响，
+        # 这里仍由最终排程的版本号原子校验并发变化。
         result = confirm_project_plan_insert(
             db,
             ProjectPlanInsertConfirmRequest(
@@ -63,6 +65,7 @@ def apply_gate_schedule(db, gate: Task, is_forecast: bool, commit: bool = True):
             ),
             approval_context=approval_context,
             preserve_existing=not commit,
+            verify_preview_token=False,
         )
     gate = gate_or_404(db, gate.id)
     store_schedule_result(db, gate, result, is_forecast)

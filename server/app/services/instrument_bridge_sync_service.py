@@ -68,6 +68,7 @@ def active_bridge_reservation_views(db, start_date=None, end_date=None) -> list[
     query = db.query(TimeSlot).join(Task).options(
         joinedload(TimeSlot.task).joinedload(Task.project),
         joinedload(TimeSlot.task).joinedload(Task.assignee),
+        joinedload(TimeSlot.task).selectinload(Task.execution_segments),
     ).filter(
         TimeSlot.instrument_id.is_(None),
         TimeSlot.lifecycle_status == "active",
@@ -89,6 +90,7 @@ def active_bridge_reservation_views(db, start_date=None, end_date=None) -> list[
         if bridge is None:
             continue
         previous, following = bridge
+        actual_start, actual_end = _task_actual_window(slot.task)
         result.append({
             "id": -slot.id,
             "schedule_run_id": slot.schedule_run_id,
@@ -98,6 +100,8 @@ def active_bridge_reservation_views(db, start_date=None, end_date=None) -> list[
             "following_task_id": following.task_id,
             "plan_start": slot.plan_start,
             "plan_end": slot.plan_end,
+            "actual_start": actual_start,
+            "actual_end": actual_end,
             "task": slot.task,
             "kind": "human_bridge_reservation",
         })
@@ -108,6 +112,7 @@ def bridge_reservation_rows(db, start_date=None, end_date=None) -> list:
     query = db.query(InstrumentBridgeReservation).options(
         joinedload(InstrumentBridgeReservation.task).joinedload(Task.project),
         joinedload(InstrumentBridgeReservation.task).joinedload(Task.assignee),
+        joinedload(InstrumentBridgeReservation.task).selectinload(Task.execution_segments),
     )
     if start_date is not None:
         query = query.filter(InstrumentBridgeReservation.plan_end > start_date)
@@ -179,10 +184,23 @@ def historical_bridge_reservations(db, start_date=None, end_date=None) -> list[d
             "following_task_id": following.task_id,
             "plan_start": actual_start,
             "plan_end": actual_end,
+            "actual_start": actual_start,
+            "actual_end": actual_end,
             "task": slot.task,
             "kind": "historical_human_bridge",
         })
     return result
+
+
+def _task_actual_window(task: Task) -> tuple:
+    segments = [segment for segment in task.execution_segments if segment.started_at]
+    actual_start = min((segment.started_at for segment in segments), default=None)
+    actual_end = (
+        max((segment.ended_at for segment in segments if segment.ended_at), default=None)
+        if task.status in {"completed", "done"}
+        else None
+    )
+    return actual_start, actual_end
 
 
 def stale_bridge_reservation_ids(

@@ -120,4 +120,44 @@ describe('buildProjectArrangementDays', () => {
     expect(approval.dailyState).toBe('approval')
     expect(projectArrangementActualText(approval)).toBe('签批：等待客户')
   })
+
+  it('does not classify an approval gate without an expected date as unscheduled work', () => {
+    const days = buildProjectArrangementDays([
+      item({
+        slot_id: null,
+        task_id: 4,
+        task_name: '方案签批',
+        task_status: 'waiting_external',
+        slot_status: null,
+        plan_start: null,
+        plan_end: null,
+        is_external_gate: true,
+        expected_approval_at: null,
+      }),
+    ])
+
+    expect(days).toHaveLength(1)
+    expect(days[0].label).toBe('待确认签批时间')
+    expect(days[0].isUnscheduled).toBe(false)
+  })
+
+  it('labels a completed approval gate without a schedule as completed approval', () => {
+    const [day] = buildProjectArrangementDays([
+      item({
+        slot_id: null,
+        task_id: 5,
+        task_name: '方案签批',
+        task_status: 'completed',
+        slot_status: null,
+        plan_start: null,
+        plan_end: null,
+        is_external_gate: true,
+        expected_approval_at: null,
+      }),
+    ])
+
+    expect(day.items[0].isUnscheduled).toBe(false)
+    expect(day.label).toBe('已完成签批')
+    expect(projectArrangementActualText(day.items[0])).toBe('签批：已完成')
+  })
 })

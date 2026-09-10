@@ -77,9 +77,18 @@ def complete_task_and_shift(
     # Early completion is a released-resource event, not a project-wide replan.
     # The resource closure preserves dependencies without pulling unrelated
     # top-level branches (and their independent approval gates) into the solve.
-    result = _forward_shift_instrument_queue(
-        db, completed_slot.instrument_id, end_time, task.assignee_id, task.project_id,
-    )
+    if delay_result.get("skipped_reason") == "unreported_delay":
+        # The forward queue solver can also postpone overdue slots. Preserve
+        # the schedule through both completion replan paths without a report.
+        result = {
+            "status": "ok",
+            "message": "任务已完成，未申报延期，后续排程保持不变",
+            "moved_tasks": 0,
+        }
+    else:
+        result = _forward_shift_instrument_queue(
+            db, completed_slot.instrument_id, end_time, task.assignee_id, task.project_id,
+        )
     replan_warning = None
     if result.get("status") != "ok":
         replan_warning = result.get("message") or "后续任务未能自动前移，已保留原排程"

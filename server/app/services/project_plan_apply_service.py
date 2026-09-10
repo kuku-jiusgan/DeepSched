@@ -22,6 +22,9 @@ from app.services.scheduler_persistence import ACTIVE_EXECUTION_STATUSES
 from app.services.task_delay_status_service import reset_task_delay
 from app.services.schedule_priority_dependency_service import build_schedule_priority_dependencies
 from app.services.schedule_priority_dependency_service import _tasks_with_unfinished_predecessors
+from app.services.approval_gate_schedule_dependencies import (
+    build_approval_insert_dependencies,
+)
 from app.services.schedule_slot_protection_service import (
     task_has_immovable_slot,
     tasks_with_immovable_slot,
@@ -48,10 +51,8 @@ from app.services.schedule_resource_closure_service import load_resource_closure
 from app.services.project_plan_errors import ProjectPlanInvalidError, ProjectPlanNotFoundError
 from app.services.project_plan_feasibility_service import validate_immediate_approval_feasibility
 
-
 MOVABLE_TIERS = ["confirmed", "forecast"]
 MOVABLE_SLOT_STATUSES = ["scheduled", "paused", "blocked", "interrupted"]
-
 def apply_project_plan(
     db,
     project_id: int,
@@ -102,6 +103,7 @@ def confirm_project_plan_insert(
     data: ProjectPlanInsertConfirmRequest,
     approval_context: ApprovalScheduleContext | None = None,
     preserve_existing: bool = False,
+    verify_preview_token: bool = True,
 ) -> ProjectPlanApplyResponse:
     project, selected_tasks = _load_project_candidates(db, data.project_id)
     if not selected_tasks:
@@ -118,11 +120,12 @@ def confirm_project_plan_insert(
     )
     if not movable_tasks:
         raise ProjectPlanInvalidError("当前没有允许移动的低优先级任务")
-    preview_token = plan_fingerprint(
-        db, project, selected_tasks + movable_tasks, approval_context,
-    )
-    if preview_token != data.preview_token:
-        raise ProjectPlanInvalidError("计划或排程数据已变化，请重新计算影响")
+    if verify_preview_token:
+        preview_token = plan_fingerprint(
+            db, project, selected_tasks + movable_tasks, approval_context,
+        )
+        if preview_token != data.preview_token:
+            raise ProjectPlanInvalidError("计划或排程数据已变化，请重新计算影响")
     result = _execute_replan(
         db, project, selected_tasks, movable_tasks, commit=not preserve_existing,
         approval_context=approval_context,
@@ -239,14 +242,19 @@ def _execute_replan(
         elif rollback_on_failure:
             db.rollback()
         raise
-    # 顺延这些任务的时间是对的，改它们的执行状态不是。暂停/进行中的任务原本也允许
-    # 被顺延（候选筛选特意放行了 paused），但这里一路重置成 pending、求解后又落成
-    # scheduled，别人项目的一次保存并排程就把这个任务的暂停状态和暂停原因抹掉了。
+    # 只释放可移动时间槽，不要在求解前改任务状态。求解器需要看到任务原本的
+    # 执行状态，才能正确判断已开始/已完成工作和资源占用；排程成功后的最终状态
+    # 由持久化层统一写回。暂停/进行中的任务也允许被顺延，但不能在这里被重置。
     preserved_status_task_ids = {
         task.id for task in replan_tasks if task.status in ACTIVE_EXECUTION_STATUSES
     }
     for task in replan_tasks:
-        if task.id not in preserved_status_task_ids:
+        # 新增/尚未排程的任务仍需进入 pending；已有活动时间槽的任务保留原状态，
+        # 否则会改变求解器对已排程资源和执行进度的判断。
+        has_active_slot = any(
+            slot.lifecycle_status == "active" for slot in task.time_slots
+        )
+        if task.id not in preserved_status_task_ids and not has_active_slot:
             task.status = "pending"
         reset_task_delay(task)
     db.flush()
@@ -259,7 +267,7 @@ def _execute_replan(
         commit=False,
         original_schedule_windows=old_windows,
         additional_dependencies=(
-            _approval_insert_dependencies(selected_tasks, movable_tasks)
+            build_approval_insert_dependencies(db, selected_tasks, movable_tasks)
             if approval_context
             else build_schedule_priority_dependencies(
                 db, project, selected_tasks, movable_tasks,
@@ -275,6 +283,9 @@ def _execute_replan(
         rollback_on_conflict=rollback_on_failure and not use_savepoint,
         released_slot_intervals=released_slots,
         released_slot_ids=released_slot_ids,
+        # 已排程的可移动任务必须显式载入，否则旧槽虽从求解中排除，
+        # 落盘任务集合却无法生成对应的 SupersedeSlot。
+        replaceable_task_ids=replan_task_ids,
         preserved_status_task_ids=preserved_status_task_ids,
     )
     if solver_result.get("status") != "ok":
@@ -333,16 +344,6 @@ def _execute_replan(
     else:
         db.flush()
     return response
-
-
-def _approval_insert_dependencies(
-    selected_tasks: list[Task],
-    movable_tasks: list[Task],
-) -> list[tuple[int, int]]:
-    # Shared instruments are modeled by capacity and setup constraints in the
-    # scheduler. They are not business dependencies and must not impose a
-    # cross-project task graph order.
-    return []
 
 
 def _load_project_candidates(db, project_id: int) -> tuple[Project, list[Task]]:
@@ -410,10 +411,8 @@ def _load_insert_movable_tasks(
         candidates = [
             task for task in candidates
             if not _has_approved_gate_predecessor(task)
-        ]
+    ]
     return candidates
-
-
 
 def _load_later_deadline_movable_tasks(
     db,

@@ -257,6 +257,40 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
 
         self.assertEqual([], dependencies)
 
+    def test_selected_instrument_task_waits_for_movable_manual_task(self):
+        selected_project = Project(
+            code="P-A", name="当前项目", priority=3, project_kind="project",
+        )
+        existing_project = Project(
+            code="P-B", name="已有项目", priority=3, project_kind="project",
+        )
+        self.db.add_all([selected_project, existing_project])
+        self.db.flush()
+        selected = Task(
+            project=selected_project,
+            name="方法开发",
+            task_type="FFKF_001",
+            requires_instrument=True,
+            instrument_ids=[1],
+            requires_human=True,
+            assignee_id=10,
+        )
+        manual = Task(
+            project=existing_project,
+            name="报告撰写",
+            task_type="ZXBG_001",
+            requires_human=True,
+            assignee_id=10,
+        )
+        self.db.add_all([selected, manual])
+        self.db.commit()
+
+        dependencies = build_schedule_priority_dependencies(
+            self.db, selected_project, [selected], [manual],
+        )
+
+        self.assertEqual([(selected.id, manual.id)], dependencies)
+
         movable_tasks = _load_lower_priority_movable_tasks(
             self.db,
             insert_priority=2,

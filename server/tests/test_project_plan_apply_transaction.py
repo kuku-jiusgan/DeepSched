@@ -8,7 +8,9 @@ from app.services.project_plan_apply_service import (
     _execute_replan,
     _has_approved_gate_predecessor,
     _preview_plan_insert,
+    ProjectPlanInvalidError,
     apply_project_plan,
+    confirm_project_plan_insert,
 )
 from app.services.project_plan_apply_helpers import (
     clear_replanned_project_dirty,
@@ -126,6 +128,12 @@ class ProjectPlanApplyTransactionTest(unittest.TestCase):
                 "preserved_status_task_ids"
             ]
             self.assertEqual({paused.id}, preserved)
+            self.assertEqual(
+                {paused.id, waiting.id},
+                solver.return_value.generate.call_args.kwargs[
+                    "replaceable_task_ids"
+                ],
+            )
         finally:
             db.close()
 
@@ -140,6 +148,58 @@ class ProjectPlanApplyTransactionTest(unittest.TestCase):
         validation = SimpleNamespace(id=2, predecessors=[dependency])
 
         self.assertTrue(_has_approved_gate_predecessor(validation))
+
+    @patch("app.services.project_plan_apply_service.plan_fingerprint")
+    @patch("app.services.project_plan_apply_service._load_insert_movable_tasks")
+    @patch("app.services.project_plan_apply_service._execute_replan")
+    @patch("app.services.project_plan_apply_service._load_project_candidates")
+    def test_internal_insert_confirmation_skips_preview_token_recheck(
+        self,
+        load_candidates,
+        execute_replan,
+        load_movable,
+        fingerprint,
+    ):
+        db = MagicMock()
+        project = SimpleNamespace(id=1)
+        selected = [SimpleNamespace(id=10)]
+        movable = [SimpleNamespace(id=20)]
+        load_candidates.return_value = (project, selected)
+        load_movable.return_value = movable
+        execute_replan.return_value = ProjectPlanApplyResponse(
+            status="applied", project_id=project.id,
+        )
+
+        result = confirm_project_plan_insert(
+            db,
+            SimpleNamespace(project_id=project.id, preview_token="preview"),
+            verify_preview_token=False,
+        )
+
+        self.assertEqual("applied", result.status)
+        fingerprint.assert_not_called()
+
+    @patch("app.services.project_plan_apply_service.plan_fingerprint", return_value="changed")
+    @patch("app.services.project_plan_apply_service._load_insert_movable_tasks")
+    @patch("app.services.project_plan_apply_service._load_project_candidates")
+    def test_user_insert_confirmation_rejects_changed_preview(
+        self,
+        load_candidates,
+        load_movable,
+        _fingerprint,
+    ):
+        db = MagicMock()
+        project = SimpleNamespace(id=1)
+        selected = [SimpleNamespace(id=10)]
+        movable = [SimpleNamespace(id=20)]
+        load_candidates.return_value = (project, selected)
+        load_movable.return_value = movable
+
+        with self.assertRaisesRegex(ProjectPlanInvalidError, "计划或排程数据已变化"):
+            confirm_project_plan_insert(
+                db,
+                SimpleNamespace(project_id=project.id, preview_token="preview"),
+            )
 
     @patch("app.services.project_plan_apply_service.plan_fingerprint", return_value="token")
     @patch("app.services.project_plan_apply_service._execute_replan")

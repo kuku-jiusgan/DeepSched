@@ -1,10 +1,8 @@
 from fastapi import Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from app.core.database import engine, Base, SessionLocal
+from app.core.database import SessionLocal
 from app.core.config import get_settings
-from app.core.schema_migrations import ensure_runtime_schema
-from app.models import models
 from app.services.wecom_delivery_service import (
     start_wecom_delivery_worker,
     stop_wecom_delivery_worker,
@@ -47,10 +45,6 @@ from app.api.exception_handlers import register_domain_exception_handlers
 
 settings = get_settings()
 is_production = settings.ENVIRONMENT.lower() == "production"
-if settings.AUTO_CREATE_SCHEMA:
-    Base.metadata.create_all(bind=engine)
-ensure_runtime_schema(engine)
-
 app = FastAPI(
     title="资源智能调度平台",
     version="1.0.0",

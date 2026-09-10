@@ -42,9 +42,8 @@
                     {{ isWeComConfigured ? '配置完整' : '待配置' }}
                   </a-tag>
                 </div>
-                <p>所有启用规则固定发送站内通知和企业微信，确保负责人及时收到。</p>
               </div>
-              <div class="channel-badges" aria-label="固定推送通道">
+              <div class="channel-badges" aria-label="推送通道">
                 <span><span class="channel-dot channel-dot-site" />站内通知</span>
                 <span><span class="channel-dot channel-dot-wecom" />企业微信</span>
               </div>
@@ -308,8 +307,6 @@ async function fetchData() {
     ])
     rules.value = data.map(rule => ({
       ...rule,
-      enable_site: true,
-      enable_wecom: true,
       _roles: parseRoles(rule.notify_roles),
     }))
     history.value = historyData
@@ -326,8 +323,8 @@ async function saveAll() {
   try {
     await Promise.all(rules.value.map(rule => updateAlertRule(rule.id, {
       enabled: rule.enabled,
-      enable_site: true,
-      enable_wecom: true,
+      enable_site: rule.enable_site,
+      enable_wecom: rule.enable_wecom,
       notify_roles: JSON.stringify(rule._roles),
       threshold_minutes: rule.threshold_minutes,
       threshold_percent: rule.threshold_percent,

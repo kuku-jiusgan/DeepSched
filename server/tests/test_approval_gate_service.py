@@ -220,6 +220,29 @@ class ApprovalGateServiceTest(unittest.TestCase):
         self.assertLessEqual(context.anchor_at, after)
         self.assertLess(context.anchor_at, old_plan_end)
 
+    def test_approved_context_without_active_resource_has_stable_anchor(self):
+        """影响预览和确认之间不能因当前时间变化而令令牌失效。"""
+        approved_at = datetime(2026, 7, 15, 10, 30)
+        gate = Task(
+            id=3,
+            project_id=1,
+            name="方案签批",
+            task_type="approval_gate",
+            is_external_gate=True,
+            gate_status="approved",
+            status="completed",
+            approved_at=approved_at,
+        )
+        self.validation.instrument_ids = []
+        self.db.add_all([gate, TaskDependency(task_id=2, predecessor_id=3)])
+        self.db.commit()
+
+        first = build_approval_schedule_context(self.db, gate)
+        second = build_approval_schedule_context(self.db, gate)
+
+        self.assertEqual(approved_at, first.anchor_at)
+        self.assertEqual(first.anchor_at, second.anchor_at)
+
     @patch("app.services.project_plan_apply_service.apply_project_plan")
     def test_submit_records_expected_date(self, apply_project_plan):
         gate = create_approval_gate(

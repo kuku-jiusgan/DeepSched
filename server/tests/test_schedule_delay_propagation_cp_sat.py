@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Project, Task, TimeSlot, User
+from app.models import AuditLog, Project, Task, TimeSlot, User
 from app.services.schedule_delay_propagation_service import (
     _delay_replan_fallback_reasons,
     propagate_actual_delay,
@@ -39,6 +39,11 @@ class ScheduleDelayPropagationCpSatTest(unittest.TestCase):
             plan_end=datetime(2026, 8, 26, 11, 0), status="scheduled",
         )
         self.db.add(slot)
+        self.db.add(AuditLog(
+            user_name="operator", action="task_delay_reported",
+            target_type="time_slot", target_id=None,
+            detail={"task_id": completed.id, "delay_hours": 1, "reason": "实验延期"},
+        ))
         self.db.commit()
 
         with patch(
@@ -70,6 +75,11 @@ class ScheduleDelayPropagationCpSatTest(unittest.TestCase):
         self.db.add(TimeSlot(
             task=following, plan_start=datetime(2026, 8, 26, 10, 0),
             plan_end=datetime(2026, 8, 26, 11, 0), status="scheduled",
+        ))
+        self.db.add(AuditLog(
+            user_name="operator", action="task_delay_reported",
+            target_type="time_slot", target_id=None,
+            detail={"task_id": completed.id, "delay_hours": 1, "reason": "实验延期"},
         ))
         self.db.commit()
 

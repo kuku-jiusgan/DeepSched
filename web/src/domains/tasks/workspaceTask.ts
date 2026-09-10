@@ -199,6 +199,12 @@ export function isWorkspacePendingTask(task: WorkspaceTask, now: Dayjs = dayjs()
 }
 
 export function workspaceActionStatus(task: WorkspaceTask) {
+  // The task status is authoritative for an active execution session. A task
+  // can span multiple calendar slots, so a later scheduled continuation must
+  // not make an already-running task look startable.
+  if (['running', 'paused', 'blocked', 'interrupted'].includes(task.execution_status)) {
+    return task.execution_status
+  }
   return task.actionable_slot?.status || task.execution_status
 }
 
