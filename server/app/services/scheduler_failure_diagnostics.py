@@ -22,6 +22,7 @@ def build_project_failure_diagnostic(
     current_project_id: int | None, excluded_task_ids: set[int] | None,
     task_dependencies: list[tuple[int, int]],
     released_slot_intervals: dict[int, list[tuple]] | None = None,
+    forecast_segments: list[dict] | None = None,
 ) -> dict:
     if current_project_id is None:
         raise ValueError("排程诊断缺少当前项目ID")
@@ -37,6 +38,7 @@ def build_project_failure_diagnostic(
         current_project, tasks_by_project, compatibility,
         instrument_prefix_sums, horizon_start, total_units, task_dependencies,
         released_slot_intervals or {},
+        forecast_segments or [],
     )
     has_capacity_deficit = any(
         group["remaining_hours"] < group["required_hours"]
@@ -104,6 +106,7 @@ def _tasks_by_project(tasks, excluded_task_ids: set[int] | None) -> dict:
 def _instrument_failure_groups(
     current_project, tasks_by_project, compatibility, instrument_prefix_sums,
     horizon_start, total_units, task_dependencies, released_slot_intervals=None,
+    forecast_segments=None,
 ) -> list[dict]:
     current_tasks = tasks_by_project.get(current_project.id, [])
     instruments = {}
@@ -159,6 +162,7 @@ def _instrument_failure_groups(
             current_project.id, tasks_by_project, compatibility, instrument_id,
             instrument_label, today_start, horizon_start, end_unit, segment_ends, capacities,
             task_dependencies, released_slot_intervals or {}, bridge_task_ids,
+            forecast_segments or [],
         )
         available = _working_units(
             instrument_prefix_sums[instrument_id], start_unit, end_unit,
@@ -197,14 +201,18 @@ def _occupied_project_details(
     today_start, horizon_start, end_unit, segment_ends, capacities, task_dependencies=(),
     released_slot_intervals=None,
     bridge_task_ids=None,
+    forecast_segments=None,
 ) -> tuple[list[dict], float]:
     details = []
     occupied_hours = 0.0
     segment_starts = [max(0, datetime_to_units(today_start, horizon_start)), *segment_ends[:-1]]
     for project_id, project_tasks in sorted(
         tasks_by_project.items(),
-        key=lambda item: getattr(item[1][0].project, "end_date", datetime.max),
-        reverse=True,
+        key=lambda item: (
+            int(getattr(item[1][0].project, "priority", 999) or 999),
+            getattr(item[1][0].project, "end_date", datetime.max) or datetime.max,
+            item[0],
+        ),
     ):
         if project_id == current_project_id:
             continue
@@ -214,6 +222,7 @@ def _occupied_project_details(
         _intervals, breakdown = _project_instrument_intervals(
             project_tasks, instrument_id, compatibility, today_start, project_deadline,
             task_dependencies, released_slot_intervals or {}, bridge_task_ids,
+            forecast_segments,
         )
         resource_intervals = breakdown["resource_intervals"]
         if not resource_intervals:
@@ -230,11 +239,16 @@ def _occupied_project_details(
             resource_intervals, segment_starts, segment_ends, capacities, horizon_start, end_unit,
             kind="bridge",
         )
+        forecast_hours = _forecast_hours_before_deadline(
+            resource_intervals,
+            horizon_start,
+            end_unit,
+        )
         forecast_allocated = _allocate_forecast_hours(
             resource_intervals, project_deadline, segment_ends, capacities, horizon_start, end_unit,
         )
         allocated = scheduled_allocated + bridged_allocated + forecast_allocated
-        if allocated <= 0:
+        if allocated <= 0 and scheduled_allocated + bridged_allocated + forecast_hours <= 0:
             continue
         occupied_hours += allocated
         details.append({
@@ -243,11 +257,27 @@ def _occupied_project_details(
             "instrument_label": instrument_label,
             "scheduled_hours": scheduled_allocated,
             "bridged_hours": bridged_allocated,
-            "forecast_hours": forecast_allocated,
+            # 展示真实的待排工时，不因当前容量已被其他计划占满而显示为 0。
+            "forecast_hours": forecast_hours,
             "waiting_hours": breakdown["waiting"],
-            "total_hours": allocated,
+            # 合计是该项目在此仪器上的真实工作量，不能沿用容量扣减后的占用量。
+            "total_hours": scheduled_allocated + bridged_allocated + forecast_hours,
         })
     return details, occupied_hours
+
+
+def _forecast_hours_before_deadline(resource_intervals, horizon_start, current_end) -> float:
+    """统计当前项目结题日前的预测区间原始工时。
+
+    预测工时是尚未生成正式时间槽的工作量，不能使用容量扣减后的值；容量
+    扣减只用于计算仪器剩余可用工时，不能改变占用明细中的业务工时。
+    """
+    deadline = units_to_datetime(current_end, horizon_start)
+    return _interval_hours([
+        (max(start, horizon_start), min(end, deadline))
+        for start, end, kind in resource_intervals
+        if kind == "forecast" and end > horizon_start and start < deadline
+    ])
 
 
 def _scheduled_slot_hours(
@@ -351,8 +381,29 @@ def _remaining_task_hours(task) -> float:
 def _project_instrument_intervals(
     project_tasks, instrument_id, compatibility, window_start, window_end,
     task_dependencies=(), released_slot_intervals=None, bridge_task_ids=None,
+    forecast_segments=None,
 ):
     intervals = []
+    forecast_by_task: dict[tuple[int, int], list[dict]] = {}
+    for item in forecast_segments or []:
+        forecast_by_task.setdefault(
+            (item["task_id"], item["instrument_id"]),
+            [],
+        ).append(item)
+    forecast_cursor = max(
+        [
+            window_start,
+            *(
+                slot.plan_end
+                for task in project_tasks
+                for slot in (getattr(task, "time_slots", []) or [])
+                if slot.instrument_id == instrument_id
+                and slot.plan_end
+                and getattr(slot, "lifecycle_status", "active") == "active"
+                and slot.status in {"scheduled", "running", "blocked", "paused"}
+            ),
+        ]
+    )
     # 夹在两个"同仪器 + 同负责人"任务之间的非仪器任务（方案撰写、报告撰写等）
     # 期间仪器不会被释放，必须算进该仪器的占用，否则缺口分析会偏乐观。判定由
     # 调用方按整台仪器的时间槽队列跨项目算好传进来。
@@ -400,12 +451,20 @@ def _project_instrument_intervals(
                 for start, end in released
             )
             continue
-        deadline = min(filter(None, (getattr(task, "latest_due", None), project_tasks[0].project.end_date)), default=None)
-        if deadline:
-            end = min(window_end, deadline)
-            start = end - timedelta(hours=_remaining_task_hours(task))
-            if end > window_start and start < window_end:
-                intervals.append((max(window_start, start), end, task, "forecast"))
+        duration_hours = _remaining_task_hours(task)
+        projected = forecast_by_task.get((task.id, instrument_id), [])
+        if projected:
+            for segment in projected:
+                start = max(window_start, segment["plan_start"])
+                end = min(window_end, segment["plan_end"])
+                if end > start:
+                    intervals.append((start, end, task, "forecast"))
+            continue
+        if duration_hours > 0 and forecast_cursor < window_end:
+            end = min(window_end, forecast_cursor + timedelta(hours=duration_hours))
+            if end > forecast_cursor:
+                intervals.append((forecast_cursor, end, task, "forecast"))
+                forecast_cursor = end
     intervals = [item for item in intervals if item[1] > item[0]]
     resource_intervals = [(start, end, kind) for start, end, _task, kind in intervals]
     intervals.sort(key=lambda item: item[0])

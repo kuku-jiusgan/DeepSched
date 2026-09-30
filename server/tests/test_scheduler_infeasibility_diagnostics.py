@@ -7,9 +7,22 @@ from app.services.scheduler_diagnostics import (
     schedule_infeasibility_diagnostic,
     schedule_infeasibility_message,
 )
+from app.services.scheduler_failure_diagnostics import _forecast_hours_before_deadline
 
 
 class SchedulerInfeasibilityDiagnosticsTest(unittest.TestCase):
+    def test_forecast_hours_are_reported_even_when_capacity_is_exhausted(self):
+        horizon_start = datetime(2026, 9, 1)
+        intervals = [
+            (datetime(2026, 9, 10), datetime(2026, 9, 12), "forecast"),
+        ]
+
+        # 展示口径不读取容量数组；容量是否足够由调用方单独处理。
+        self.assertEqual(
+            48.0,
+            _forecast_hours_before_deadline(intervals, horizon_start, 20 * 48),
+        )
+
     def test_groups_capacity_by_top_level_task_and_instrument(self):
         horizon_start = (datetime.now() + timedelta(days=1)).replace(
             hour=0, minute=0, second=0, microsecond=0,

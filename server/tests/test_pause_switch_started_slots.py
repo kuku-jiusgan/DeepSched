@@ -7,7 +7,6 @@ from sqlalchemy.orm import sessionmaker
 from app.core.database import Base
 from app.models import Instrument, Project, Task, TimeSlot, User
 from app.services.task_pause_switch_context_service import build_pause_switch_context
-from app.services.task_slot_transition_worker import advance_running_tasks
 
 
 class PauseSwitchStartedSlotsTest(unittest.TestCase):
@@ -61,25 +60,6 @@ class PauseSwitchStartedSlotsTest(unittest.TestCase):
 
         started = [s for s in context.replaceable_slots if s.actual_start or s.actual_end]
         self.assertEqual([], started)
-
-    def test_transition_worker_does_not_stamp_future_slots(self):
-        self.night_slot.actual_start = None
-        self.db.commit()
-
-        advance_running_tasks(self.db, self.now)
-
-        self.db.refresh(self.night_slot)
-        self.assertIsNone(self.night_slot.actual_start)
-
-    def test_transition_worker_stamps_slots_whose_start_has_arrived(self):
-        self.night_slot.actual_start = None
-        self.db.commit()
-
-        advance_running_tasks(self.db, self.now + timedelta(hours=9))
-
-        self.db.refresh(self.night_slot)
-        self.assertEqual(self.night_slot.plan_start, self.night_slot.actual_start)
-
 
 if __name__ == "__main__":
     unittest.main()

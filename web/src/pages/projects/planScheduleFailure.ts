@@ -94,7 +94,9 @@ function recommendations(diagnostic: ScheduleFailureDiagnostic) {
       ? '调整方案计算失败，请重新排程再试；若反复失败请联系管理员。'
       : jobStatus === 'stale'
         ? '计划在计算期间已变更，调整方案已作废，请重新排程。'
-        : '当前搜索范围内没有能使排程成功的日期调整方案。'
+        : jobStatus === 'inconclusive'
+          ? '候选日期的排程计算超时或搜索未完成，尚不能判断日期调整是否可行。'
+        : '当前搜索范围内未找到仅调整一个项目结题日即可成功的方案。'
   return h('section', { class: 'schedule-failure-section schedule-failure-recommendations' }, [
     h('h3', '调整方案'),
     ...(rows.length

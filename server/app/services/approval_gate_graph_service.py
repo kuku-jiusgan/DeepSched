@@ -82,12 +82,12 @@ def unapproved_gate_context(
     *,
     include_pending_approval_tasks: bool = False,
 ) -> tuple[dict[int, datetime], set[int]]:
-    """Return approval lower bounds and tasks hidden behind an unapproved gate.
+    """Return approval lower bounds and descendants excluded from persistence.
 
-    The normal scheduler keeps those descendants out of the interval model and
-    uses their workload to tighten the project's completion window.  A
-    feasibility probe may instead model them as if the gate passed immediately;
-    in that mode only an actually approved gate contributes a lower bound.
+    All descendants participate in resource and dependency constraints. Without
+    an expected approval date, an unapproved gate adds no waiting time. The
+    immediate-approval probe also ignores expected dates. Neither mode changes
+    which tasks remain unapproved and must not receive persisted slots.
     """
     task_ids = {task.id for task in tasks}
     if not task_ids:
@@ -113,6 +113,6 @@ def unapproved_gate_context(
                 bound = gate.expected_approval_at
             if bound and (task_id not in bounds or bound > bounds[task_id]):
                 bounds[task_id] = bound
-            if gate.gate_status != "approved" and not include_pending_approval_tasks:
+            if gate.gate_status != "approved":
                 forecast_ids.add(task_id)
     return bounds, forecast_ids

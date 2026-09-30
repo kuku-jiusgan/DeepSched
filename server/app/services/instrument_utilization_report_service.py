@@ -12,6 +12,8 @@ from app.services.instrument_utilization_service import (
     _effective_work_ranges,
     _intersections,
     _load_faults_by_instrument,
+    _load_slots_by_instrument,
+    _segment_counts_as_actual,
     _subtract_ranges,
     _covered_hours as _covered_work_hours,
     calculate_instrument_utilization,
@@ -33,16 +35,8 @@ def build_instrument_utilization_report(
 
 def _attach_operator_details(db, rows, window_start, window_end):
     instrument_ids = [row.instrument_id for row in rows if row.instrument_id is not None]
-    slots = db.query(TimeSlot).filter(
-        TimeSlot.instrument_id.in_(instrument_ids),
-        (
-            (TimeSlot.plan_end > window_start) & (TimeSlot.plan_start < window_end)
-        ) | (
-            TimeSlot.actual_start.isnot(None)
-            & (TimeSlot.actual_start < window_end)
-            & (TimeSlot.actual_end.is_(None) | (TimeSlot.actual_end > window_start))
-        ),
-    ).all()
+    slot_map = _load_slots_by_instrument(db, window_start, window_end)
+    slots = [slot for instrument_id in instrument_ids for slot in slot_map.get(instrument_id, [])]
     task_ids = {slot.task_id for slot in slots}
     tasks = db.query(Task).filter(Task.id.in_(task_ids)).all() if task_ids else []
     task_map = {task.id: task for task in tasks}
@@ -60,7 +54,6 @@ def _attach_operator_details(db, rows, window_start, window_end):
     ).all()
     slot_by_id = {slot.id: slot for slot in slots}
     segment_task_ids = {segment.task_id for segment in segments}
-    segment_slot_ids = {segment.slot_id for segment in segments}
     by_instrument: dict[int, dict[tuple[int | None, str], dict[str, list[tuple]]]] = {}
 
     def add_range(instrument_id, operator_id, operator_name, kind, start, end):
@@ -88,7 +81,7 @@ def _attach_operator_details(db, rows, window_start, window_end):
             add_range(slot.instrument_id, operator_id, operator_name, "actual", slot.actual_start, slot.actual_end or window_end)
     for segment in segments:
         slot = slot_by_id.get(segment.slot_id)
-        if not slot or (segment.ended_at is None and not _slot_can_have_open_actual(slot)):
+        if not slot or not _segment_counts_as_actual(segment):
             continue
         operator_id = segment.operator_id
         operator_name = getattr(segment.operator, "display_name", None) or "未分配"

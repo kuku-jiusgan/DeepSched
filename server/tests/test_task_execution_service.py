@@ -73,6 +73,27 @@ class TaskExecutionServiceTest(unittest.TestCase):
         self.assertEqual("running", self.db.get(TimeSlot, self.slot.id).status)
         self.assertIsNotNone(self.db.get(TimeSlot, self.slot.id).actual_start)
 
+    def test_start_only_marks_the_operator_selected_slot_as_running(self):
+        self.predecessor.status = "done"
+        continuation = TimeSlot(
+            id=2,
+            task_id=self.task.id,
+            instrument_id=self.slot.instrument_id,
+            plan_start=self.slot.plan_end + timedelta(days=1),
+            plan_end=self.slot.plan_end + timedelta(days=1, hours=2),
+            status="scheduled",
+            tier="confirmed",
+        )
+        self.db.add(continuation)
+        self.db.commit()
+
+        start_task_execution(self.db, self.slot.id)
+
+        self.db.refresh(continuation)
+        self.assertEqual("scheduled", continuation.status)
+        self.assertIsNone(continuation.actual_start)
+        self.assertIsNone(continuation.actual_end)
+
     def test_parent_predecessor_uses_all_leaf_children(self):
         self.predecessor.task_type = "group"
         self.predecessor.status = "pending"

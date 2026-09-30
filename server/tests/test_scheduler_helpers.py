@@ -86,5 +86,14 @@ class SchedulerHelpersTest(unittest.TestCase):
                     self.assertEqual(expected, start)
                     self.assertGreaterEqual(start, requested)
 
+    def test_explicit_end_can_extend_default_horizon(self):
+        now = datetime(2026, 9, 30, 15, 30)
+        requested_end = datetime(2026, 12, 31)
+
+        start, end, _ = time_horizon(now=now, end_at=requested_end)
+
+        self.assertEqual(datetime(2026, 12, 31), end)
+        self.assertLess(start, end)
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from app.models import Project, Task
 from app.services.project_plan_errors import ProjectPlanInvalidError
 
@@ -10,6 +12,9 @@ def validate_immediate_approval_feasibility(
     project: Project,
     replan_tasks: list[Task],
     released_slot_ids: set[int],
+    scheduler=None,
+    solver_time_limit: float | None = None,
+    planning_end_at: datetime | None = None,
 ) -> None:
     """Probe the replan with pending approval work treated as immediate."""
     # 检测任务是独立任务，不包含普通项目的方案签批门；将其纳入“立即签批”
@@ -21,6 +26,8 @@ def validate_immediate_approval_feasibility(
         return
     from app.services.scheduler import SchedulerService
 
+    scheduler = scheduler or SchedulerService(db)
+
     task_ids = {task.id for task in replan_tasks}
     project_ids = {task.project_id for task in replan_tasks if task.project_id}
     # 试排只应纳入本次重排涉及的项目。无关项目的待签批任务不属于当前
@@ -28,7 +35,7 @@ def validate_immediate_approval_feasibility(
     occupancy_project_ids = {project.id, *project_ids}
     probe_savepoint = db.begin_nested()
     try:
-        result = SchedulerService(db).generate(
+        result = scheduler.generate(
             project_ids=sorted(project_ids),
             task_ids=sorted(task_ids),
             current_project_id=project.id,
@@ -39,6 +46,8 @@ def validate_immediate_approval_feasibility(
             include_pending_approval_tasks=True,
             emit_advance_notifications=False,
             include_failure_diagnostics=True,
+            solver_time_limit=30.0 if solver_time_limit is None else solver_time_limit,
+            planning_end_at=planning_end_at,
             occupancy_project_ids=occupancy_project_ids,
         )
     finally:

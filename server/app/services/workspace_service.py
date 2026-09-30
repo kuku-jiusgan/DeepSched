@@ -72,13 +72,13 @@ def _workspace_task_out(
     task, segments, delay_by_slot, resume_priority_by_task, now: datetime, actual_duration_hours: float | None
 ) -> WorkspaceTaskOut:
     planned_start, planned_end = planned_task_window(segments)
-    actual_start, actual_end = actual_task_window(segments)
     if not _has_actual_duration(task, segments):
         actual_duration_hours = None
     actionable = select_actionable_segment(segments, now)
     delay_detail = _task_delay_detail(task, actionable, segments, delay_by_slot)
 
     execution_status = _workspace_execution_status(task, segments, actionable)
+    actual_start, actual_end = _workspace_actual_window(task, segments, execution_status)
 
     return WorkspaceTaskOut(
         task_id=task.id,
@@ -101,6 +101,20 @@ def _workspace_task_out(
         delay=WorkspaceDelayOut(status=task.delay_status, **delay_detail),
         resume_priority=resume_priority_by_task.get(task.id),
     )
+
+
+def _workspace_actual_window(
+    task, segments, execution_status: str,
+) -> tuple[datetime | None, datetime | None]:
+    execution_segments = list(task.execution_segments)
+    if execution_segments:
+        actual_start = min(segment.started_at for segment in execution_segments)
+        ended_at = [segment.ended_at for segment in execution_segments if segment.ended_at]
+        recorded_end = max(ended_at, default=None)
+    else:
+        actual_start, recorded_end = actual_task_window(segments)
+    actual_end = recorded_end if execution_status == "completed" else None
+    return actual_start, actual_end
 
 
 def _workspace_execution_status(task, segments, actionable) -> str:

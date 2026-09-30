@@ -92,43 +92,5 @@ class PauseBetweenSlotsTest(unittest.TestCase):
         self.assertEqual(datetime(2026, 9, 4, 20, 0), slot.actual_end)
 
 
-class TransitionWorkerBoundaryTest(unittest.TestCase):
-    """计划结束早于实际开始时，不能写出"结束早于开始"的矛盾数据。"""
-
-    def test_actual_end_is_never_before_actual_start(self):
-        from app.services.task_slot_transition_worker import advance_running_tasks
-
-        engine = create_engine("sqlite:///:memory:")
-        Base.metadata.create_all(engine)
-        db = sessionmaker(bind=engine, autoflush=False)()
-        project = Project(code="P2", name="迟开工项目")
-        instrument = Instrument(code="GC-01", name="气相色谱仪")
-        db.add_all([project, instrument])
-        db.flush()
-        task = Task(project_id=project.id, name="检测", task_type="T",
-                    requires_instrument=True, status="running")
-        db.add(task)
-        db.flush()
-        late_start = datetime(2026, 9, 4, 23, 2)
-        db.add_all([
-            TimeSlot(task_id=task.id, instrument_id=instrument.id, schedule_run_id="r",
-                     plan_start=datetime(2026, 9, 4, 19, 30), plan_end=datetime(2026, 9, 4, 20, 0),
-                     tier="confirmed", status="running", lifecycle_status="active",
-                     actual_start=late_start),
-            TimeSlot(task_id=task.id, instrument_id=instrument.id, schedule_run_id="r",
-                     plan_start=datetime(2026, 9, 7, 8, 30), plan_end=datetime(2026, 9, 7, 20, 0),
-                     tier="confirmed", status="scheduled", lifecycle_status="active"),
-        ])
-        db.flush()
-        db.refresh(task)
-
-        advance_running_tasks(db, datetime(2026, 9, 5, 0, 0))
-
-        slot = min(task.time_slots, key=lambda s: s.plan_start)
-        self.assertEqual("completed", slot.status)
-        self.assertGreaterEqual(slot.actual_end, slot.actual_start)
-        db.close()
-
-
 if __name__ == "__main__":
     unittest.main()

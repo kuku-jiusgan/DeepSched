@@ -300,6 +300,72 @@ class SamePriorityScheduleInsertTest(unittest.TestCase):
         )
         self.assertEqual([], [task.id for task in movable_tasks])
 
+    def test_higher_priority_selected_task_precedes_lower_priority_manual_task(self):
+        selected_project = Project(
+            code="P-HIGH", name="二级项目", priority=2, project_kind="project",
+        )
+        movable_project = Project(
+            code="P-LOW", name="三级项目", priority=3, project_kind="project",
+        )
+        selected = Task(
+            project=selected_project,
+            name="方法开发",
+            task_type="FFKF_001",
+            requires_instrument=True,
+            instrument_ids=[1],
+            requires_human=True,
+            assignee_id=10,
+        )
+        manual = Task(
+            project=movable_project,
+            name="方案撰写",
+            task_type="QCFA_001",
+            requires_human=True,
+            assignee_id=10,
+        )
+        self.db.add_all([selected_project, movable_project, selected, manual])
+        self.db.commit()
+
+        dependencies = build_schedule_priority_dependencies(
+            self.db, selected_project, [selected], [manual],
+        )
+
+        self.assertEqual([(manual.id, selected.id)], dependencies)
+
+    def test_detection_priority_does_not_cycle_with_downstream_manual_queue(self):
+        detection_project = Project(
+            code="DETECTION", name="检测项目", priority=1, project_kind="detection",
+        )
+        existing_project = Project(
+            code="METHOD", name="方法项目", priority=3, project_kind="project",
+        )
+        detection = Task(
+            project=detection_project, name="样品检测", task_type="test",
+            requires_instrument=True, requires_human=True,
+            instrument_ids=[1], assignee_id=10,
+        )
+        method = Task(
+            project=existing_project, name="方法开发", task_type="method",
+            requires_instrument=True, requires_human=True,
+            instrument_ids=[1], assignee_id=10, status="scheduled",
+        )
+        manual = Task(
+            project=existing_project, name="方案撰写", task_type="manual",
+            requires_instrument=False, requires_human=True,
+            assignee_id=10, status="scheduled",
+        )
+        self.db.add_all([detection, method, manual])
+        self.db.flush()
+        self.db.add(TaskDependency(task_id=manual.id, predecessor_id=method.id))
+        self.db.flush()
+
+        dependencies = build_schedule_priority_dependencies(
+            self.db, detection_project, [detection], [method, manual],
+        )
+
+        self.assertEqual([(method.id, detection.id)], dependencies)
+        self.assertNotIn((detection.id, manual.id), dependencies)
+
     def test_closed_historical_pause_does_not_lock_future_slots(self):
         _, task = self._scheduled_project("B", 3, 1)
         task.status = "paused"

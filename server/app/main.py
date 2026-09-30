@@ -28,10 +28,6 @@ from app.services.instrument_utilization_snapshot_worker import (
     start_instrument_utilization_snapshot_worker,
     stop_instrument_utilization_snapshot_worker,
 )
-from app.services.task_slot_transition_worker import (
-    start_task_slot_transition_worker,
-    stop_task_slot_transition_worker,
-)
 from app.services.solver_log_cleanup_worker import (
     start_solver_log_cleanup_worker,
     stop_solver_log_cleanup_worker,
@@ -71,7 +67,6 @@ def start_background_workers():
     start_dashboard_snapshot_worker()
     start_lab_status_snapshot_worker()
     start_instrument_utilization_snapshot_worker()
-    start_task_slot_transition_worker()
     start_solver_log_cleanup_worker()
     start_schedule_request_worker()
 
@@ -84,7 +79,6 @@ def stop_background_workers():
     stop_dashboard_snapshot_worker()
     stop_lab_status_snapshot_worker()
     stop_instrument_utilization_snapshot_worker()
-    stop_task_slot_transition_worker()
     stop_solver_log_cleanup_worker()
     stop_schedule_request_worker()
 

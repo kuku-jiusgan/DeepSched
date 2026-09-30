@@ -47,7 +47,11 @@ def time_horizon(
     if horizon_start < now:
         horizon_start += timedelta(minutes=TIME_UNIT_MINUTES)
     default_end = horizon_start + timedelta(days=HORIZON_DAYS)
-    horizon_end = min(default_end, end_at) if end_at else default_end
+    # An explicit planning end is an authoritative model boundary.  It is used by
+    # deadline probes and resource replans that must look beyond the default window;
+    # treating it only as an upper cap silently made dates just outside 90 days
+    # impossible to verify.
+    horizon_end = end_at if end_at else default_end
     if horizon_end <= horizon_start:
         raise ValueError("排程时间窗口结束时间必须晚于开始时间")
     total_units = int(

@@ -42,7 +42,6 @@ from app.services.scheduler_cross_project_setup import (
 )
 from app.services.schedule_run_lock_service import SCHEDULE_RUN, schedule_run_lock
 from app.services.scheduler_failure_response import build_failure_response
-from app.services.scheduler_pending_approval import pending_approval_end_bounds
 from app.services.scheduler_preflight import (
     narrow_compat_to_fixed_instruments,
     validate_schedulable_input,
@@ -183,8 +182,7 @@ class SchedulerService:
         # 失败诊断那条路仍需要实体（它要从任务反向拿项目全量任务、上溯父链、
         # 读时间槽），由 build_failure_response 按 id 重新取回。
         tasks = list(build_task_views(orm_tasks))
-        # 未签批方案的下游任务不进入求解，改为收窄所在项目的完工上界，
-        # 详见 scheduler_pending_approval。
+        # 未签批下游参与资源与依赖建模，但持久化时跳过这些任务。
         if not tasks:
             return {"status": "ok", "message": "没有可排程任务", "timeslots_created": 0}
         # Resource release is a first-class priority: once hard constraints
@@ -233,15 +231,11 @@ class SchedulerService:
             tasks,
             include_pending_approval_tasks=include_pending_approval_tasks,
         )
-        forecast_tasks = [task for task in tasks if task.id in forecast_task_ids]
-        if forecast_tasks:
-            tasks = [task for task in tasks if task.id not in forecast_task_ids]
-            if not tasks:
-                return {
-                    "status": "ok",
-                    "message": "当前任务都在等待方案签批",
-                    "timeslots_created": 0,
-                }
+        if forecast_task_ids:
+            _logger.info(
+                "scheduler_approval_capacity project_id=%s forecast_tasks=%s immediate_approval=%s",
+                current_project_id, len(forecast_task_ids), include_pending_approval_tasks,
+            )
         if earliest_start_bounds:
             for task_id, bound in earliest_start_bounds.items():
                 current = approval_bounds.get(task_id)
@@ -309,11 +303,6 @@ class SchedulerService:
         global_prefix_sum = working_calendar.global_prefix_sum
         instrument_prefix_sums = working_calendar.instrument_prefix_sums
 
-        project_end_bounds = pending_approval_end_bounds(
-            forecast_tasks, global_prefix_sum, horizon_start, total_units,
-            project_end_date_overrides=project_end_date_overrides,
-        )
-
         relevant_instrument_ids = {
             instrument.id
             for task in tasks
@@ -371,7 +360,6 @@ class SchedulerService:
             instrument_prefix_sums=instrument_prefix_sums,
             fixed_slots=fixed_slots,
             remaining_duration_minutes=remaining_duration_minutes,
-            project_end_bounds=project_end_bounds,
             project_end_date_overrides=project_end_date_overrides,
             now=now,
         )
@@ -503,7 +491,7 @@ class SchedulerService:
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = solver_time_limit
-        solver.parameters.num_search_workers = 4
+        solver.parameters.num_search_workers = 8
         # 显式钉住随机种子。默认值本来就是 1，写出来是为了把"求解可复现"这件事
         # 变成有人负责的决定，而不是依赖库的默认值。注意这只保证求解器自身的
         # 随机性可复现；num_search_workers > 1 的组合搜索依赖挂钟，目标值并列时

@@ -335,6 +335,7 @@ def schedule_infeasibility_diagnostic(
     current_project_id: int | None = None,
     excluded_task_ids: set[int] | None = None,
     released_slot_intervals: dict[int, list[tuple]] | None = None,
+    forecast_segments: list[dict] | None = None,
 ) -> dict:
     if current_project_id is None:
         raise ValueError("排程诊断缺少当前项目ID")
@@ -388,12 +389,14 @@ def schedule_infeasibility_diagnostic(
             tasks, task_dependencies, compatibility, global_prefix_sum, instrument_prefix_sums,
             horizon_start, total_units, current_project_id, excluded_task_ids,
             released_slot_intervals,
+            forecast_segments,
         )
 
     return _project_summary_diagnostic(
         tasks, task_dependencies, compatibility, global_prefix_sum, instrument_prefix_sums,
         horizon_start, total_units, current_project_id, excluded_task_ids,
         released_slot_intervals,
+        forecast_segments,
     )
 
 
@@ -423,11 +426,13 @@ def _project_summary_diagnostic(
     current_project_id: int | None = None,
     excluded_task_ids: set[int] | None = None,
     released_slot_intervals: dict[int, list[tuple]] | None = None,
+    forecast_segments: list[dict] | None = None,
 ) -> dict:
     return build_project_failure_diagnostic(
         tasks, compatibility, instrument_prefix_sums, horizon_start, total_units,
         current_project_id, excluded_task_ids, task_dependencies,
         released_slot_intervals,
+        forecast_segments,
     )
 
 

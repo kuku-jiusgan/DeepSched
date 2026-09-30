@@ -47,6 +47,29 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.assertEqual("error", result["status"])
         self.assertIn("已经完成", result["message"])
 
+    def test_complete_rejects_running_state_without_actual_start(self):
+        task = Task(project_id=1, name="not-started", task_type="test", status="running")
+        self.db.add(task)
+        self.db.flush()
+        slot = TimeSlot(
+            task_id=task.id,
+            plan_start=datetime(2026, 7, 20, 8, 30),
+            plan_end=datetime(2026, 7, 20, 10, 30),
+            status="running",
+        )
+        self.db.add(slot)
+        self.db.commit()
+
+        result = complete_task_and_shift(
+            self.db, task.id, actual_end_time=datetime(2026, 7, 20, 10, 0),
+        )
+
+        self.assertEqual("error", result["status"])
+        self.assertIn("尚未开始", result["message"])
+        self.assertEqual("running", task.status)
+        self.assertIsNone(slot.actual_start)
+        self.assertIsNone(slot.actual_end)
+
     def test_completing_the_switch_target_does_not_restart_the_paused_task(self):
         """接替任务完成后不替人开工，只提示原任务还停着。
 
@@ -167,7 +190,7 @@ class ScheduleCompletionTest(unittest.TestCase):
             self.db, 1, datetime(2026, 7, 20, 10, 0), 7, 1,
         )
 
-    def test_complete_multi_day_task_preserves_plan_boundaries(self):
+    def test_complete_multi_day_task_does_not_fabricate_unexecuted_actual_times(self):
         task = Task(project_id=1, name="multi-day", task_type="test", status="running")
         self.db.add(task)
         self.db.flush()
@@ -193,22 +216,23 @@ class ScheduleCompletionTest(unittest.TestCase):
         original_ranges = [(slot.plan_start, slot.plan_end) for slot in slots]
         end_time = datetime(2026, 7, 13, 9, 23)
 
-        completed_slot = _select_completed_slot(slots, slots[0].id, end_time)
+        completed_slot = _select_completed_slot(slots, slots[0].id)
         _mark_task_slots_completed(self.db, slots, completed_slot, end_time)
 
-        self.assertEqual(slots[-1].id, completed_slot.id)
+        self.assertEqual(slots[0].id, completed_slot.id)
         self.assertEqual(original_ranges, [(slot.plan_start, slot.plan_end) for slot in slots])
-        self.assertTrue(all(slot.status == "completed" for slot in slots))
-        self.assertEqual(end_time, slots[-1].actual_end)
-        self.assertEqual(datetime(2026, 7, 10, 20, 0), slots[0].actual_end)
-        self.assertEqual(datetime(2026, 7, 11, 20, 0), slots[1].actual_end)
+        self.assertTrue(all(slot.status == "cancelled" for slot in slots))
+        self.assertTrue(all(slot.lifecycle_status == "superseded" for slot in slots))
+        self.assertTrue(all(slot.actual_start is None for slot in slots))
+        self.assertTrue(all(slot.actual_end is None for slot in slots))
 
     def test_future_unexecuted_segments_are_superseded(self):
         slots = [
             TimeSlot(
                 id=1, task_id=1, instrument_id=1,
                 plan_start=datetime(2026, 7, 13, 8, 30),
-                plan_end=datetime(2026, 7, 13, 20, 0), status="running",
+                plan_end=datetime(2026, 7, 13, 20, 0),
+                actual_start=datetime(2026, 7, 13, 8, 35), status="running",
             ),
             TimeSlot(
                 id=2, task_id=1, instrument_id=1,
@@ -227,6 +251,8 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.assertEqual([1, 2], [slot.id for slot in remaining])
         self.assertEqual("completed", remaining[0].status)
         self.assertEqual(end_time, remaining[0].actual_end)
+        self.assertIsNone(remaining[1].actual_start)
+        self.assertIsNone(remaining[1].actual_end)
         self.assertEqual("cancelled", remaining[1].status)
         self.assertEqual("superseded", remaining[1].lifecycle_status)
 
@@ -277,7 +303,8 @@ class ScheduleCompletionTest(unittest.TestCase):
             TimeSlot(
                 task_id=completed.id, instrument_id=1,
                 plan_start=datetime(2026, 7, 13, 8, 30),
-                plan_end=datetime(2026, 7, 13, 14, 0), status="running",
+                plan_end=datetime(2026, 7, 13, 14, 0),
+                actual_start=datetime(2026, 7, 13, 8, 35), status="running",
             ),
             TimeSlot(
                 task_id=moved.id, instrument_id=1,
@@ -322,7 +349,8 @@ class ScheduleCompletionTest(unittest.TestCase):
             TimeSlot(
                 task_id=completed.id, instrument_id=1,
                 plan_start=datetime(2026, 7, 13, 8, 30),
-                plan_end=datetime(2026, 7, 13, 14, 0), status="running",
+                plan_end=datetime(2026, 7, 13, 14, 0),
+                actual_start=datetime(2026, 7, 13, 8, 35), status="running",
             ),
             TimeSlot(
                 task_id=moved.id, instrument_id=1,
@@ -368,7 +396,8 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.db.add_all([
             TimeSlot(
                 task_id=completed.id, plan_start=datetime(2026, 7, 13, 8, 30),
-                plan_end=datetime(2026, 7, 13, 9, 0), status="running",
+                plan_end=datetime(2026, 7, 13, 9, 0),
+                actual_start=datetime(2026, 7, 13, 8, 35), status="running",
             ),
             TimeSlot(
                 task_id=following.id, plan_start=datetime(2026, 7, 13, 9, 0),
@@ -412,7 +441,8 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.db.add_all([
             TimeSlot(
                 task_id=completed.id, plan_start=datetime(2026, 7, 13, 8, 30),
-                plan_end=datetime(2026, 7, 13, 9, 0), status="running",
+                plan_end=datetime(2026, 7, 13, 9, 0),
+                actual_start=datetime(2026, 7, 13, 8, 35), status="running",
             ),
             TimeSlot(
                 task_id=following.id, plan_start=datetime(2026, 7, 13, 9, 0),
@@ -451,7 +481,8 @@ class ScheduleCompletionTest(unittest.TestCase):
         self.db.add_all([
             TimeSlot(
                 task_id=completed.id, plan_start=datetime(2026, 7, 13, 8, 30),
-                plan_end=datetime(2026, 7, 13, 9, 0), status="running",
+                plan_end=datetime(2026, 7, 13, 9, 0),
+                actual_start=datetime(2026, 7, 13, 8, 35), status="running",
             ),
             TimeSlot(
                 task_id=following.id, plan_start=datetime(2026, 7, 13, 9, 0),

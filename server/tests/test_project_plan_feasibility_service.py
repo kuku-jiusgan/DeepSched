@@ -90,6 +90,28 @@ class ImmediateApprovalScopeTest(unittest.TestCase):
         self.assertEqual(self.task.status, "waiting_external")
         self.assertEqual(self.other_task.status, "waiting_external")
 
+    def test_candidate_planning_end_is_forwarded_to_immediate_probe(self):
+        seen = {}
+
+        class Scheduler:
+            def generate(self, **kwargs):
+                seen.update(kwargs)
+                return {"status": "ok"}
+
+        planning_end = self.start + timedelta(days=120)
+        validate_immediate_approval_feasibility(
+            self.db,
+            project=self.project,
+            replan_tasks=[self.task],
+            released_slot_ids=set(),
+            scheduler=Scheduler(),
+            solver_time_limit=5.0,
+            planning_end_at=planning_end,
+        )
+
+        self.assertEqual(planning_end, seen["planning_end_at"])
+        self.assertEqual(5.0, seen["solver_time_limit"])
+
     def test_project_in_replan_still_constrains_immediate_approval(self):
         with self.assertRaises(ProjectPlanInvalidError):
             self._validate([self.task, self.other_task])

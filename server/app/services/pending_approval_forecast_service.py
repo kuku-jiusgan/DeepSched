@@ -110,6 +110,7 @@ def _unscheduled_downstream_tasks(db) -> list[tuple[Task, int]]:
         task_ids | _neighbour_ids(task_ids, successors, predecessors),
     )).all()}
     result = []
+    seen: set[tuple[int, int]] = set()
     for task_id in task_ids:
         task = tasks_by_id.get(task_id)
         if task is None or task.id in scheduled:
@@ -118,11 +119,17 @@ def _unscheduled_downstream_tasks(db) -> list[tuple[Task, int]]:
             continue
         if task.requires_instrument:
             for instrument_id in task.instrument_ids or []:
-                result.append((task, int(instrument_id)))
+                key = (task.id, int(instrument_id))
+                if key not in seen:
+                    result.append((task, int(instrument_id)))
+                    seen.add(key)
             continue
         instrument_id = _preceding_instrument_id(task, tasks_by_id, predecessors)
         if instrument_id is not None:
-            result.append((task, instrument_id))
+            key = (task.id, instrument_id)
+            if key not in seen:
+                result.append((task, instrument_id))
+                seen.add(key)
     return result
 
 
@@ -235,9 +242,10 @@ def _group_by_instrument(tasks: list[tuple[Task, int]]) -> dict[int, list[Task]]
     for task, instrument_id in tasks:
         grouped.setdefault(instrument_id, []).append(task)
     for instrument_id, items in grouped.items():
-        # 结题日早的排前面，与排程的优先取向一致；同日按项目号稳定排序。
+        # 项目优先级数值越小越优先，之后按结题日和项目号稳定排序。
         # plan_order 保证同一项目内「方法验证 → 报告撰写」的先后不被打乱。
         items.sort(key=lambda task: (
+            int(task.project.priority or 999),
             task.project.end_date or datetime.max,
             task.project.code or "",
             task.plan_order,

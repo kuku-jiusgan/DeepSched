@@ -10,6 +10,7 @@ from ortools.sat.python import cp_model
 from app.services.scheduler_instrument_bridging import (
     add_instrument_bridge_intervals,
     bridged_instrument_hours,
+    instrument_bridge_candidate_groups,
     instrument_bridge_candidates,
 )
 from app.core.database import Base
@@ -128,6 +129,113 @@ class SchedulerInstrumentBridgingTest(unittest.TestCase):
         self.assertEqual(1, len(bridges))
         self.assertEqual(self.manual.id, bridges[0]["task_id"])
         self.assertEqual(self.instrument.id, bridges[0]["instrument_id"])
+
+    def test_branched_bridge_paths_share_one_capacity_interval(self):
+        previous_alt = _task(4, 7, True)
+        following_alt = _task(5, 7, True)
+        tasks = [self.previous, self.manual, self.following, previous_alt, following_alt]
+        dependencies = [(2, 1), (2, 4), (3, 2), (5, 2)]
+        compatibility = {
+            1: [self.instrument], 2: [], 3: [self.instrument],
+            4: [self.instrument], 5: [self.instrument],
+        }
+        model = cp_model.CpModel()
+        starts = {
+            task.id: model.NewIntVar(0, 20, f"start_{task.id}")
+            for task in tasks
+        }
+        ends = {
+            task.id: model.NewIntVar(0, 20, f"end_{task.id}")
+            for task in tasks
+        }
+        for task, start in zip(tasks, (0, 2, 7, 0, 7)):
+            model.Add(starts[task.id] == start)
+            model.Add(ends[task.id] == start + int(task.est_duration_hours))
+        presences = {
+            (task.id, 101): model.NewConstant(1)
+            for task in tasks if task.requires_instrument
+        }
+        capacity_intervals = {101: []}
+
+        bridges = add_instrument_bridge_intervals(
+            model, tasks, dependencies, compatibility,
+            starts, ends, capacity_intervals, presences, 20,
+        )
+
+        self.assertEqual(1, len(bridges))
+        self.assertEqual(1, len(capacity_intervals[101]))
+        self.assertEqual(cp_model.OPTIMAL, cp_model.CpSolver().Solve(model))
+
+    def test_branched_paths_are_grouped_before_model_construction(self):
+        previous_alt = _task(4, 7, True)
+        following_alt = _task(5, 7, True)
+        tasks = [self.previous, self.manual, self.following, previous_alt, following_alt]
+        dependencies = [(2, 1), (2, 4), (3, 2), (5, 2)]
+        compatibility = {
+            1: [self.instrument], 2: [], 3: [self.instrument],
+            4: [self.instrument], 5: [self.instrument],
+        }
+
+        groups = instrument_bridge_candidate_groups(tasks, dependencies, compatibility)
+
+        self.assertEqual(1, len(groups))
+        self.assertEqual((2, 101), (groups[0].task_id, groups[0].instrument_id))
+        self.assertEqual(((1, 3), (1, 5), (4, 3), (4, 5)), groups[0].path_pairs)
+
+    def test_task_891_paths_match_one_physical_bridge_group(self):
+        previous = _task(890, 17, True)
+        manual = _task(891, 17, False, 1)
+        following = _task(893, 17, True)
+        cross_project_following = _task(974, 17, True)
+        tasks = [previous, manual, following, cross_project_following]
+        dependencies = [(891, 890), (893, 891), (974, 891)]
+        compatibility = {
+            890: [self.instrument], 891: [],
+            893: [self.instrument], 974: [self.instrument],
+        }
+
+        groups = instrument_bridge_candidate_groups(tasks, dependencies, compatibility)
+
+        self.assertEqual(1, len(groups))
+        self.assertEqual(891, groups[0].task_id)
+        self.assertEqual(((890, 893), (890, 974)), groups[0].path_pairs)
+
+    def test_any_active_branched_path_activates_shared_bridge(self):
+        previous_alt = _task(4, 7, True)
+        following_alt = _task(5, 7, True)
+        tasks = [self.previous, self.manual, self.following, previous_alt, following_alt]
+        dependencies = [(2, 1), (2, 4), (3, 2), (5, 2)]
+        compatibility = {
+            1: [self.instrument], 2: [], 3: [self.instrument],
+            4: [self.instrument], 5: [self.instrument],
+        }
+        model = cp_model.CpModel()
+        starts = {
+            task.id: model.NewIntVar(0, 20, f"start_{task.id}")
+            for task in tasks
+        }
+        ends = {
+            task.id: model.NewIntVar(0, 20, f"end_{task.id}")
+            for task in tasks
+        }
+        for task, start in zip(tasks, (0, 2, 7, 0, 7)):
+            model.Add(starts[task.id] == start)
+            model.Add(ends[task.id] == start + int(task.est_duration_hours))
+        presences = {
+            (1, 101): model.NewConstant(0),
+            (3, 101): model.NewConstant(0),
+            (4, 101): model.NewConstant(1),
+            (5, 101): model.NewConstant(1),
+        }
+        capacity_intervals = {101: []}
+        add_instrument_bridge_intervals(
+            model, tasks, dependencies, compatibility,
+            starts, ends, capacity_intervals, presences, 20,
+        )
+        competing = model.NewIntervalVar(3, 1, 4, "competing")
+        model.AddNoOverlap([*capacity_intervals[101], competing])
+
+        self.assertEqual(cp_model.INFEASIBLE, cp_model.CpSolver().Solve(model))
 
     def test_completed_manual_task_does_not_create_bridge_reservation(self):
         engine = create_engine("sqlite:///:memory:")

@@ -3,7 +3,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.api.users import require_authenticated_user
 from app.core.database import get_db
@@ -59,9 +59,22 @@ def get_audit_logs(
 ):
     _ensure_audit_log_access(db, user)
     start = (page - 1) * page_size
-    records = _audit_log_records(db, keyword, action, category, user_name, start_at, end_at, start, page_size)
-    total = _audit_log_count(db, action, user_name, start_at, end_at)
-    return {"items": records, "total": total, "page": page, "page_size": page_size}
+    if not keyword and not category:
+        records = _audit_log_records(
+            db, action=action, user_name=user_name, start_at=start_at,
+            end_at=end_at, offset=start, limit=page_size,
+        )
+        total = _audit_log_count(db, action, user_name, start_at, end_at)
+    else:
+        filtered_records = _audit_log_records(db, keyword, action, category, user_name, start_at, end_at)
+        records = filtered_records[start:start + page_size]
+        total = len(filtered_records)
+    return {
+        "items": records,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 def _ensure_audit_log_access(db: Session, user: User) -> None:
@@ -70,7 +83,7 @@ def _ensure_audit_log_access(db: Session, user: User) -> None:
         raise HTTPException(status_code=403, detail="当前角色没有查看操作日志的权限")
 
 
-def _audit_log_records(db: Session, keyword=None, action=None, category=None, user_name=None, start_at=None, end_at=None, offset=0, limit=50) -> list[dict]:
+def _audit_log_records(db: Session, keyword=None, action=None, category=None, user_name=None, start_at=None, end_at=None, offset=None, limit=None) -> list[dict]:
     raw_logs = list_audit_logs(db, None, action, user_name, start_at, end_at, offset, limit)
     operators = {item.user_name for item in raw_logs if item.user_name not in {"system", "anonymous"}}
     users = db.query(User).filter(
@@ -80,6 +93,7 @@ def _audit_log_records(db: Session, keyword=None, action=None, category=None, us
         name: f"{user.display_name} ({user.username})" if user.display_name else user.username
         for user in users for name in (user.username, user.display_name)
     }
+    context = _enrichment_context(db, raw_logs)
     records = [
         present_audit_record({
             "id": item.id,
@@ -87,7 +101,7 @@ def _audit_log_records(db: Session, keyword=None, action=None, category=None, us
             "action": item.action,
             "target_type": item.target_type,
             "target_id": item.target_id,
-            "detail": _enriched_detail(db, item),
+            "detail": _enriched_detail(db, item, context),
             "created_at": item.created_at,
         })
         for item in raw_logs
@@ -105,12 +119,70 @@ def _audit_log_records(db: Session, keyword=None, action=None, category=None, us
     ]
 
 
+def _enrichment_context(db: Session, raw_logs: list) -> dict:
+    """一次性取齐日志要用到的时间段和任务，避免逐条日志各查一遍。"""
+    slots = _prefetch_slots(db, raw_logs)
+    return {"slots": slots, "tasks": _prefetch_tasks(db, raw_logs, slots)}
+
+
+def _prefetch_slots(db: Session, raw_logs: list) -> dict[int, TimeSlot]:
+    slot_ids: set[int] = set()
+    for item in raw_logs:
+        detail = item.detail if isinstance(item.detail, dict) else {}
+        path_match = re.search(r"/timeslots/(\d+)", str(detail.get("path") or ""))
+        if path_match:
+            slot_ids.add(int(path_match.group(1)))
+        if item.target_type == "time_slot" and item.target_id:
+            slot_ids.add(item.target_id)
+        slot_ids.update(
+            value for key in ("previous_last_slot_id", "previous_slot_id")
+            if isinstance(value := detail.get(key), int)
+        )
+    if not slot_ids:
+        return {}
+    return {
+        slot.id: slot
+        for slot in db.query(TimeSlot).filter(TimeSlot.id.in_(slot_ids)).all()
+    }
+
+
+def _prefetch_tasks(db: Session, raw_logs: list, slots: dict[int, TimeSlot]) -> dict[int, Task]:
+    task_ids: set[int] = set()
+    for item in raw_logs:
+        detail = item.detail if isinstance(item.detail, dict) else {}
+        path_match = re.search(r"/projects/tasks/(\d+)", str(detail.get("path") or ""))
+        if path_match:
+            task_ids.add(int(path_match.group(1)))
+        if isinstance(detail.get("task_id"), int):
+            task_ids.add(detail["task_id"])
+        if isinstance(detail.get("previous_task_id"), int):
+            task_ids.add(detail["previous_task_id"])
+        if item.target_type in {"task", "approval_gate"} and item.target_id:
+            task_ids.add(item.target_id)
+    task_ids.update(slot.task_id for slot in slots.values() if slot.task_id)
+    tasks: dict[int, Task] = {}
+    pending = task_ids
+    # 方案签批要往上找到顶层任务，所以把父任务链一并取回来。
+    while pending:
+        loaded = db.query(Task).options(joinedload(Task.project)).filter(Task.id.in_(pending)).all()
+        tasks.update({task.id: task for task in loaded})
+        pending = {
+            task.parent_id for task in loaded
+            if task.parent_id and task.parent_id not in tasks
+        }
+    return tasks
+
+
 def _audit_log_count(db: Session, action=None, user_name=None, start_at=None, end_at=None) -> int:
     query = db.query(AuditLog.id)
-    if action: query = query.filter(AuditLog.action == action)
-    if user_name: query = query.filter(AuditLog.user_name == user_name)
-    if start_at: query = query.filter(AuditLog.created_at >= start_at)
-    if end_at: query = query.filter(AuditLog.created_at <= end_at)
+    if action:
+        query = query.filter(AuditLog.action == action)
+    if user_name:
+        query = query.filter(AuditLog.user_name == user_name)
+    if start_at:
+        query = query.filter(AuditLog.created_at >= start_at)
+    if end_at:
+        query = query.filter(AuditLog.created_at <= end_at)
     return query.count()
 
 
@@ -123,17 +195,18 @@ def _operator_display_name(db: Session, operator: str) -> str:
     return user.display_name if user else operator
 
 
-def _enriched_detail(db: Session, item) -> dict:
+def _enriched_detail(db: Session, item, context: dict) -> dict:
+    slots, tasks = context["slots"], context["tasks"]
     detail = dict(item.detail or {})
     path = str(detail.get("path") or "")
     slot_match = re.search(r"/timeslots/(\d+)", path)
     if slot_match and not detail.get("task_id"):
-        slot = db.query(TimeSlot).filter(TimeSlot.id == int(slot_match.group(1))).first()
+        slot = slots.get(int(slot_match.group(1)))
         if slot:
             detail["task_id"] = slot.task_id
     task_match = re.search(r"/projects/tasks/(\d+)", path)
     if task_match and not detail.get("task_id"):
-        task = db.query(Task).filter(Task.id == int(task_match.group(1))).first()
+        task = tasks.get(int(task_match.group(1)))
         if task:
             detail["task_id"] = task.id
             detail["target_display"] = " · ".join(part for part in [task.project.code if task.project else None, task.name] if part)
@@ -153,12 +226,12 @@ def _enriched_detail(db: Session, item) -> dict:
         task_id = item.target_id
     slot = None
     if not task_id and item.target_type == "time_slot" and item.target_id:
-        slot = db.query(TimeSlot).filter(TimeSlot.id == item.target_id).first()
+        slot = slots.get(item.target_id)
         task_id = slot.task_id if slot else None
     if item.target_type == "time_slot" and item.target_id:
-        slot = slot or db.query(TimeSlot).filter(TimeSlot.id == item.target_id).first()
+        slot = slot or slots.get(item.target_id)
     if task_id and not detail.get("task_display"):
-        task = db.query(Task).filter(Task.id == task_id).first()
+        task = tasks.get(task_id)
         if task:
             project = task.project
             detail["task_display"] = " · ".join(part for part in [
@@ -177,15 +250,15 @@ def _enriched_detail(db: Session, item) -> dict:
                 ] if part)
     if item.target_type == "time_slot" and detail.get("task_display"):
         detail["target_display"] = detail["task_display"]
-    _enrich_related_schedule_entities(db, detail)
+    _enrich_related_schedule_entities(detail, slots, tasks)
     return detail
 
 
-def _enrich_related_schedule_entities(db: Session, detail: dict) -> None:
+def _enrich_related_schedule_entities(detail: dict, slots: dict[int, TimeSlot], tasks: dict[int, Task]) -> None:
     """将历史日志中的 ID 转为项目/任务/时间段业务名称。"""
     previous_task_id = detail.get("previous_task_id")
     if previous_task_id:
-        previous_task = db.query(Task).filter(Task.id == previous_task_id).first()
+        previous_task = tasks.get(previous_task_id)
         if previous_task:
             project = previous_task.project
             detail["previous_task_id"] = " · ".join(part for part in [
@@ -194,7 +267,7 @@ def _enrich_related_schedule_entities(db: Session, detail: dict) -> None:
             ] if part)
     previous_slot_id = detail.get("previous_last_slot_id")
     if previous_slot_id:
-        previous_slot = db.query(TimeSlot).filter(TimeSlot.id == previous_slot_id).first()
+        previous_slot = slots.get(previous_slot_id)
         if previous_slot and previous_slot.plan_start and previous_slot.plan_end:
             detail["previous_last_slot_id"] = (
                 f"{previous_slot.plan_start:%Y-%m-%d} "
@@ -202,7 +275,7 @@ def _enrich_related_schedule_entities(db: Session, detail: dict) -> None:
             )
     prior_slot_id = detail.get("previous_slot_id")
     if prior_slot_id:
-        prior_slot = db.query(TimeSlot).filter(TimeSlot.id == prior_slot_id).first()
+        prior_slot = slots.get(prior_slot_id)
         if prior_slot and prior_slot.plan_start and prior_slot.plan_end:
             detail["previous_slot_id"] = (
                 f"{prior_slot.plan_start:%Y-%m-%d} "

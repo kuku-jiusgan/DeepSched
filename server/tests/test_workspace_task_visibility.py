@@ -144,6 +144,72 @@ class WorkspaceTaskVisibilityTest(unittest.TestCase):
         task_result = next(item for item in result if item.task_id == self.owner_task.id)
         self.assertEqual("delayed", task_result.delay.status)
 
+    def test_running_task_uses_execution_history_and_has_no_actual_end(self):
+        actual_start = datetime(2026, 9, 18, 9, 3, 23)
+        self.owner_task.status = "running"
+        stale = TimeSlot(
+            task_id=self.owner_task.id,
+            plan_start=datetime(2026, 9, 9, 8, 30),
+            plan_end=datetime(2026, 9, 9, 20, 0),
+            actual_start=datetime(2026, 9, 9, 8, 30),
+            actual_end=datetime(2026, 9, 9, 20, 0),
+            status="completed",
+        )
+        running = TimeSlot(
+            task_id=self.owner_task.id,
+            plan_start=datetime(2026, 9, 18, 9, 3, 23),
+            plan_end=datetime(2026, 9, 18, 20, 0),
+            actual_start=actual_start,
+            status="running",
+        )
+        self.db.add_all([stale, running])
+        self.db.flush()
+        self.db.add(TaskExecutionSegment(
+            task_id=self.owner_task.id,
+            slot_id=running.id,
+            started_at=actual_start,
+            operator_id=self.owner.id,
+        ))
+        self.db.commit()
+
+        result = get_workspace_tasks(self.db, self.owner, datetime(2026, 9, 18, 9, 10))
+
+        task_result = next(item for item in result if item.task_id == self.owner_task.id)
+        self.assertEqual("running", task_result.execution_status)
+        self.assertEqual(actual_start, task_result.actual_window.start)
+        self.assertIsNone(task_result.actual_window.end)
+
+    def test_completed_task_uses_completed_execution_window(self):
+        actual_start = datetime(2026, 9, 18, 9, 3, 23)
+        actual_end = datetime(2026, 9, 18, 10, 15, 0)
+        self.owner_task.status = "completed"
+        slot = TimeSlot(
+            task_id=self.owner_task.id,
+            plan_start=datetime(2026, 9, 9, 8, 30),
+            plan_end=datetime(2026, 9, 9, 20, 0),
+            actual_start=actual_start,
+            actual_end=actual_end,
+            status="completed",
+        )
+        self.db.add(slot)
+        self.db.flush()
+        self.db.add(TaskExecutionSegment(
+            task_id=self.owner_task.id,
+            slot_id=slot.id,
+            started_at=actual_start,
+            ended_at=actual_end,
+            end_reason="completed",
+            operator_id=self.owner.id,
+        ))
+        self.db.commit()
+
+        result = get_workspace_tasks(self.db, self.owner, actual_end)
+
+        task_result = next(item for item in result if item.task_id == self.owner_task.id)
+        self.assertEqual("completed", task_result.execution_status)
+        self.assertEqual(actual_start, task_result.actual_window.start)
+        self.assertEqual(actual_end, task_result.actual_window.end)
+
     def test_workspace_response_identifies_paused_task_to_resume(self):
         self.owner_task.status = "running"
         self.other_task.status = "paused"

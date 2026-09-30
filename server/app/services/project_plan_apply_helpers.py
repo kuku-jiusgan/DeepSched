@@ -198,3 +198,32 @@ def plan_fingerprint(
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def downstream_ids(db, seed_ids: set[int], project_task_ids: set[int]) -> set[int]:
+    if not seed_ids:
+        return set()
+    dependencies = db.query(TaskDependency).filter(
+        TaskDependency.task_id.in_(project_task_ids),
+    ).all()
+    downstream_by_predecessor: dict[int, set[int]] = {}
+    for dependency in dependencies:
+        downstream_by_predecessor.setdefault(dependency.predecessor_id, set()).add(
+            dependency.task_id,
+        )
+    affected_ids = set(seed_ids)
+    pending_ids = list(seed_ids)
+    while pending_ids:
+        predecessor_id = pending_ids.pop()
+        for downstream_id in downstream_by_predecessor.get(predecessor_id, set()):
+            if downstream_id not in affected_ids:
+                affected_ids.add(downstream_id)
+                pending_ids.append(downstream_id)
+    return affected_ids
+
+
+def unique_tasks(tasks: list[Task]) -> list[Task]:
+    return sorted(
+        {task.id: task for task in tasks}.values(),
+        key=lambda task: (task.project_id, task.created_at, task.id),
+    )

@@ -5,8 +5,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Instrument, InstrumentFault, Project, Task, TaskExecutionSegment, TaskNightRun, TimeSlot
+from app.models import Instrument, InstrumentFault, Project, Task, TaskExecutionSegment, TaskNightRun, TimeSlot, User
 from app.services.instrument_utilization_service import calculate_instrument_utilization
+from app.services.instrument_utilization_report_service import _attach_operator_details
 
 
 class InstrumentUtilizationServiceTest(unittest.TestCase):
@@ -205,6 +206,66 @@ class InstrumentUtilizationServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(2.0, result.actual_run_hours)
+
+    def test_cross_day_segment_survives_completed_anchor_and_date_filter(self):
+        operator = User(username="cross-day", display_name="执行人", role="技术员")
+        self.db.add(operator)
+        self.db.flush()
+        self.task.status = "running"
+        self.task.assignee_id = operator.id
+        anchor = TimeSlot(
+            task_id=self.task.id, instrument_id=self.instrument.id,
+            plan_start=datetime(2026, 9, 10, 9, 30), plan_end=datetime(2026, 9, 10, 20),
+            actual_start=datetime(2026, 9, 10, 9, 30), actual_end=datetime(2026, 9, 10, 20),
+            status="completed", lifecycle_status="active",
+        )
+        self.db.add(anchor)
+        self.db.flush()
+        segment = TaskExecutionSegment(
+            task_id=self.task.id, slot_id=anchor.id, instrument_id=self.instrument.id,
+            operator_id=operator.id, started_at=datetime(2026, 9, 10, 9, 30),
+        )
+        self.db.add(segment)
+        self.db.commit()
+
+        for start, expected in [(datetime(2026, 9, 10), 33.5), (datetime(2026, 9, 11), 23.0)]:
+            with self.subTest(start=start):
+                end = datetime(2026, 9, 15)
+                rows = calculate_instrument_utilization(self.db, start, end)
+                [result] = _attach_operator_details(self.db, rows, start, end)
+                self.assertEqual(expected, result.actual_run_hours)
+                self.assertEqual(expected, result.operators[0].actual_run_hours)
+                self.assertEqual(operator.id, result.operators[0].operator_id)
+
+        segment.ended_at = datetime(2026, 9, 14, 20)
+        self.task.status = "completed"
+        self.db.commit()
+        start, end = datetime(2026, 9, 14), datetime(2026, 9, 15)
+        rows = calculate_instrument_utilization(self.db, start, end)
+        [result] = _attach_operator_details(self.db, rows, start, end)
+        self.assertEqual(11.5, result.actual_run_hours)
+        self.assertEqual(11.5, result.operators[0].actual_run_hours)
+
+    def test_cancelled_anchor_does_not_count_open_segment(self):
+        self.task.status = "running"
+        anchor = TimeSlot(
+            task_id=self.task.id, instrument_id=self.instrument.id,
+            plan_start=datetime(2026, 9, 10, 10), plan_end=datetime(2026, 9, 10, 10),
+            actual_start=datetime(2026, 9, 10, 10),
+            status="cancelled", lifecycle_status="superseded",
+        )
+        self.db.add(anchor)
+        self.db.flush()
+        self.db.add(TaskExecutionSegment(
+            task_id=self.task.id, slot_id=anchor.id, instrument_id=self.instrument.id,
+            started_at=datetime(2026, 9, 10, 10),
+        ))
+        self.db.commit()
+        start, end = datetime(2026, 9, 11), datetime(2026, 9, 15)
+        rows = calculate_instrument_utilization(self.db, start, end)
+        [result] = _attach_operator_details(self.db, rows, start, end)
+        self.assertEqual(0, result.actual_run_hours)
+        self.assertEqual([], result.operators)
 
     def test_cancelled_open_slot_does_not_extend_to_window_end(self):
         self.db.add(TimeSlot(

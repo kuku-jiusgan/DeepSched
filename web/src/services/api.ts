@@ -736,6 +736,7 @@ export interface AuditLogRecord {
   target_display: string
   summary: string
   result: 'success' | 'failed'
+  failure_reason: unknown | null
   changes: Array<{ field: string; before: unknown; after: unknown }>
   business_detail: Record<string, unknown>
   technical_detail: Record<string, unknown>

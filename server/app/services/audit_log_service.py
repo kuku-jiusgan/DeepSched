@@ -4,6 +4,7 @@ from app.models import AuditLog, Instrument, User
 
 
 HIDDEN_TECHNICAL_PATHS = {"/api/v1/users/keep-alive"}
+DUPLICATE_WINDOW_SECONDS = 2
 USER_AUDIT_FIELDS = {
     "username": "登录账号",
     "display_name": "姓名",
@@ -253,20 +254,66 @@ def list_audit_logs(db, keyword: str | None = None, action: str | None = None, u
         if not isinstance(log.detail, dict)
         or log.detail.get("path") not in HIDDEN_TECHNICAL_PATHS
     ]
-    return [log for log in visible_logs if not _is_duplicate_api_log(db, log, visible_logs)]
+    return _without_duplicate_api_logs(db, visible_logs)
 
 
-def _is_duplicate_api_log(db, log: AuditLog, logs: list[AuditLog]) -> bool:
-    if log.target_type != "api_request":
-        return False
-    aliases = _operator_aliases(db, log.user_name)
+def _without_duplicate_api_logs(db, logs: list[AuditLog]) -> list[AuditLog]:
+    """丢掉与业务日志重复的 HTTP 请求日志。
+
+    一次业务动作会同时落一条 api_request 和一条业务日志，列表里只留后者。
+    候选业务日志按「操作人 + 秒」分桶，避免逐条两两比对——四千行日志按原来
+    的写法要比对上千万次，还要为每条日志单独查一次操作人别名。
+    """
+    api_logs = [log for log in logs if log.target_type == "api_request" and log.created_at]
+    if not api_logs:
+        return logs
+    canonical_operators = _canonical_operators(db)
+    buckets = _business_log_buckets(db, api_logs, canonical_operators)
+    return [
+        log for log in logs
+        if log.target_type != "api_request"
+        or not _has_business_twin(log, canonical_operators, buckets)
+    ]
+
+
+def _canonical_operators(db) -> dict[str, str]:
+    """把登录账号和姓名都映射到同一个操作人标识。"""
+    mapping: dict[str, str] = {}
+    for username, display_name in db.query(User.username, User.display_name).all():
+        for alias in (username, display_name):
+            if alias:
+                mapping[alias] = username
+    return mapping
+
+
+def _business_log_buckets(db, api_logs: list[AuditLog], canonical_operators: dict[str, str]) -> dict[tuple[str, int], list[AuditLog]]:
+    window = timedelta(seconds=DUPLICATE_WINDOW_SECONDS)
+    business_logs = db.query(AuditLog).filter(
+        AuditLog.target_type != "api_request",
+        AuditLog.created_at >= min(log.created_at for log in api_logs) - window,
+        AuditLog.created_at <= max(log.created_at for log in api_logs) + window,
+    ).all()
+    buckets: dict[tuple[str, int], list[AuditLog]] = {}
+    for log in business_logs:
+        if not log.created_at:
+            continue
+        key = (
+            canonical_operators.get(log.user_name, log.user_name),
+            int(log.created_at.timestamp()),
+        )
+        buckets.setdefault(key, []).append(log)
+    return buckets
+
+
+def _has_business_twin(log: AuditLog, canonical_operators: dict[str, str], buckets: dict[tuple[str, int], list[AuditLog]]) -> bool:
+    operator = canonical_operators.get(log.user_name, log.user_name)
     request_target_id = _path_target_id((log.detail or {}).get("path", ""))
+    second = int(log.created_at.timestamp())
     return any(
-        candidate.target_type != "api_request"
-        and candidate.user_name in aliases
-        and abs((candidate.created_at - log.created_at).total_seconds()) <= 2
+        abs((candidate.created_at - log.created_at).total_seconds()) <= DUPLICATE_WINDOW_SECONDS
         and (request_target_id is None or candidate.target_id in {None, request_target_id})
-        for candidate in logs
+        for offset in range(-DUPLICATE_WINDOW_SECONDS, DUPLICATE_WINDOW_SECONDS + 1)
+        for candidate in buckets.get((operator, second + offset), ())
     )
 
 

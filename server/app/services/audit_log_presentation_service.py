@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from app.services.translation_catalog import CATALOG, format_value, label
+import re
+from typing import Any
+
+from app.services.translation_catalog import CATALOG, field_meta, format_value, label
 
 
 CATEGORY_LABELS = {
@@ -82,6 +85,8 @@ def present_audit_record(record: dict) -> dict:
     legacy_summary = detail.get("summary")
     if legacy_summary in {"操作项目任务", "操作系统数据", "修改系统数据", "新增/提交", "系统操作"}:
         legacy_summary = None
+    changes = _present_changes(detail.get("changes"), record.get("target_type"))
+    failure_reason = detail.get("reason") if result == "failed" else None
     return {
         **record,
         "category": category,
@@ -90,8 +95,9 @@ def present_audit_record(record: dict) -> dict:
         "target_display": target_display,
         "summary": legacy_summary or _legacy_summary({**record, "action": action}, action_label, target_display),
         "result": result,
-        "changes": detail.get("changes") or [],
-        "business_detail": _business_detail(detail),
+        "failure_reason": failure_reason,
+        "changes": changes,
+        "business_detail": _business_detail(detail, record.get("target_type")),
         "technical_detail": _technical_detail(detail),
     }
 
@@ -146,10 +152,8 @@ def _legacy_category(record: dict) -> str:
 def _target_text(record: dict) -> str:
     path = str((record.get("detail") or {}).get("path") or "")
     if "/notifications/" in path:
-        target = "通知"
-        return f"{target} #{record['target_id']}" if record.get("target_id") else target
-    target = TARGET_LABELS.get(record.get("target_type"), "操作对象")
-    return f"{target} #{record['target_id']}" if record.get("target_id") else target
+        return "通知"
+    return TARGET_LABELS.get(record.get("target_type"), "操作对象")
 
 
 def _legacy_summary(record: dict, action_label: str, target_display: str) -> str:
@@ -197,13 +201,116 @@ def _path_action(path: str, action: str | None) -> str:
     return f"{method}系统数据"
 
 
-def _business_detail(detail: dict) -> dict:
+def _business_detail(detail: dict, target_type: str | None = None) -> dict:
     hidden = {
         "event_version", "category", "summary", "result", "changes",
         "target_display", "task_display", "path", "status", "success",
         "client_ip", "duration_ms", "error",
     }
-    return {label("field", key, key): format_value(key, value) for key, value in detail.items() if key not in hidden and value not in (None, "", [], {})}
+    if detail.get("result") == "failed" or detail.get("success") is False:
+        hidden.add("reason")
+    visible = {
+        key: value for key, value in detail.items()
+        if key not in hidden and not _is_empty(value)
+    }
+    return _present_mapping(visible, target_type=target_type)
+
+
+def _present_changes(raw_changes: Any, target_type: str | None) -> list[dict[str, Any]]:
+    if not raw_changes:
+        return []
+    if isinstance(raw_changes, dict):
+        changes: list[dict[str, Any]] = []
+        used: dict[str, int] = {}
+        for raw_field, value in raw_changes.items():
+            meta = field_meta(str(raw_field), _root_field_path(str(raw_field), target_type))
+            if meta.get("visibility") == "hidden":
+                continue
+            if meta.get("type") == "entity" and isinstance(value, (int, float)):
+                continue
+            display_field = _unique_label(str(meta["label"]), used)
+            changes.append({"field": display_field, "before": None, "after": _present_value(value, str(raw_field), target_type)})
+        return changes
+    if not isinstance(raw_changes, list):
+        return []
+    changes = []
+    used: dict[str, int] = {}
+    for item in raw_changes:
+        if not isinstance(item, dict):
+            continue
+        raw_field = str(item.get("field") or "")
+        meta: dict[str, Any] | None = None
+        if _contains_chinese(raw_field):
+            display_field = raw_field
+            field_path = ""
+        else:
+            field_path = _root_field_path(raw_field, target_type)
+            meta = field_meta(raw_field, field_path)
+            if meta.get("visibility") == "hidden":
+                continue
+            if meta.get("type") == "entity" and all(
+                value is None or isinstance(value, (int, float))
+                for value in (item.get("before"), item.get("after"))
+            ):
+                continue
+            display_field = str(meta["label"])
+        display_field = _unique_label(display_field or "其他字段", used)
+        changes.append({
+            "field": display_field,
+            "before": _present_value(item.get("before"), field_path, target_type, raw_field),
+            "after": _present_value(item.get("after"), field_path, target_type, raw_field),
+        })
+    return changes
+
+
+def _present_mapping(value: dict, prefix: str = "", target_type: str | None = None) -> dict[str, Any]:
+    presented: dict[str, Any] = {}
+    used: dict[str, int] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key)
+        path = f"{prefix}.{key}" if prefix else key
+        lookup_path = path if prefix else _root_field_path(key, target_type)
+        meta = field_meta(key, lookup_path)
+        if meta.get("visibility") == "hidden" or _is_empty(raw_value):
+            continue
+        if meta.get("type") == "entity" and isinstance(raw_value, (int, float)):
+            continue
+        display_key = _unique_label(str(meta["label"]), used)
+        presented[display_key] = _present_value(raw_value, path, target_type, key)
+    return presented
+
+
+def _present_value(value: Any, path: str, target_type: str | None, key: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return _present_mapping(value, path, target_type)
+    if isinstance(value, list):
+        return [
+            _present_mapping(item, f"{path}[]", target_type)
+            if isinstance(item, dict)
+            else _present_value(item, f"{path}[]", target_type, key)
+            for item in value
+        ]
+    leaf_key = key or path.rsplit(".", 1)[-1].removesuffix("[]")
+    lookup_path = path if "." in path or path.endswith("[]") else _root_field_path(leaf_key, target_type)
+    return format_value(leaf_key, value, lookup_path)
+
+
+def _root_field_path(key: str, target_type: str | None) -> str:
+    return f"{target_type}.{key}" if target_type else key
+
+
+def _unique_label(base: str, used: dict[str, int]) -> str:
+    count = used.get(base, 0) + 1
+    used[base] = count
+    return base if count == 1 else f"{base}（{count}）"
+
+
+def _contains_chinese(value: str) -> bool:
+    return bool(re.search(r"[一-鿿]", value))
+
+
+def _is_empty(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
 
 
 def _technical_detail(detail: dict) -> dict:

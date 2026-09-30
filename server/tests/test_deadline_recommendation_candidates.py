@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -149,6 +149,36 @@ class ReclaimInterruptedJobTest(unittest.TestCase):
 
         self.db.refresh(job)
         self.assertEqual("running", job.status)
+
+
+class RecommendationJobOutcomeTest(unittest.TestCase):
+    def test_unverified_empty_search_is_inconclusive(self):
+        from app.services.schedule_deadline_recommendation_job_service import _run_job
+
+        db = MagicMock()
+        job = SimpleNamespace(id="job-1", status="pending", result=None)
+        with patch(
+            "app.services.schedule_deadline_recommendation_job_service._calculate_job",
+            return_value=([], True),
+        ):
+            _run_job(db, job)
+
+        self.assertEqual("inconclusive", job.status)
+        self.assertEqual([], job.result)
+        self.assertIsNotNone(job.completed_at)
+
+    def test_proven_empty_search_is_completed(self):
+        from app.services.schedule_deadline_recommendation_job_service import _run_job
+
+        db = MagicMock()
+        job = SimpleNamespace(id="job-2", status="pending", result=None)
+        with patch(
+            "app.services.schedule_deadline_recommendation_job_service._calculate_job",
+            return_value=([], False),
+        ):
+            _run_job(db, job)
+
+        self.assertEqual("completed", job.status)
 
 
 class OnlyBindingDeadlinesAreSearchedTest(unittest.TestCase):

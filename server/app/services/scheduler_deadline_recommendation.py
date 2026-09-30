@@ -10,6 +10,7 @@ _logger = logging.getLogger(__name__)
 
 MAX_RECOMMENDATIONS = 20
 SEARCH_TIME_LIMIT_SECONDS = 120
+PROBE_SOLVER_TIME_LIMIT_SECONDS = 5.0
 
 FEASIBLE = "feasible"          # 求解器找到了可行排程
 INFEASIBLE = "infeasible"      # 求解器证明了排不下
@@ -19,6 +20,7 @@ UNDETERMINED = "undetermined"  # 求解超时，什么也没证明
 def enumerate_verified_date_adjustments(
     db, scheduler, project_ids: list[int], original_deadlines: dict[int, datetime],
     horizon_end: datetime, generate_kwargs: dict, project_labels: dict[int, str] | None = None,
+    search_diagnostics: dict | None = None,
 ) -> list[dict]:
     """Enumerate minimal project-deadline adjustments verified by the solver."""
     project_ids = [project_id for project_id in project_ids if project_id in original_deadlines]
@@ -31,20 +33,24 @@ def enumerate_verified_date_adjustments(
     # 多余了——而且它把所有结题日一起放宽，模型最松、求解器搜得最久，实测单这
     # 一次就要 18.2 秒，比它能省下的那几次快速否定贵得多。
     results: list[dict] = []
+    is_inconclusive = not project_ids
     # 每个项目单独出一套方案：只动它一个，其余项目原地不动，求它最短要延几天。
-    # 方案之间互相独立，不存在"这 2 个项目需要一起调整"的组合方案——那种方案
-    # 看不出每个项目为什么被牵进来，业务上也没法执行。扫到求解视界仍找不到可行
-    # 日期的项目，直接不出方案。
+    # 方案之间互相独立，目前不搜索多项目联合调整。单项目扫到求解视界仍找不到
+    # 已验证可行的日期时，不输出该项目的方案。
     for project_id in _search_order(project_ids, original_deadlines):
         if monotonic() >= search_deadline:
+            is_inconclusive = True
             break
-        adjustment = _first_verified_adjustment(
+        adjustment, unresolved = _first_verified_adjustment(
             db, scheduler, project_id, candidates, generate_kwargs, search_deadline,
         )
+        is_inconclusive |= unresolved
         if adjustment:
             results.append(_format_adjustment(
                 adjustment, original_deadlines, project_labels or {}, priorities,
             ))
+    if search_diagnostics is not None:
+        search_diagnostics["is_inconclusive"] = is_inconclusive
     return _sort_results(results)
 
 
@@ -163,45 +169,79 @@ def _first_verified_adjustment(
     实际答案几乎都很小（常见就是延 1 天），倍增两次就能收敛，而二分不论答案
     多小都要走满 log2(N) 次。
 
-    5 秒没算出结论的（undetermined）当作"尚未证明可行"往右找。这样返回的日期
-    仍然是求解器验证过可行的，只是真正的最小值那天恰好超时时会比它晚一点。
+    5 秒没算出结论的（undetermined）不能当作无解。最远日期出现这种结果时，
+    先验证最近日期；最近日期同样超时就立即返回未完成，避免在没有已验证上界
+    的情况下继续消耗搜索预算。最近日期若明确不可行，仍保留中间日期的有限搜索
+    机会，以免漏掉已验证可行的日期。
     """
     dates = candidates.get(project_id) or []
-    if not dates or monotonic() >= search_deadline:
-        return None
+    if not dates:
+        return None, True
+    if monotonic() >= search_deadline:
+        return None, True
+
+    is_inconclusive = False
 
     def probe(index: int) -> str:
         return _probe_deadlines(db, scheduler, {project_id: dates[index]}, generate_kwargs)
 
-    # 先试最近那天。实际答案几乎都很小（常见就是延 1 天），命中就直接拿到了
-    # 真正的最小值，一次搞定。
-    if probe(0) == FEASIBLE:
-        return {project_id: dates[0]}
-
     last = len(dates) - 1
-    if last < 1 or monotonic() >= search_deadline or probe(last) != FEASIBLE:
-        return None
+    # 先试最远日期。若连最宽松的结题日都被求解器证明不可行，后面的日期
+    # 也不可能可行，立即结束这一项目，避免为每一天重复做同一个无解证明。
+    last_verdict = probe(last)
+    is_inconclusive = last_verdict == UNDETERMINED
+    if last < 1:
+        return ({project_id: dates[0]}, is_inconclusive) if last_verdict == FEASIBLE else (None, is_inconclusive)
+    if last_verdict == INFEASIBLE:
+        return None, False
+    if monotonic() >= search_deadline:
+        return None, True
 
-    # 倍增找到第一个可行的候选，同时把它左边那个不可行的记下来作为二分下界。
-    low, high = 1, last
-    step = 0
-    while low + step < last and monotonic() < search_deadline:
-        index = low + step
-        if probe(index) == FEASIBLE:
+    # 最远日期可行时，再试最近日期。最近日期也可行就已经是最小调整；最远
+    # 日期超时则保留不确定标记，但不能阻止采用已验证可行的最近日期。
+    first_verdict = probe(0)
+    is_inconclusive |= first_verdict == UNDETERMINED
+    if first_verdict == FEASIBLE:
+        return {project_id: dates[0]}, is_inconclusive
+
+    # 最远和最近日期都没有得到可行性证明时，继续在中间日期反复试解只能增加
+    # 等待时间，仍不能形成已验证的上界。保留未完成状态，让调用方明确提示
+    # “尚不能判断”，而不是把 UNKNOWN 当成无解。最近日期若已明确不可行，
+    # 中间日期仍可能找到可行上界，继续做有界搜索。
+    if last_verdict == UNDETERMINED and first_verdict == UNDETERMINED:
+        return None, True
+
+    # 倍增找到一个已验证可行的候选，同时把它左边那个不可行的记下来作为二分
+    # 下界。最远日期只有在 FEASIBLE 时才能作为二分上界；若最远日期 UNKNOWN，
+    # 则必须先在中间日期找到一个真正可行的上界。
+    low = 1
+    high = last if last_verdict == FEASIBLE else None
+    # index 1 is covered by the later binary step when index 2 is feasible; skip it
+    # here to avoid a redundant probe while retaining the one-day answer case.
+    index = 2 if last > 2 else 1
+    while index < (high if high is not None else last) and monotonic() < search_deadline:
+        verdict = probe(index)
+        is_inconclusive |= verdict == UNDETERMINED
+        if verdict == FEASIBLE:
             high = index
             break
         low = index + 1
-        step = step * 2 + 1
-    else:
-        high = last
+        index = min(last, index * 2)
+
+    if high is None:
+        return None, True
 
     while low < high and monotonic() < search_deadline:
         middle = (low + high) // 2
-        if probe(middle) == FEASIBLE:
+        verdict = probe(middle)
+        is_inconclusive |= verdict == UNDETERMINED
+        if verdict == FEASIBLE:
             high = middle
         else:
             low = middle + 1
-    return {project_id: dates[high]} if low >= high else None
+    if low < high:
+        return None, True
+    return {project_id: dates[high]}, is_inconclusive
 
 
 def _load_project_priorities(db, project_ids: list[int]) -> dict[int, int]:
@@ -233,7 +273,7 @@ def _probe_deadlines(
     """
     current_project_id = generate_kwargs.get("current_project_id")
     if current_project_id is None:
-        return INFEASIBLE
+        return UNDETERMINED
     from app.services.project_plan_apply_service import apply_project_plan
     from app.services.schedule_deadline_recommendation_job_service import (
         suppress_recommendation_jobs,
@@ -243,8 +283,9 @@ def _probe_deadlines(
     try:
         for project_id, deadline in deadlines.items():
             project = db.query(Project).filter(Project.id == project_id).first()
-            if project is not None:
-                project.end_date = deadline
+            if project is None:
+                raise ValueError(f"候选项目不存在：{project_id}")
+            project.end_date = deadline
         db.flush()
         # 真实入口失败时会顺手再排一个方案搜索作业。不挡住的话，搜索自己又触发
         # 一轮搜索，层层套下去——实测套了 170 秒。
@@ -252,11 +293,28 @@ def _probe_deadlines(
             # preserve_existing=True 是入口自带的"试排"模式：内部不提交、自己用
             # savepoint 包住。不加这个的话它会真的提交，外层这个 savepoint 就
             # 拦不住了——探测会把改过的结题日和排程结果永久写进库。
-            result = apply_project_plan(db, current_project_id, preserve_existing=True)
-        return FEASIBLE if getattr(result, "status", "error") != "error" else INFEASIBLE
+            apply_kwargs = {"preserve_existing": True}
+            # 复用候选搜索持有的服务实例，避免每次试排重复构造工作日历、固定槽
+            # 等只读上下文。测试替身不是 SchedulerService 时保持旧调用形态。
+            from app.services.scheduler import SchedulerService
+
+            if isinstance(scheduler, SchedulerService):
+                apply_kwargs["scheduler"] = scheduler
+                apply_kwargs["feasibility_only"] = True
+                apply_kwargs["solver_time_limit"] = PROBE_SOLVER_TIME_LIMIT_SECONDS
+                apply_kwargs["planning_end_at"] = max(
+                    deadline.replace(hour=0, minute=0, second=0, microsecond=0)
+                    + timedelta(days=1)
+                    for deadline in deadlines.values()
+                )
+            result = apply_project_plan(db, current_project_id, **apply_kwargs)
+        if getattr(result, "status", "error") != "error":
+            return FEASIBLE
+        solver_status = (getattr(result, "schedule_failure", None) or {}).get("solver_status")
+        return INFEASIBLE if solver_status == "INFEASIBLE" else UNDETERMINED
     except Exception:
         _logger.exception("候选结题日探测失败 deadlines=%s", sorted(deadlines))
-        return INFEASIBLE
+        return UNDETERMINED
     finally:
         savepoint.rollback()
 

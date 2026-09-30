@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from app.models import Project, Task, TaskDependency, TimeSlot
+from app.models import Project, Task, TimeSlot
 from app.schemas.schemas import ProjectPlanApplyResponse, ProjectPlanInsertConfirmRequest
 from app.services.project_hours_validation_service import (
     ProjectHoursExceededError,
@@ -14,9 +14,11 @@ from app.services.project_plan_apply_helpers import (
     approval_earliest_bounds,
     apply_success_message,
     clear_replanned_project_dirty,
+    downstream_ids,
     expand_movable_downstream_tasks,
     load_approval_resource_queue_tasks,
     plan_fingerprint,
+    unique_tasks,
 )
 from app.services.scheduler_persistence import ACTIVE_EXECUTION_STATUSES
 from app.services.task_delay_status_service import reset_task_delay
@@ -24,10 +26,6 @@ from app.services.schedule_priority_dependency_service import build_schedule_pri
 from app.services.schedule_priority_dependency_service import _tasks_with_unfinished_predecessors
 from app.services.approval_gate_schedule_dependencies import (
     build_approval_insert_dependencies,
-)
-from app.services.schedule_slot_protection_service import (
-    task_has_immovable_slot,
-    tasks_with_immovable_slot,
 )
 from app.services.project_plan_impact_service import (
     build_project_impacts as _build_project_impacts,
@@ -44,12 +42,18 @@ from app.services.project_instrument_validation_service import (
 from app.services.project_task_rollup_service import recalculate_project_parent_hours
 from app.services.schedule_insert_service import (
     _build_impacts,
-    _selected_instrument_ids,
     _task_windows,
 )
 from app.services.schedule_resource_closure_service import load_resource_closure_movable_tasks
 from app.services.project_plan_errors import ProjectPlanInvalidError, ProjectPlanNotFoundError
 from app.services.project_plan_feasibility_service import validate_immediate_approval_feasibility
+from app.services.project_plan_movable_tasks import (
+    fully_protected_task_ids as _fully_protected_task_ids,
+    has_approved_gate_predecessor as _has_approved_gate_predecessor,
+    load_later_deadline_movable_tasks as _load_later_deadline_movable_tasks,
+    task_has_protected_slot as _task_has_protected_slot,
+)
+from app.services.task_schedule_staleness_service import mark_expired_paused_tasks
 
 MOVABLE_TIERS = ["confirmed", "forecast"]
 MOVABLE_SLOT_STATUSES = ["scheduled", "paused", "blocked", "interrupted"]
@@ -58,6 +62,10 @@ def apply_project_plan(
     project_id: int,
     approval_context: ApprovalScheduleContext | None = None,
     preserve_existing: bool = False,
+    scheduler=None,
+    feasibility_only: bool = False,
+    solver_time_limit: float | None = None,
+    planning_end_at: datetime | None = None,
 ) -> ProjectPlanApplyResponse:
     recalculate_project_parent_hours(db, project_id)
     db.flush()
@@ -92,9 +100,15 @@ def apply_project_plan(
         return _execute_replan(
             db, project, selected_tasks, [], commit=not preserve_existing,
             approval_context=approval_context, use_savepoint=preserve_existing,
+            scheduler=scheduler, feasibility_only=feasibility_only,
+            solver_time_limit=solver_time_limit,
+            planning_end_at=planning_end_at,
         )
     return _preview_plan_insert(
         db, project, selected_tasks, movable_tasks, approval_context, preserve_existing,
+        scheduler=scheduler, feasibility_only=feasibility_only,
+        solver_time_limit=solver_time_limit,
+        planning_end_at=planning_end_at,
     )
 
 
@@ -143,6 +157,10 @@ def _preview_plan_insert(
     movable_tasks: list[Task] | None = None,
     approval_context: ApprovalScheduleContext | None = None,
     preserve_existing: bool = False,
+    scheduler=None,
+    feasibility_only: bool = False,
+    solver_time_limit: float | None = None,
+    planning_end_at: datetime | None = None,
 ) -> ProjectPlanApplyResponse:
     movable_tasks = movable_tasks if movable_tasks is not None else _load_insert_movable_tasks(
         db, project, selected_tasks, approval_context,
@@ -161,6 +179,10 @@ def _preview_plan_insert(
         db, project, selected_tasks, movable_tasks, commit=False,
         approval_context=approval_context,
         rollback_on_failure=False,
+        scheduler=scheduler,
+        feasibility_only=feasibility_only,
+        solver_time_limit=solver_time_limit,
+        planning_end_at=planning_end_at,
     )
     if preview.status != "applied":
         preview_savepoint.rollback()
@@ -204,9 +226,15 @@ def _execute_replan(
     use_savepoint: bool = False,
     retain_changes: bool = True,
     rollback_on_failure: bool = True,
+    scheduler=None,
+    feasibility_only: bool = False,
+    solver_time_limit: float | None = None,
+    planning_end_at: datetime | None = None,
 ) -> ProjectPlanApplyResponse:
-    savepoint = db.begin_nested() if use_savepoint else None
-    replan_tasks = _unique_tasks(selected_tasks + movable_tasks)
+    # Feasibility probes must never leave task status or slot changes behind,
+    # even when a caller does not already provide the trial savepoint.
+    savepoint = db.begin_nested() if (use_savepoint or feasibility_only) else None
+    replan_tasks = unique_tasks(selected_tasks + movable_tasks)
     replan_task_ids = {task.id for task in replan_tasks}
     selected_task_ids = {task.id for task in selected_tasks}
     old_windows = _task_windows(db, replan_task_ids)
@@ -229,12 +257,20 @@ def _execute_replan(
         ).with_entities(TimeSlot.id).all()
     }
 
+    if scheduler is None:
+        from app.services.scheduler import SchedulerService
+
+        scheduler = SchedulerService(db)
+
     try:
         validate_immediate_approval_feasibility(
             db,
             project=project,
             replan_tasks=replan_tasks,
             released_slot_ids=released_slot_ids,
+            scheduler=scheduler,
+            solver_time_limit=solver_time_limit,
+            planning_end_at=planning_end_at,
         )
     except Exception:
         if savepoint:
@@ -259,9 +295,7 @@ def _execute_replan(
         reset_task_delay(task)
     db.flush()
 
-    from app.services.scheduler import SchedulerService
-
-    solver_result = SchedulerService(db).generate(
+    solver_result = scheduler.generate(
         task_ids=sorted(replan_task_ids),
         mode="insert" if movable_tasks else "normal",
         commit=False,
@@ -287,6 +321,9 @@ def _execute_replan(
         # 落盘任务集合却无法生成对应的 SupersedeSlot。
         replaceable_task_ids=replan_task_ids,
         preserved_status_task_ids=preserved_status_task_ids,
+        feasibility_only=feasibility_only,
+        solver_time_limit=30.0 if solver_time_limit is None else solver_time_limit,
+        planning_end_at=planning_end_at,
     )
     if solver_result.get("status") != "ok":
         if savepoint:
@@ -298,6 +335,15 @@ def _execute_replan(
             message=solver_result.get("message") or "排程失败",
             project_id=project.id,
             schedule_failure=solver_result.get("schedule_failure"),
+        )
+
+    if feasibility_only:
+        if savepoint:
+            savepoint.rollback()
+        return ProjectPlanApplyResponse(
+            status="applied",
+            message="排程可行",
+            project_id=project.id,
         )
 
     schedule_run_id = str(solver_result.get("schedule_run_id") or "")
@@ -350,6 +396,7 @@ def _load_project_candidates(db, project_id: int) -> tuple[Project, list[Task]]:
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise ProjectPlanNotFoundError("项目不存在")
+    mark_expired_paused_tasks(db, project_id)
     tasks = db.query(Task).filter(Task.project_id == project_id).all()
     parent_ids = {task.parent_id for task in tasks if task.parent_id is not None}
     task_by_id = {task.id: task for task in tasks}
@@ -357,7 +404,7 @@ def _load_project_candidates(db, project_id: int) -> tuple[Project, list[Task]]:
         task.id for task in tasks
         if task.schedule_dirty or task.status in {"pending", "ready"}
     }
-    affected_ids = _downstream_ids(db, seed_ids, set(task_by_id))
+    affected_ids = downstream_ids(db, seed_ids, set(task_by_id))
     candidates = [
         task for task in tasks
         if task.id in affected_ids
@@ -399,7 +446,7 @@ def _load_insert_movable_tasks(
             minimum_start=approval_context.anchor_at if approval_context else None,
         )
     )
-    candidates = _unique_tasks(movable + deadline_movable + approval_movable)
+    candidates = unique_tasks(movable + deadline_movable + approval_movable)
     candidates = expand_movable_downstream_tasks(db, candidates)
     if is_detection_priority_insert:
         candidate_ids = {task.id for task in candidates}
@@ -414,125 +461,19 @@ def _load_insert_movable_tasks(
     ]
     return candidates
 
-def _load_later_deadline_movable_tasks(
-    db,
-    project: Project,
-    selected_tasks: list[Task],
-    minimum_start: datetime | None = None,
-) -> list[Task]:
-    """Return future, unstarted tasks from projects with a later deadline.
+def _released_slot_intervals(db, task_ids: set[int]) -> dict[int, list[tuple]]:
+    """即将被删除的时间槽快照：任务 → [(计划开始, 计划结束, 仪器)]。
 
-    Fully protected tasks are excluded. A task with both a frozen segment and
-    later confirmed segments remains movable: the frozen work stays fixed and
-    only its remaining work is replanned.
+    筛选条件与 _movable_slots_query 保持一致，两者必须同进同出。
     """
-    if not project.end_date:
-        return []
-    selected_ids = {task.id for task in selected_tasks}
-    selected_instruments = _selected_instrument_ids(selected_tasks)
-    selected_assignees = {task.assignee_id for task in selected_tasks if task.assignee_id}
-    if not selected_instruments and not selected_assignees:
-        return []
-    candidates = db.query(Task).join(Project).filter(
-        Task.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
-        ~Task.id.in_(selected_ids),
-        Project.id != project.id,
-        Project.end_date.isnot(None),
-        Project.end_date > project.end_date,
-    ).order_by(Project.end_date, Project.priority, Task.created_at, Task.id).all()
-    if not candidates:
-        return []
-    # 资源过滤条件与具体任务无关，原先在循环里重复拼了 N 遍。
-    resource_filters = []
-    if selected_instruments:
-        resource_filters.append(TimeSlot.instrument_id.in_(selected_instruments))
-    elif selected_assignees:
-        resource_filters.append(Task.assignee_id.in_(selected_assignees))
-    candidate_ids = [task.id for task in candidates]
-    protected_ids = _fully_protected_task_ids(db, set(candidate_ids))
-    conflicting_ids = {
-        task_id for (task_id,) in db.query(TimeSlot.task_id).join(Task).filter(
-            TimeSlot.task_id.in_([
-                task_id for task_id in candidate_ids if task_id not in protected_ids
-            ]),
-            TimeSlot.tier.in_(MOVABLE_TIERS),
-            TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
-            TimeSlot.plan_end > (minimum_start or datetime.now()),
-            *resource_filters,
-        ).distinct().all()
-    }
-    if not conflicting_ids:
-        return []
-
-    project_task_ids = {
-        task_id for task_id, in db.query(Task.id).join(Project).filter(
-            Project.end_date > project.end_date,
-        ).all()
-    }
-    branches = {
-        task_id: _downstream_ids(db, {task_id}, project_task_ids)
-        for task_id in conflicting_ids
-    }
-    # 原先每个分支上的每个任务都单独判一次"是否整个被保护住"，而那个判断本身
-    # 又是两条 SQL。这里先把所有涉及的任务凑齐，一次判完再回来筛。
-    fully_protected = _fully_protected_task_ids(
-        db, {task_id for branch in branches.values() for task_id in branch},
-    )
-    affected_ids = set()
-    for branch_ids in branches.values():
-        if any(task_id in fully_protected for task_id in branch_ids):
+    intervals: dict[int, list[tuple]] = {}
+    for slot in _movable_slots_query(db, task_ids).all():
+        if not slot.plan_start or not slot.plan_end:
             continue
-        affected_ids.update(branch_ids)
-    if not affected_ids:
-        return []
-    affected_tasks = db.query(Task).filter(
-        Task.id.in_(affected_ids),
-        Task.status.in_(["scheduled", "paused", "blocked", "interrupted"]),
-    ).all()
-    return [task for task in affected_tasks if task.id not in fully_protected]
-
-
-def _fully_protected_task_ids(db, task_ids: set[int]) -> set[int]:
-    """一次判出这批任务里哪些"整个被保护住"——有不可移动的槽，且没有任何还能挪的槽。"""
-    if not task_ids:
-        return set()
-    protected = tasks_with_immovable_slot(db, task_ids)
-    if not protected:
-        return set()
-    still_movable = {
-        task_id for (task_id,) in db.query(TimeSlot.task_id).filter(
-            TimeSlot.task_id.in_(protected),
-            TimeSlot.tier.in_(MOVABLE_TIERS),
-            TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
-            TimeSlot.actual_start.is_(None),
-            TimeSlot.plan_end > datetime.now(),
-        ).distinct().all()
-    }
-    return protected - still_movable
-
-
-def _task_is_fully_protected(db, task_id: int) -> bool:
-    return task_id in _fully_protected_task_ids(db, {task_id})
-
-
-def _task_has_protected_slot(db, task_id: int) -> bool:
-    return task_has_immovable_slot(db, task_id)
-
-
-def _has_approved_gate_predecessor(task: Task) -> bool:
-    """Keep formally approved branches stable during forecast insertion."""
-    pending = list(task.predecessors)
-    visited: set[int] = set()
-    while pending:
-        dependency = pending.pop()
-        predecessor = dependency.predecessor
-        if predecessor.id in visited:
-            continue
-        visited.add(predecessor.id)
-        if predecessor.is_external_gate and predecessor.gate_status == "approved":
-            return True
-        pending.extend(predecessor.predecessors)
-    return False
+        intervals.setdefault(slot.task_id, []).append(
+            (slot.plan_start, slot.plan_end, slot.instrument_id),
+        )
+    return intervals
 
 
 def _selected_tasks_start_today(
@@ -551,21 +492,6 @@ def _selected_tasks_start_today(
     ).first() is not None
 
 
-def _released_slot_intervals(db, task_ids: set[int]) -> dict[int, list[tuple]]:
-    """即将被删除的时间槽快照：任务 → [(计划开始, 计划结束, 仪器)]。
-
-    筛选条件与 _movable_slots_query 保持一致，两者必须同进同出。
-    """
-    intervals: dict[int, list[tuple]] = {}
-    for slot in _movable_slots_query(db, task_ids).all():
-        if not slot.plan_start or not slot.plan_end:
-            continue
-        intervals.setdefault(slot.task_id, []).append(
-            (slot.plan_start, slot.plan_end, slot.instrument_id),
-        )
-    return intervals
-
-
 def _movable_slots_query(db, task_ids: set[int]):
     return db.query(TimeSlot).filter(
         TimeSlot.task_id.in_(task_ids),
@@ -573,27 +499,3 @@ def _movable_slots_query(db, task_ids: set[int]):
         TimeSlot.status.in_(MOVABLE_SLOT_STATUSES),
         TimeSlot.actual_start.is_(None),
     )
-
-
-def _downstream_ids(db, seed_ids: set[int], project_task_ids: set[int]) -> set[int]:
-    if not seed_ids:
-        return set()
-    dependencies = db.query(TaskDependency).filter(
-        TaskDependency.task_id.in_(project_task_ids),
-    ).all()
-    downstream_by_predecessor: dict[int, set[int]] = {}
-    for dependency in dependencies:
-        downstream_by_predecessor.setdefault(dependency.predecessor_id, set()).add(dependency.task_id)
-    affected_ids = set(seed_ids)
-    pending_ids = list(seed_ids)
-    while pending_ids:
-        predecessor_id = pending_ids.pop()
-        for downstream_id in downstream_by_predecessor.get(predecessor_id, set()):
-            if downstream_id not in affected_ids:
-                affected_ids.add(downstream_id)
-                pending_ids.append(downstream_id)
-    return affected_ids
-
-
-def _unique_tasks(tasks: list[Task]) -> list[Task]:
-    return sorted({task.id: task for task in tasks}.values(), key=lambda task: (task.project_id, task.created_at, task.id))

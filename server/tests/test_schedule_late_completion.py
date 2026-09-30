@@ -42,7 +42,8 @@ class ScheduleLateCompletionTest(unittest.TestCase):
         self.db.add_all([
             TimeSlot(
                 task_id=completed.id, plan_start=datetime(2026, 7, 13, 8, 30),
-                plan_end=datetime(2026, 7, 13, 9, 0), status="running",
+                plan_end=datetime(2026, 7, 13, 9, 0),
+                actual_start=datetime(2026, 7, 13, 8, 35), status="running",
             ),
             TimeSlot(
                 task_id=following.id, plan_start=datetime(2026, 7, 13, 9, 0),
@@ -83,7 +84,8 @@ class ScheduleLateCompletionTest(unittest.TestCase):
         self.db.add_all([
             TimeSlot(
                 task_id=completed.id, plan_start=datetime(2026, 7, 13, 8, 30),
-                plan_end=datetime(2026, 7, 13, 9, 0), status="running",
+                plan_end=datetime(2026, 7, 13, 9, 0),
+                actual_start=datetime(2026, 7, 13, 8, 35), status="running",
             ),
             TimeSlot(
                 task_id=following.id, plan_start=datetime(2026, 7, 13, 9, 0),
@@ -119,7 +121,8 @@ class ScheduleLateCompletionTest(unittest.TestCase):
         self.db.add_all([
             TimeSlot(
                 task_id=completed.id, plan_start=datetime(2026, 7, 13, 8, 30),
-                plan_end=datetime(2026, 7, 13, 9, 0), status="running",
+                plan_end=datetime(2026, 7, 13, 9, 0),
+                actual_start=datetime(2026, 7, 13, 8, 35), status="running",
             ),
             TimeSlot(
                 task_id=following.id, plan_start=datetime(2026, 7, 13, 9, 0),

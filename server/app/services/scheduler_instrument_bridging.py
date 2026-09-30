@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 
 from ortools.sat.python import cp_model
 
 from app.services.scheduler_helpers import task_duration_hours
+
+
+@dataclass(frozen=True)
+class InstrumentBridgeCandidateGroup:
+    """One physical bridge reservation and the dependency paths that activate it."""
+
+    task_id: int
+    instrument_id: int
+    path_pairs: tuple[tuple[int, int], ...]
 
 
 def instrument_bridge_candidates(tasks, task_dependencies, compatibility):
@@ -14,6 +24,25 @@ def instrument_bridge_candidates(tasks, task_dependencies, compatibility):
     predecessors and successors so every task in that block reserves the
     instrument, rather than allowing the adjacent manual task to hide one side.
     """
+    return [
+        (group.task_id, previous_id, following_id, group.instrument_id)
+        for group in instrument_bridge_candidate_groups(
+            tasks, task_dependencies, compatibility,
+        )
+        for previous_id, following_id in group.path_pairs
+    ]
+
+
+def instrument_bridge_candidate_groups(
+    tasks, task_dependencies, compatibility,
+) -> list[InstrumentBridgeCandidateGroup]:
+    """Build one group per physical ``(manual task, instrument)`` reservation.
+
+    A branched dependency graph can expose several predecessor/successor paths for
+    one manual task.  Those paths are separate activation conditions, not separate
+    instrument capacity intervals.  Keeping that distinction here prevents callers
+    from accidentally creating duplicate intervals for the same physical usage.
+    """
     tasks_by_id = {task.id: task for task in tasks}
     predecessors = defaultdict(list)
     successors = defaultdict(list)
@@ -22,7 +51,7 @@ def instrument_bridge_candidates(tasks, task_dependencies, compatibility):
             predecessors[task_id].append(predecessor_id)
             successors[predecessor_id].append(task_id)
 
-    candidates = []
+    groups: dict[tuple[int, int], set[tuple[int, int]]] = defaultdict(set)
     for task in tasks:
         if (
             getattr(task, "requires_instrument", False)
@@ -51,8 +80,15 @@ def instrument_bridge_candidates(tasks, task_dependencies, compatibility):
                 for instrument_id in sorted(
                     previous_instrument_ids & following_instrument_ids,
                 ):
-                    candidates.append((task.id, previous_id, following_id, instrument_id))
-    return candidates
+                    groups[(task.id, instrument_id)].add((previous_id, following_id))
+    return [
+        InstrumentBridgeCandidateGroup(
+            task_id=task_id,
+            instrument_id=instrument_id,
+            path_pairs=tuple(sorted(path_pairs)),
+        )
+        for (task_id, instrument_id), path_pairs in sorted(groups.items())
+    ]
 
 
 def _reachable_instrument_ids(start_id, graph, tasks_by_id) -> list[int]:
@@ -87,18 +123,36 @@ def add_instrument_bridge_intervals(
     total_units: int,
 ) -> list[dict]:
     bridges = []
-    for task_id, previous_id, following_id, instrument_id in instrument_bridge_candidates(
+    # Candidate generation has already grouped all dependency paths that refer to
+    # the same physical reservation.  This loop creates exactly one interval per
+    # group and uses the paths only as its activation conditions.
+    for candidate in instrument_bridge_candidate_groups(
         tasks, task_dependencies, compatibility,
     ):
-        previous_presence = presences.get((previous_id, instrument_id))
-        following_presence = presences.get((following_id, instrument_id))
-        if previous_presence is None or following_presence is None:
+        task_id = candidate.task_id
+        instrument_id = candidate.instrument_id
+        pair_presences = []
+        first_pair = None
+        for previous_id, following_id in candidate.path_pairs:
+            previous_presence = presences.get((previous_id, instrument_id))
+            following_presence = presences.get((following_id, instrument_id))
+            if previous_presence is None or following_presence is None:
+                continue
+            if first_pair is None:
+                first_pair = (previous_id, following_id)
+            pair_presence = model.NewBoolVar(
+                f"bridge_pair_t{task_id}_between_{previous_id}_{following_id}_i{instrument_id}"
+            )
+            model.AddBoolAnd([previous_presence, following_presence]).OnlyEnforceIf(pair_presence)
+            model.AddBoolOr([previous_presence.Not(), following_presence.Not(), pair_presence])
+            pair_presences.append(pair_presence)
+        if not pair_presences:
             continue
-        presence = model.NewBoolVar(
-            f"bridge_t{task_id}_between_{previous_id}_{following_id}_i{instrument_id}"
-        )
-        model.AddBoolAnd([previous_presence, following_presence]).OnlyEnforceIf(presence)
-        model.AddBoolOr([previous_presence.Not(), following_presence.Not(), presence])
+        previous_id, following_id = first_pair
+        presence = model.NewBoolVar(f"bridge_t{task_id}_i{instrument_id}")
+        for pair_presence in pair_presences:
+            model.AddImplication(pair_presence, presence)
+        model.AddBoolOr(pair_presences).OnlyEnforceIf(presence)
         span = model.NewIntVar(0, total_units, f"bridge_span_t{task_id}_i{instrument_id}")
         model.Add(span == task_ends[task_id] - task_starts[task_id]).OnlyEnforceIf(presence)
         model.Add(span == 0).OnlyEnforceIf(presence.Not())

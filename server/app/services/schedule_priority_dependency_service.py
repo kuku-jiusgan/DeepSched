@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.models import Project, Task, TaskDependency
+from app.services.scheduler_data import load_task_children
+from app.services.scheduler_helpers import build_dependencies
 
 
 def build_schedule_priority_dependencies(
@@ -16,34 +18,98 @@ def build_schedule_priority_dependencies(
         db, project, selected_tasks, movable_tasks,
     )
     dependencies.update(_fixed_detection_dependencies(db, replan_tasks))
-    dependencies.update(_manual_queue_dependencies(selected_tasks, movable_tasks))
+    precedence = set(build_dependencies(
+        replan_tasks, load_task_children(db, replan_tasks),
+    )) | dependencies
+    dependencies.update(_manual_queue_dependencies(
+        db, selected_tasks, movable_tasks, precedence,
+    ))
     return sorted(dependencies)
 
 
 def _manual_queue_dependencies(
+    db,
     selected_tasks: list[Task],
     movable_tasks: list[Task],
+    precedence: set[tuple[int, int]],
 ) -> set[tuple[int, int]]:
-    """Keep a selected instrument task behind a movable manual task.
+    """Order same-assignee manual work without overriding project priority.
 
     Manual work has no instrument alternative, but it still occupies its
-    assignee.  Instrument-only queue rules cannot order this pair, so a plan
-    save could otherwise leave the manual slot and the selected instrument
-    slot with the same start.  The selected task is the insertion being
-    served; the existing manual task is its predecessor in the resource
-    queue.
+    assignee. Instrument-only queue rules cannot order this pair, so an
+    explicit dependency keeps the queue deterministic. Higher-priority
+    selected work goes first; equal- or lower-priority selected work keeps the
+    existing manual task first.
     """
-    return {
-        (selected.id, movable.id)
-        for selected in selected_tasks
-        for movable in movable_tasks
-        if selected.project_id != movable.project_id
-        if selected.requires_instrument
+    replan_ids = {task.id for task in [*selected_tasks, *movable_tasks]}
+    manual_ids = {
+        task.id for task in movable_tasks
+        if task.requires_human and not task.requires_instrument
+    }
+    blocked_manual_ids = _tasks_with_unfinished_predecessors(
+        db, manual_ids, allowed_predecessor_ids=replan_ids,
+    )
+    dependencies = set()
+    for selected in selected_tasks:
+        for movable in movable_tasks:
+            if (
+                movable.id in blocked_manual_ids
+                or not _shares_manual_assignee(selected, movable)
+            ):
+                continue
+            if _project_priority(selected) < _project_priority(movable):
+                dependency = (movable.id, selected.id)
+            else:
+                dependency = (selected.id, movable.id)
+            if not _already_ordered(*dependency, precedence):
+                dependencies.add(dependency)
+    return dependencies
+
+
+def _shares_manual_assignee(selected: Task, movable: Task) -> bool:
+    return (
+        selected.project_id != movable.project_id
+        and selected.requires_instrument
         and movable.requires_human
         and not movable.requires_instrument
-        and selected.assignee_id
+        and selected.assignee_id is not None
         and selected.assignee_id == movable.assignee_id
-    }
+    )
+
+
+def _project_priority(task: Task) -> int:
+    priority = task.project.priority if task.project else None
+    return int(priority if priority is not None else 3)
+
+
+def _already_ordered(
+    successor_id: int,
+    predecessor_id: int,
+    precedence: set[tuple[int, int]],
+) -> bool:
+    """Keep an existing order and avoid adding its inverse as a cycle."""
+    return (
+        _depends_on(successor_id, predecessor_id, precedence)
+        or _depends_on(predecessor_id, successor_id, precedence)
+    )
+
+
+def _depends_on(
+    task_id: int, predecessor_id: int, precedence: set[tuple[int, int]],
+) -> bool:
+    predecessors: dict[int, set[int]] = {}
+    for successor, predecessor in precedence:
+        predecessors.setdefault(successor, set()).add(predecessor)
+    pending = [task_id]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current == predecessor_id:
+            return True
+        if current not in visited:
+            visited.add(current)
+            pending.extend(predecessors.get(current, set()))
+    return False
 
 
 def _inserted_detection_dependencies(

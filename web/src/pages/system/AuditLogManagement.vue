@@ -4,10 +4,10 @@
       <div><h2>操作日志</h2><p>查询系统写操作的操作人、对象、执行结果与时间。</p></div>
     </header>
     <section class="filter-bar">
-      <a-input v-model:value="filters.keyword" allow-clear placeholder="搜索操作人或操作类型" @press-enter="loadLogs" />
+      <a-input v-model:value="filters.keyword" allow-clear placeholder="搜索操作人或操作类型" @press-enter="() => loadLogs(true)" />
       <a-select v-model:value="filters.category" allow-clear placeholder="全部分类" :options="categoryOptions" />
       <a-select v-model:value="filters.action" allow-clear placeholder="全部操作" :options="actionOptions" />
-      <a-button type="primary" @click="loadLogs">查询</a-button>
+      <a-button type="primary" @click="() => loadLogs(true)">查询</a-button>
       <a-button :loading="loading" @click="loadLogs">刷新</a-button>
       <a-button class="export-button" :loading="exporting" @click="exportExcel">
         <template #icon><DownloadOutlined /></template>
@@ -29,25 +29,25 @@
             <span>对象：{{ record.target_display }}</span>
             <span>操作人：{{ operatorLabel(record.user_name) }}</span>
             <span>状态：{{ record.result === 'success' ? '成功' : '失败' }}</span>
-            <span v-if="record.technical_detail['来源 IP']">来源 IP：{{ formatValue(record.technical_detail['来源 IP']) }}</span>
+            <span v-if="record.technical_detail['来源 IP']">来源 IP：{{ formatAuditValue(record.technical_detail['来源 IP']) }}</span>
           </div>
-          <div v-if="record.result === 'failed' && record.detail.reason" class="failure-reason">失败原因：{{ formatValue(record.detail.reason) }}</div>
+          <div v-if="record.result === 'failed' && record.failure_reason" class="failure-reason">失败原因：{{ formatAuditValue(record.failure_reason) }}</div>
           <div class="detail-heading"><strong>{{ record.action_label }}</strong><span>{{ record.target_display }}</span></div>
           <dl v-if="record.changes.length" class="change-list">
             <template v-for="change in record.changes" :key="change.field">
-              <dt>{{ change.field }}</dt><dd>{{ formatValue(change.before) }} <span class="change-arrow">→</span> {{ formatValue(change.after) }}</dd>
+              <dt>{{ auditFieldLabel(change.field) }}</dt><dd>{{ formatAuditValue(change.before) }} <span class="change-arrow">→</span> {{ formatAuditValue(change.after) }}</dd>
             </template>
           </dl>
           <div v-else class="no-changes">本次审计未记录字段值变更。</div>
           <dl v-if="hasValues(record.business_detail)" class="context-list">
             <dt class="context-title">业务详情</dt><dd class="context-title-spacer"></dd>
             <template v-for="(value, key) in record.business_detail" :key="key">
-              <dt>{{ detailLabel(String(key)) }}</dt><dd>{{ formatValue(value) }}</dd>
+              <dt>{{ auditFieldLabel(String(key)) }}</dt><dd>{{ formatAuditValue(value) }}</dd>
             </template>
           </dl>
           <a-collapse v-if="hasValues(record.technical_detail)" ghost class="technical-collapse">
             <a-collapse-panel key="technical" header="技术信息">
-              <span v-for="(value, key) in record.technical_detail" :key="key" class="technical-item">{{ key }}：{{ formatValue(value) }}</span>
+              <span v-for="(value, key) in record.technical_detail" :key="key" class="technical-item">{{ key }}：{{ formatAuditValue(value) }}</span>
             </a-collapse-panel>
           </a-collapse>
         </div>
@@ -63,6 +63,7 @@ import dayjs from 'dayjs'
 import { message } from 'ant-design-vue'
 import { DownloadOutlined } from '@ant-design/icons-vue'
 import { exportAuditLogs, getAuditLogCategories, getAuditLogs, type AuditLogRecord, type AuditLogCategoryOption } from '@/services/api'
+import { auditFieldLabel, formatAuditValue } from './auditLogFormatting'
 
 const logs = ref<AuditLogRecord[]>([])
 const loading = ref(false)
@@ -92,18 +93,8 @@ const actionOptions = [
   { value: 'HTTP PUT', label: '修改操作' },
   { value: 'HTTP DELETE', label: '删除操作' },
 ]
-const detailLabels: Record<string, string> = {
-  project_code: '项目编号', project_name: '项目名称', task_count: '关联任务数', project_ids: '项目范围', task_id: '任务编号', task_display: '任务',
-  mode: '排程模式', result: '执行结果', path: '接口', status: '状态', success: '执行结果',
-  duration_ms: '耗时', created: '新增任务数', client_ids: '任务标识', expected_approval_at: '预计签批时间',
-  schedule_run_id: '排程批次', delay_hours: '延期时长（小时）', reason: '延期原因', shifted_slots: '受影响排程数',
-  insert_summary: '插单说明',
-  task_ids: '插单任务', anchor_task_id: '插入位置任务', moved_tasks: '移动任务数',
-  username: '登录账号', display_name: '姓名', roles: '角色', email: '邮箱', phone: '手机号',
-  wecom_id: '企业微信号', is_active: '账号状态', login_method: '登录方式',
-}
-
-async function loadLogs() {
+async function loadLogs(resetPage = false) {
+  if (resetPage) page.value = 1
   loading.value = true
   try {
     const result = await getAuditLogs({ keyword: filters.keyword || undefined, category: filters.category, action: filters.action, page: page.value, page_size: pageSize.value })
@@ -142,15 +133,6 @@ function toggleDetail(id: number) {
     : [...expandedRowKeys.value, id]
 }
 function hasValues(value: Record<string, unknown>) { return Object.keys(value).length > 0 }
-function detailLabel(key: string) { return detailLabels[key] || key }
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '未设置'
-  if (value === true) return '是'
-  if (value === false) return '否'
-  if (Array.isArray(value)) return value.length ? value.join('、') : '无'
-  if (typeof value === 'object') return Object.entries(value as Record<string, unknown>).map(([key, item]) => `${detailLabel(key)}：${formatValue(item)}`).join('；')
-  return String(value)
-}
 function formatTime(value: string) { return dayjs(value).format('YYYY-MM-DD HH:mm:ss') }
 function operatorLabel(value: string) { return value === 'system' ? '系统自动任务' : value === 'anonymous' ? '未登录用户' : value }
 function formatLogId(id: number) { return `LOG-${String(id).padStart(4, '0')}` }

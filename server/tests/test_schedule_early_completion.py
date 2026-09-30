@@ -28,7 +28,7 @@ def test_early_started_slot_is_completed_before_planned_start():
         db.commit()
         end_time = datetime(2026, 7, 13, 14, 28)
 
-        completed_slot = _select_completed_slot([slot], slot.id, end_time)
+        completed_slot = _select_completed_slot([slot], slot.id)
         _mark_task_slots_completed(db, [slot], completed_slot, end_time)
         db.flush()
 
@@ -60,7 +60,7 @@ def test_resumed_future_slot_is_selected_over_old_paused_slot():
     )
 
     selected = _select_completed_slot(
-        [old_slot, resumed_slot], resumed_slot.id, datetime(2026, 7, 13, 14, 33),
+        [old_slot, resumed_slot], resumed_slot.id,
     )
 
     assert selected.id == resumed_slot.id

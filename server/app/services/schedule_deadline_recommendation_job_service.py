@@ -36,6 +36,11 @@ def enqueue_deadline_recommendation(
     db, project, tasks, original_deadline, horizon_start, horizon_end,
     instrument_prefix_sums, failure, generate_kwargs,
 ) -> dict | None:
+    # Candidate deadlines include the calendar day immediately after the normal
+    # 90-day solver window.  The window ends at the current half-hour, so without
+    # this extra day a project that could finish on the next date (for example
+    # 2026-12-30) was never tested at all.
+    recommendation_horizon_end = horizon_end + timedelta(days=1)
     fingerprint = plan_fingerprint(db, project, tasks)
     conflict_ids = sorted({
         int(row["project_id"])
@@ -62,7 +67,7 @@ def enqueue_deadline_recommendation(
         payload={
             "task_ids": [task.id for task in tasks],
             "original_deadline": original_deadline.isoformat(),
-            "horizon_end": horizon_end.isoformat(),
+            "horizon_end": recommendation_horizon_end.isoformat(),
             "project_ids": candidate_ids,
             "original_deadlines": {
                 str(row.id): row.end_date.isoformat() for row in project_rows if row.end_date
@@ -247,9 +252,9 @@ def _run_job(db, job) -> None:
     job.started_at = datetime.now()
     db.commit()
     try:
-        recommendation = _calculate_job(db, job)
+        recommendation, is_inconclusive = _calculate_job(db, job)
         if job.status != "stale":
-            job.status = "completed"
+            job.status = "inconclusive" if is_inconclusive and not recommendation else "completed"
             job.result = recommendation
     except Exception:
         _logger.exception("排程调整方案验证求解失败 job_id=%s", job.id)
@@ -259,13 +264,13 @@ def _run_job(db, job) -> None:
     db.commit()
 
 
-def _calculate_job(db, job) -> dict | None:
+def _calculate_job(db, job) -> tuple[list[dict] | None, bool]:
     payload = job.payload
     project = db.query(Project).filter(Project.id == job.project_id).one()
     tasks = db.query(Task).filter(Task.id.in_(payload["task_ids"])).all()
     if plan_fingerprint(db, project, tasks) != job.plan_fingerprint:
         job.status = "stale"
-        return None
+        return None, False
     from app.services.scheduler import SchedulerService
 
     generate_kwargs = _deserialize_generate_kwargs(payload["generate_kwargs"])
@@ -279,17 +284,19 @@ def _calculate_job(db, job) -> dict | None:
         int(project_id): value
         for project_id, value in payload.get("project_labels", {}).items()
     }
+    search_diagnostics = {}
     result = enumerate_verified_date_adjustments(
         db, SchedulerService(db, reuse_prepared_context=True), project_ids, deadlines,
         datetime.fromisoformat(payload["horizon_end"]), generate_kwargs, labels,
+        search_diagnostics,
     )
     # 搜索期间世界有没有变。此前这里用的是 ScheduleSnapshot 自带的第二套指纹，
     # 与入队/开算前用的 plan_fingerprint 是两套互不相干的算法；快照本身已经随
     # 死掉的模拟路径一起删了，这里统一用同一个指纹，前后校验才对得上账。
     if plan_fingerprint(db, project, tasks) != job.plan_fingerprint:
         job.status = "stale"
-        return None
-    return result
+        return None, False
+    return result, search_diagnostics.get("is_inconclusive", False)
 
 
 def _project_label(project) -> str:

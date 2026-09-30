@@ -1,5 +1,9 @@
 # DeepSched
 
+## 系统文档
+
+- [系统排程逻辑与业务规则](SCHEDULING.md)
+
 ## Linux 本地开发
 
 环境要求：Python 3.11+、Node.js 20+（需包含 Corepack）。
@@ -26,7 +30,7 @@ DEEPSCHED_PROXY=http://127.0.0.1:7897 ./setup-linux.sh
 - 后端接口文档：http://127.0.0.1:8000/docs
 - 数据库：MySQL，连接信息配置在 `server/.env` 的 `DATABASE_URL`。
 
-停止服务时在启动终端按 `Ctrl+C`。前后端日志写入 `.runtime/logs/`。
+服务会在后台运行，关闭启动终端不会中断。停止服务时执行 `./start.sh --stop`，前后端日志写入 `.runtime/logs/`。
 
 正式模式也可以通过统一入口启动：`./start.sh --production`。
 
@@ -58,5 +62,5 @@ DEEPSCHED_PROXY=http://127.0.0.1:7897 ./setup-linux.sh
 如需临时更换监听地址或端口，可以使用：
 
 ```bash
-DEEPSCHED_HOST=127.0.0.1 DEEPSCHED_PORT=5890 ./start.sh --production
+DEEPSCHED_HOST=127.0.0.1 DEEPSCHED_PRODUCTION_PORT=5890 ./start.sh --production
 ```

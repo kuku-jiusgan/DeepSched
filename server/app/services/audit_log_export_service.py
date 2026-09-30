@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from io import BytesIO
-import json
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -80,7 +79,39 @@ def _target_text(record: dict) -> str:
 def _detail_text(detail) -> str:
     if not detail:
         return "-"
-    return json.dumps(detail, ensure_ascii=False, separators=(",", ":"), default=str)
+    if isinstance(detail, list) and all(
+        isinstance(item, dict) and "field" in item for item in detail
+    ):
+        return "\n".join(
+            f"{item['field']}：{_display_value(item.get('before'))} → {_display_value(item.get('after'))}"
+            for item in detail
+        )
+    return _display_value(detail)
+
+
+def _display_value(value, level: int = 0) -> str:
+    if value is None or value == "":
+        return "未设置"
+    if value is True:
+        return "是"
+    if value is False:
+        return "否"
+    if isinstance(value, dict):
+        separator = "\n" if level == 0 else "；"
+        return separator.join(
+            f"{key}：{_display_value(item, level + 1)}"
+            for key, item in value.items()
+        ) or "无"
+    if isinstance(value, list):
+        if not value:
+            return "无"
+        if any(isinstance(item, (dict, list)) for item in value):
+            return "\n".join(
+                f"第 {index} 项：{_display_value(item, level + 1)}"
+                for index, item in enumerate(value, start=1)
+            )
+        return "、".join(_display_value(item, level + 1) for item in value)
+    return str(value)
 
 
 def _format_sheet(sheet) -> None:

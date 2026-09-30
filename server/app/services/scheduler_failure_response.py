@@ -19,6 +19,7 @@ from app.services.scheduler_diagnostics import (
     schedule_infeasibility_diagnostic,
 )
 from app.services.scheduler_helpers import build_compatibility, build_dependencies
+from app.services.pending_approval_forecast_service import pending_approval_segments
 
 
 def build_failure_response(
@@ -74,6 +75,7 @@ def build_failure_response(
         total_units,
         status,
     )
+    diagnostic = None
     try:
         diagnostic_tasks = tasks + load_diagnostic_resource_tasks(
             db,
@@ -110,6 +112,7 @@ def build_failure_response(
             current_project_id=current_project_id,
             excluded_task_ids=relaxed_project_end_task_ids,
             released_slot_intervals=released_slot_intervals,
+            forecast_segments=pending_approval_segments(db),
         )
         diagnostic_message = diagnostic["message"]
         current_deadline = next(
@@ -135,9 +138,11 @@ def build_failure_response(
     response = {
         "status": "error",
         "message": diagnostic_message,
+        "solver_status": solver.StatusName(status),
     }
-    if 'diagnostic' in locals() and isinstance(diagnostic, dict):
-        response["schedule_failure"] = diagnostic.get("schedule_failure")
+    failure = diagnostic.get("schedule_failure") if isinstance(diagnostic, dict) else None
+    if isinstance(failure, dict):
+        response["schedule_failure"] = {**failure, "solver_status": solver.StatusName(status)}
     return response
 
 

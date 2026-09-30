@@ -84,6 +84,10 @@ def calculate_instrument_utilization(
 
 
 def _load_slots_by_instrument(db, window_start, window_end):
+    segment_slot_ids = db.query(TaskExecutionSegment.slot_id).filter(
+        TaskExecutionSegment.started_at < window_end,
+        TaskExecutionSegment.ended_at.is_(None) | (TaskExecutionSegment.ended_at > window_start),
+    )
     rows = db.query(TimeSlot).filter(
         TimeSlot.instrument_id.isnot(None),
         (
@@ -92,7 +96,7 @@ def _load_slots_by_instrument(db, window_start, window_end):
             TimeSlot.actual_start.isnot(None)
             & (TimeSlot.actual_start < window_end)
             & (TimeSlot.actual_end.is_(None) | (TimeSlot.actual_end > window_start))
-        ),
+        ) | TimeSlot.id.in_(segment_slot_ids),
     ).all()
     return _group_slots(rows)
 
@@ -157,7 +161,7 @@ def _actual_ranges_from_data(slots, segments, window_start, window_end):
     ranges = [
         (max(segment.started_at, window_start), min(segment.ended_at or window_end, window_end))
         for segment in segments
-        if segment.ended_at is not None or _slot_can_have_open_actual(slots, segment.slot_id)
+        if _segment_counts_as_actual(segment)
     ]
     ranges.extend(
         (max(slot.actual_start, window_start), min(slot.actual_end or window_end, window_end))
@@ -168,6 +172,17 @@ def _actual_ranges_from_data(slots, segments, window_start, window_end):
         and (slot.actual_end or window_end) > window_start
     )
     return ranges
+
+
+def _segment_counts_as_actual(segment: TaskExecutionSegment) -> bool:
+    if segment.ended_at is not None:
+        return segment.ended_at > segment.started_at
+    # 日历拆分时间槽完成后，任务级执行流水仍可跨天持续运行。
+    return bool(
+        segment.task.status == "running"
+        and segment.slot.lifecycle_status == "active"
+        and segment.slot.status != "cancelled"
+    )
 
 
 def _slot_can_have_open_actual(slots, slot_id: int) -> bool:

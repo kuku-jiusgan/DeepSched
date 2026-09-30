@@ -44,13 +44,15 @@ def complete_task_and_shift(
     )
     if not task_slots:
         return {"status": "error", "message": "任务没有排程时段"}
+    if not any(slot.actual_start is not None for slot in task_slots):
+        return {"status": "error", "message": "任务尚未开始，不能直接完成"}
 
     planned_end = max(slot.plan_end for slot in task_slots)
     task.status = "completed"
     _close_running_execution_segment(db, task.id, end_time)
     if end_time > planned_end:
         mark_task_delayed(task)
-    completed_slot = _select_completed_slot(task_slots, completed_slot_id, end_time)
+    completed_slot = _select_completed_slot(task_slots, completed_slot_id)
     affected_instrument_ids = {slot.instrument_id for slot in task_slots if slot.instrument_id}
     _mark_task_slots_completed(db, task_slots, completed_slot, end_time)
     # Completion can supersede future manual slots. Keep the derived bridge
@@ -171,7 +173,6 @@ def _propagate_delay_safely(
 def _select_completed_slot(
     slots: list[TimeSlot],
     completed_slot_id: int | None,
-    end_time: datetime,
 ) -> TimeSlot:
     running_slot = next(
         (
@@ -182,21 +183,19 @@ def _select_completed_slot(
     )
     if running_slot:
         return running_slot
-    active_slot = next(
-        (slot for slot in slots if slot.plan_start <= end_time <= slot.plan_end),
-        None,
-    )
-    if active_slot:
-        return active_slot
-
-    started_slots = [slot for slot in slots if slot.plan_start <= end_time]
-    if started_slots:
-        return started_slots[-1]
-
     if completed_slot_id is not None:
-        matched = next((slot for slot in slots if slot.id == completed_slot_id), None)
+        matched = next(
+            (
+                slot for slot in slots
+                if slot.id == completed_slot_id and slot.actual_start is not None
+            ),
+            None,
+        )
         if matched:
             return matched
+    started_slots = [slot for slot in slots if slot.actual_start is not None]
+    if started_slots:
+        return max(started_slots, key=lambda slot: (slot.actual_start, slot.id))
     return slots[0]
 
 
@@ -207,16 +206,15 @@ def _mark_task_slots_completed(
     end_time: datetime,
 ) -> None:
     for slot in slots:
-        if slot.id != completed_slot.id and slot.plan_start > end_time:
+        if slot.actual_start is None:
             slot.lifecycle_status = "superseded"
             slot.status = "cancelled"
             slot.superseded_at = end_time
-            slot.superseded_reason = "任务提前完成"
+            slot.superseded_reason = "任务完成时该时段未实际执行"
             continue
         slot.status = "completed"
-        if slot.actual_start is None:
-            slot.actual_start = slot.plan_start
-        slot.actual_end = end_time if slot.id == completed_slot.id else min(slot.plan_end, end_time)
+        if slot.id == completed_slot.id or slot.actual_end is None:
+            slot.actual_end = end_time
 
 
 def _forward_shift_instrument_queue(

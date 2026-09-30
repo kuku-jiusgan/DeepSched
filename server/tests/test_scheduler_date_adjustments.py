@@ -93,12 +93,50 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
 
         self.assertEqual([], results)
 
-    def test_gives_up_on_a_hopeless_project_after_two_solves(self):
+    def test_timeout_marks_empty_search_inconclusive(self):
+        diagnostics = {}
+        with patch(
+            "app.services.scheduler_deadline_recommendation._probe_deadlines",
+            return_value=UNDETERMINED,
+        ):
+            results = enumerate_verified_date_adjustments(
+                object(), object(), [1, 2], self.originals, self.horizon_end,
+                {}, self.labels, diagnostics,
+            )
+
+        self.assertEqual([], results)
+        self.assertTrue(diagnostics["is_inconclusive"])
+
+    def test_proven_infeasible_search_is_conclusive(self):
+        diagnostics = {}
+        with patch(
+            "app.services.scheduler_deadline_recommendation._probe_deadlines",
+            return_value=INFEASIBLE,
+        ):
+            results = enumerate_verified_date_adjustments(
+                object(), object(), [1, 2], self.originals, self.horizon_end,
+                {}, self.labels, diagnostics,
+            )
+
+        self.assertEqual([], results)
+        self.assertFalse(diagnostics["is_inconclusive"])
+
+    def test_no_candidate_dates_is_inconclusive(self):
+        diagnostics = {}
+        results = enumerate_verified_date_adjustments(
+            object(), object(), [1], {1: self.deadline}, self.deadline,
+            {}, self.labels, diagnostics,
+        )
+
+        self.assertEqual([], results)
+        self.assertTrue(diagnostics["is_inconclusive"])
+
+    def test_gives_up_on_a_hopeless_project_after_one_solve(self):
         """延期是单调放松：最远那天都排不下，这个项目就没有可行日期可找。
 
         每次试解都是一次完整排程（实测 4.3 秒），次数就是成本。真实案例里卡住
         排程的项目没进候选名单，1237 次组合试探必然全部失败，白等满 120 秒才
-        给出一张空白方案表。现在一个无解的项目最多试两次：最近那天和最远那天。
+        给出一张空白方案表。现在最远日期一旦被证明无解就立即结束该项目。
         """
         calls = []
 
@@ -109,8 +147,8 @@ class SchedulerDateAdjustmentsTest(unittest.TestCase):
         results = self.enumerate_with(validator)
 
         self.assertEqual([], results)
-        # 两个项目，各自最多"最近那天 + 最远那天"两次。
-        self.assertLessEqual(len(calls), 4, calls)
+        # 两个项目各只探测最远日期一次。
+        self.assertEqual(2, len(calls), calls)
         self.assertTrue(all(len(changes) == 1 for changes in calls), calls)
         self.assertEqual(
             {self.horizon_end.date()},
@@ -173,8 +211,7 @@ class BinarySearchOverCandidateDatesTest(unittest.TestCase):
             self.calls.append(changes)
             offset = (next(iter(changes.values())).date() - self.deadline.date()).days
             if first_feasible_offset is None:
-                # 全程超时。超时不是"证明不可行"，但最远那天也没被证明可行，
-                # 所以这个项目直接判定没有方案。
+                # 全程超时；最远那天也没被证明可行，因此不输出未经验证的方案。
                 return UNDETERMINED
             return FEASIBLE if offset >= first_feasible_offset else INFEASIBLE
 
@@ -194,19 +231,38 @@ class BinarySearchOverCandidateDatesTest(unittest.TestCase):
         # 64 个候选：最近、最远各一次，再倍增+二分收敛。逐天扫要 37 次。
         self.assertLessEqual(len(self.calls), 12, len(self.calls))
 
-    def test_a_one_day_delay_costs_a_single_solve(self):
-        """答案很小是常态，这一档不能还走满 log2(N) 次。"""
+    def test_a_one_day_delay_with_far_first_costs_two_solves(self):
+        """最远日期和最近日期各验证一次即可确认一天延迟。"""
         results = self.enumerate_with(first_feasible_offset=1)
 
         self.assertEqual(1, results[0]["changes"][0]["delay_days"])
-        self.assertEqual(1, len(self.calls), self.calls)
+        self.assertEqual(2, len(self.calls), self.calls)
 
-    def test_proves_no_solution_within_logarithmic_probes(self):
+    def test_unverified_horizon_returns_no_recommendation(self):
         results = self.enumerate_with(first_feasible_offset=None)
 
         self.assertEqual([], results)
-        # 最近那天 + 最远那天就能断言，逐天扫要 64 次。
+        # 最近那天 + 最远那天各试一次，仍不能声称已证明无解。
         self.assertLessEqual(len(self.calls), 2, len(self.calls))
+
+    def test_unknown_horizon_can_still_find_a_verified_middle_date(self):
+        def probe(_db, _scheduler, changes, _kwargs):
+            self.calls.append(changes)
+            offset = (next(iter(changes.values())).date() - self.deadline.date()).days
+            if offset == 64:
+                return UNDETERMINED
+            return FEASIBLE if offset >= 5 else INFEASIBLE
+
+        with patch(
+            "app.services.scheduler_deadline_recommendation._probe_deadlines",
+            side_effect=probe,
+        ):
+            results = enumerate_verified_date_adjustments(
+                object(), object(), [1], self.originals, self.horizon_end, {}, {1: "项目一"},
+            )
+
+        self.assertEqual(1, len(results))
+        self.assertEqual(5, results[0]["changes"][0]["delay_days"])
 
 
 class ProbeGoesThroughTheRealEntryPointTest(unittest.TestCase):
@@ -242,12 +298,12 @@ class ProbeGoesThroughTheRealEntryPointTest(unittest.TestCase):
         self.assertEqual([(7, True)], calls)
         db.begin_nested.return_value.rollback.assert_called_once()
 
-    def test_real_entry_point_error_means_infeasible(self):
+    def test_real_entry_point_proven_infeasible(self):
         from app.services.scheduler_deadline_recommendation import _probe_deadlines
 
         with patch(
             "app.services.project_plan_apply_service.apply_project_plan",
-            return_value=SimpleNamespace(status="error"),
+            return_value=SimpleNamespace(status="error", schedule_failure={"solver_status": "INFEASIBLE"}),
         ):
             verdict = _probe_deadlines(
                 MagicMock(), object(), {1: datetime(2026, 9, 20, 23, 59)},
@@ -255,3 +311,17 @@ class ProbeGoesThroughTheRealEntryPointTest(unittest.TestCase):
             )
 
         self.assertEqual(INFEASIBLE, verdict)
+
+    def test_real_entry_point_timeout_is_undetermined(self):
+        from app.services.scheduler_deadline_recommendation import _probe_deadlines
+
+        with patch(
+            "app.services.project_plan_apply_service.apply_project_plan",
+            return_value=SimpleNamespace(status="error", schedule_failure={"solver_status": "UNKNOWN"}),
+        ):
+            verdict = _probe_deadlines(
+                MagicMock(), object(), {1: datetime(2026, 9, 20, 23, 59)},
+                {"current_project_id": 7},
+            )
+
+        self.assertEqual(UNDETERMINED, verdict)
