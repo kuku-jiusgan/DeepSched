@@ -38,6 +38,7 @@ from app.services.schedule_request_worker import (
 )
 from app.api import protected_router, users, wecom_auth
 from app.api.exception_handlers import register_domain_exception_handlers
+from app.services.night_run_worker import start_night_run_worker, stop_night_run_worker
 
 settings = get_settings()
 is_production = settings.ENVIRONMENT.lower() == "production"
@@ -69,6 +70,7 @@ def start_background_workers():
     start_instrument_utilization_snapshot_worker()
     start_solver_log_cleanup_worker()
     start_schedule_request_worker()
+    start_night_run_worker()
 
 
 @app.on_event("shutdown")
@@ -81,6 +83,7 @@ def stop_background_workers():
     stop_instrument_utilization_snapshot_worker()
     stop_solver_log_cleanup_worker()
     stop_schedule_request_worker()
+    stop_night_run_worker()
 
 app.add_middleware(
     CORSMiddleware,

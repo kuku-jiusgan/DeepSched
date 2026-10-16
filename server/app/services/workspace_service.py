@@ -32,6 +32,8 @@ from app.services.task_execution_service import TaskExecutionInvalidError, ensur
 from app.services.project_actual_hours_service import task_actual_hours_map
 from app.services.task_progress_service import planned_task_hours, planned_task_minutes
 from app.services.user_role_service import has_any_role
+from app.services.workspace_night_run_service import night_run_action
+from app.services.instrument_working_time_service import load_working_time_context
 
 
 AGENDA_MANAGER_ROLES = {"系统管理员", "项目管理员", "分析所所长", "技术组长"}
@@ -54,6 +56,7 @@ def get_workspace_tasks(db, user, now: datetime | None = None) -> list[Workspace
     slot_ids = [slot.id for segments in task_segments.values() for slot in segments]
     delay_by_slot = _delay_details_by_slot(list_delay_logs(db, slot_ids))
     resume_priority_by_task = _resume_priorities(db)
+    night_context = load_working_time_context(db, current_time, current_time + timedelta(days=1))
 
     return [
         _workspace_task_out(
@@ -63,13 +66,15 @@ def get_workspace_tasks(db, user, now: datetime | None = None) -> list[Workspace
             resume_priority_by_task,
             current_time,
             actual_hours_by_task.get(task.id),
+            night_run_action(db, task, task_segments[task.id], current_time, night_context),
         )
         for task in tasks
     ]
 
 
 def _workspace_task_out(
-    task, segments, delay_by_slot, resume_priority_by_task, now: datetime, actual_duration_hours: float | None
+    task, segments, delay_by_slot, resume_priority_by_task, now: datetime, actual_duration_hours: float | None,
+    night_run,
 ) -> WorkspaceTaskOut:
     planned_start, planned_end = planned_task_window(segments)
     if not _has_actual_duration(task, segments):
@@ -97,6 +102,7 @@ def _workspace_task_out(
         task_window=TaskWindowOut(start=planned_start, end=planned_end),
         actual_window=TaskWindowOut(start=actual_start, end=actual_end),
         actionable_slot=_segment_out(actionable) if actionable else None,
+        night_run=night_run,
         segments=[_segment_out(segment) for segment in segments],
         delay=WorkspaceDelayOut(status=task.delay_status, **delay_detail),
         resume_priority=resume_priority_by_task.get(task.id),

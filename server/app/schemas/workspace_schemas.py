@@ -32,6 +32,13 @@ class WorkspaceDelayOut(BaseModel):
     reported_at: datetime | None = None
 
 
+class WorkspaceNightRunOut(BaseModel):
+    slot_id: int | None = None
+    start_at: datetime | None = None
+    is_eligible: bool = False
+    reason: str = ""
+
+
 class WorkspaceResumePriorityOut(BaseModel):
     task_id: int
     task_name: str
@@ -57,6 +64,7 @@ class WorkspaceTaskOut(BaseModel):
     task_window: TaskWindowOut
     actual_window: TaskWindowOut
     actionable_slot: WorkspaceSegmentOut | None = None
+    night_run: WorkspaceNightRunOut = Field(default_factory=WorkspaceNightRunOut)
     segments: list[WorkspaceSegmentOut] = Field(default_factory=list)
     delay: WorkspaceDelayOut
     resume_priority: WorkspaceResumePriorityOut | None = None

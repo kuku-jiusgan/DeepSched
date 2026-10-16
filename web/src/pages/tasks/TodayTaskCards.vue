@@ -172,9 +172,9 @@ import { actionableSlotId } from '@/domains/tasks/workspaceTask'
 import dayjs from 'dayjs'
 import {
   actualText, canCompleteTask, canPauseTask, canStartTask, currentUserName, formatHours,
-  formatInstrumentText, formatProjectText, formatTaskTime, getDelayText, getNightRunEligibility,
+  formatInstrumentText, formatProjectText, formatTaskTime, getDelayText, canNightRunTask, nightRunDisabledReason,
   isCompletionConfirmTask, isHalfHourDuration, isWorkspaceExceptionConfirmTask, maxNightRunHours,
-  nightRunEndTime, normalizeWorkdayEndTime, parseNightClock, scheduleText, statusLabel,
+  nightRunEndTime, parseNightClock, scheduleText, statusLabel,
 } from './todayTaskCardUtils'
 
 type TodayCardCategory = 'completion' | 'exception'
@@ -341,21 +341,6 @@ watch(
   },
 )
 
-function canNightRunTask(task: WorkspaceTask, storedNightRun?: StoredAutoSequenceForm | null) {
-  if (task.execution_status !== 'running' || task.actionable_slot?.status !== 'running') return false
-  if (storedNightRun) return true
-  const workdayEndTime = normalizeWorkdayEndTime(task.actionable_slot?.effective_work_end) || '20:00'
-  return getNightRunEligibility(task, workdayEndTime).isEligible
-}
-
-function nightRunDisabledReason(task: WorkspaceTask, storedNightRun?: StoredAutoSequenceForm | null) {
-  if (canNightRunTask(task, storedNightRun)) return ''
-  if (task.execution_status !== 'running' || task.actionable_slot?.status !== 'running') return '只有进行中的任务才能设置夜间运行'
-  if (!task.actionable_slot?.plan_end) return '当前可执行时间段没有计划结束时间，不能继续夜间运行'
-  const workdayEndTime = normalizeWorkdayEndTime(task.actionable_slot?.effective_work_end) || '20:00'
-  return getNightRunEligibility(task, workdayEndTime).reason
-}
-
 function buildTodayCard(task: WorkspaceTask, category: TodayCardCategory): TodayTaskCard {
   const nightStart = formatTaskTime(nightRunEndTime(task), DEFAULT_NIGHT_START)
   nightRunRevision.value
@@ -387,9 +372,9 @@ function buildTodayCard(task: WorkspaceTask, category: TodayCardCategory): Today
     latestEnd: NIGHT_RESERVE_END,
     nightRunSummary: storedNightRun ? formatNightRunSummary(storedNightRun) : '',
     delayText: getDelayText(task),
-    canNightRun: canNightRunTask(task, storedNightRun),
+    canNightRun: canNightRunTask(task),
     isNightRunLoading: false,
-    nightRunDisabledReason: nightRunDisabledReason(task, storedNightRun),
+    nightRunDisabledReason: nightRunDisabledReason(task),
   }
 }
 
@@ -431,7 +416,7 @@ function openDelayReport(card: TodayTaskCard) {
 
 async function submitAutoSequence() {
   if (!selectedCard.value) return
-  const slotId = actionableSlotId(selectedCard.value.task)
+  const slotId = selectedCard.value.task.night_run?.slot_id
   if (!slotId) {
     message.warning('当前任务没有可执行时间段')
     return
@@ -465,8 +450,9 @@ async function submitAutoSequence() {
     saveNightRunForm(selectedCard.value.task)
     autoSequenceOpen.value = false
     emit('refreshed')
-  } catch {
-    message.error('夜间运行记录失败')
+  } catch (error: unknown) {
+    console.error('夜间运行记录失败', apiErrorMessage(error) || '接口请求失败')
+    message.error(apiErrorMessage(error) || '夜间运行记录失败')
   } finally {
     autoSequenceSubmitting.value = false
   }

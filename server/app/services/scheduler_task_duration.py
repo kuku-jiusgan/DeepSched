@@ -22,20 +22,10 @@ def remaining_duration_units(
     remaining_duration_minutes: dict[int, int] | None = None,
     now: datetime | None = None,
 ) -> int:
-    from app.services.task_progress_service import planned_task_minutes
-
     if remaining_duration_minutes and task.id in remaining_duration_minutes:
-        return max(1, to_units(remaining_duration_minutes[task.id] / 60))
-    planned_minutes = planned_task_minutes(task)
-    executed_minutes = int(getattr(task, "executed_minutes", 0) or 0)
+        return remaining_workload_units(task, remaining_duration_minutes)
     if hasattr(task, "executed_minutes"):
-        # planned_task_minutes 是工作量口径（计划工时 + 延期追加），不含切换
-        # 准备时间。真实任务恒有 executed_minutes 字段，所以这个分支覆盖了
-        # 全部任务；若直接返回工作量单元数，调用方传进来的切换时间就被丢掉，
-        # 求解器会比缺口分析少排一段准备时间。
-        remaining_minutes = max(0, planned_minutes - executed_minutes)
-        remaining_units = to_units(remaining_minutes / 60) if remaining_minutes > 0 else 0
-        return max(1, remaining_units + switchover_units(task))
+        return remaining_workload_units(task)
     segments = list(getattr(task, "execution_segments", []) or [])
     fixed_units = executed_duration_units(
         segments,
@@ -57,6 +47,25 @@ def remaining_duration_units(
             now,
         )
     return max(1, duration_units - fixed_units)
+
+
+def remaining_workload_units(
+    task,
+    remaining_duration_minutes: dict[int, int] | None = None,
+) -> int:
+    """求解器和窗口估算共用的剩余工作量，不依赖模型窗口或固定槽。
+
+    显式剩余工时按调用方给定值建模，不额外追加任务准备工时。
+    其余任务使用计划工时、追加工时、已执行工时及任务准备工时。
+    各部分保持求解器的 30 分钟取整规则。
+    """
+    from app.services.task_progress_service import remaining_task_minutes
+
+    if remaining_duration_minutes and task.id in remaining_duration_minutes:
+        return max(1, to_units(remaining_duration_minutes[task.id] / 60))
+    remaining_minutes = remaining_task_minutes(task)
+    remaining_units = to_units(remaining_minutes / 60) if remaining_minutes > 0 else 0
+    return max(1, remaining_units + switchover_units(task))
 
 
 def executed_duration_units(

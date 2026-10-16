@@ -318,6 +318,10 @@ API 路由集中在 [schedules.py](server/app/api/schedules.py)、[project_plan_
 
 [schedule_night_run_service.py](server/app/services/schedule_night_run_service.py) 在指定夜间窗口登记特殊运行槽和原始执行记录。夜间自然时长不进入日间有效工时和排程进度，但记录必须保留供统计与审计。夜间运行是特殊时间槽登记，不是一次完整的全局资源求解。
 
+[night_run_worker.py](server/app/services/night_run_worker.py) 每 30 秒按登记区间推进夜跑时间槽：开始前为 `scheduled`，开始后为 `running`，结束后为 `completed`。服务重启后补处理已到期的登记。系统不因此完成、暂停或中断整项任务，也不把计划边界写成实际执行时间；实际执行流水保持独立。
+
+工作台通过后端返回的 `night_run` 操作信息获取当天时间槽、建议开始时间和启用条件。登记夜跑使用当天的仪器计划段，不绑定最初开始任务的实际执行段。前端本地保存的表单不决定按钮是否可用。
+
 ## 9. 落库、并发与一致性保证
 
 正式主链把“求解结果”先转成不接触数据库的 `SchedulePlan`，再集中执行。实现见 [schedule_action_plan.py](server/app/services/schedule_action_plan.py)、[scheduler_result_service.py](server/app/services/scheduler_result_service.py) 和 [scheduler_persistence.py](server/app/services/scheduler_persistence.py)。

@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import dayjs from 'dayjs'
 
 import type { WorkspaceTask } from '@/domains/tasks/workspaceTask'
-import { getNightRunEligibility, nightRunEndTime } from './todayTaskCardUtils'
+import { canNightRunTask, nightRunDisabledReason, nightRunEndTime } from './todayTaskCardUtils'
 
 
 function task(overrides: Partial<WorkspaceTask> = {}): WorkspaceTask {
@@ -37,6 +36,12 @@ function task(overrides: Partial<WorkspaceTask> = {}): WorkspaceTask {
       tier: 'confirmed',
       status: 'running',
     },
+    night_run: {
+      slot_id: 22,
+      start_at: '2026-07-20T20:00:00',
+      is_eligible: true,
+      reason: '',
+    },
     segments: [],
     delay: {
       status: 'not_delayed',
@@ -49,63 +54,34 @@ function task(overrides: Partial<WorkspaceTask> = {}): WorkspaceTask {
   }
 }
 
-describe('nightRunEndTime', () => {
-  it('uses the current actionable segment date for a multi-day running task', () => {
-    expect(nightRunEndTime(task())?.format('YYYY-MM-DD HH:mm')).toBe('2026-07-20 22:00')
+describe('night run actions', () => {
+  it('uses the backend start time even when the actual execution belongs to yesterday', () => {
+    const continuing = task({ actionable_slot: {
+      ...task().actionable_slot!,
+      plan_start: '2026-07-19T08:30:00',
+      plan_end: '2026-07-19T20:00:00',
+      actual_start: '2026-07-19T08:30:00',
+      status: 'running',
+    } })
+
+    expect(nightRunEndTime(continuing)?.format('YYYY-MM-DD HH:mm')).toBe('2026-07-20 20:00')
+    expect(canNightRunTask(continuing)).toBe(true)
+    expect(continuing.night_run?.slot_id).toBe(22)
   })
 
-  it('returns null when the actionable segment has no planned end', () => {
-    const withoutActionableSlot = task({ actionable_slot: null })
+  it('uses the backend eligibility and exact error reason', () => {
+    const unavailable = task({ night_run: {
+      slot_id: null, start_at: null, is_eligible: false,
+      reason: '当前没有可登记夜间运行的今日计划时段',
+    } })
 
-    expect(nightRunEndTime(withoutActionableSlot)).toBeNull()
-  })
-})
-
-describe('getNightRunEligibility', () => {
-  const now = dayjs('2026-07-20T15:30:00')
-
-  it('allows a task ending at 22:00 when the workday ends at 20:00', () => {
-    expect(getNightRunEligibility(task(), '20:00', now)).toEqual({
-      isEligible: true,
-      reason: '',
-    })
+    expect(canNightRunTask(unavailable)).toBe(false)
+    expect(nightRunDisabledReason(unavailable)).toBe('当前没有可登记夜间运行的今日计划时段')
+    expect(nightRunEndTime(unavailable)).toBeNull()
   })
 
-  it('rejects a task whose current segment ends before the workday boundary', () => {
-    const earlyEnd = task({
-      actionable_slot: {
-        ...task().actionable_slot!,
-        plan_end: '2026-07-20T19:30:00',
-      },
-    })
-
-    expect(getNightRunEligibility(earlyEnd, '20:00', now).reason).toContain('不早于')
-  })
-
-  it('reports a date mismatch separately from the workday boundary', () => {
-    const futureSegment = task({
-      actionable_slot: {
-        ...task().actionable_slot!,
-        plan_start: '2026-07-21T08:30:00',
-        plan_end: '2026-07-21T22:00:00',
-      },
-    })
-
-    expect(getNightRunEligibility(futureSegment, '20:00', now).reason).toContain('不是今天')
-  })
-
-  it('rejects a segment whose planned end is on a later day', () => {
-    const activeMultiDay = task({
-      actionable_slot: {
-        ...task().actionable_slot!,
-        plan_start: '2026-07-20T08:30:00',
-        plan_end: '2026-07-22T22:00:00',
-      },
-    })
-
-    expect(getNightRunEligibility(activeMultiDay, '20:00', dayjs('2026-07-21T15:30:00'))).toEqual({
-      isEligible: false,
-      reason: '当前可执行时间段不是今天，不能设置今日夜间运行',
-    })
+  it('disables night run when metadata is missing', () => {
+    expect(canNightRunTask(task({ night_run: null }))).toBe(false)
+    expect(nightRunEndTime(task({ night_run: null }))).toBeNull()
   })
 })

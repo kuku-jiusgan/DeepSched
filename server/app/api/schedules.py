@@ -65,6 +65,7 @@ from app.repositories.workspace_repository import (
 from app.api.users import require_authenticated_user
 from app.api.access import require_management_user, require_slot_operator
 from app.services.schedule_diagnostic_service import get_schedule_diagnostic
+from app.domain.night_run import night_slot_status
 
 router = APIRouter(prefix="/api/v1/schedules", tags=["schedules"])
 
@@ -439,7 +440,9 @@ def _enrich_slot(
         task_actual_start=task_actual_start, task_actual_end=task_actual_end,
         is_night_run=bool(slot.is_night_run),
         display_spans=_slot_display_spans(db, slot, actual_start, actual_end, working_context),
-        tier=slot.tier, status=slot.status, execution_status=_slot_execution_status(slot, task),
+        tier=slot.tier,
+        status=night_slot_status(slot, datetime.now()) if slot.is_night_run else slot.status,
+        execution_status=_slot_execution_status(slot, task),
         task_name=task.name if task else None,
         task_type=task.task_type if task else None,
         task_status=task.status if task else None,
@@ -456,6 +459,8 @@ def _enrich_slot(
 
 
 def _slot_execution_status(slot: TimeSlot, task: Task | None) -> str:
+    if slot.is_night_run:
+        return night_slot_status(slot, datetime.now())
     # 口径统一：时间槽的显示状态跟着任务当前状态走，历史段不按各自结果单独显示。
     # 曾经把"被暂停打断的那一段"固定成暂停，但同样跑过的、正常做到收工的段仍然
     # 跟着任务显示运行中，两种历史段一冻一跟，反而不一致。

@@ -1,11 +1,15 @@
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import Instrument, Project, Task, TimeSlot, User
+from app.models import Instrument, Project, Task, TaskNightRun, TimeSlot, User
+from app.services.instrument_utilization_service import _night_ranges
+from app.services.task_pause_service import list_switch_candidates
+from app.services.task_pause_solver_service import apply_switch_anchors
 from app.services.task_pause_switch_context_service import build_pause_switch_context
 
 
@@ -60,6 +64,69 @@ class PauseSwitchStartedSlotsTest(unittest.TestCase):
 
         started = [s for s in context.replaceable_slots if s.actual_start or s.actual_end]
         self.assertEqual([], started)
+
+    def _add_night_run(self, task_id: int, end: datetime) -> tuple[TimeSlot, TaskNightRun]:
+        """夜间运行直接使用登记区间，actual_start/actual_end 正常留空。"""
+        slot = TimeSlot(
+            task_id=task_id, instrument_id=1, status="running", tier="confirmed",
+            is_night_run=True, plan_start=end - timedelta(hours=8), plan_end=end,
+        )
+        self.db.add(slot)
+        self.db.flush()
+        record = TaskNightRun(
+            task_id=task_id, slot_id=slot.id, instrument_id=1,
+            started_at=slot.plan_start, ended_at=end,
+        )
+        self.db.add(record)
+        self.db.commit()
+        return slot, record
+
+    def test_past_night_runs_are_not_listed_for_cancellation(self):
+        self._add_night_run(1, self.now - timedelta(days=9))
+        self._add_night_run(2, self.now - timedelta(days=8))
+        future_slot, _ = self._add_night_run(1, self.now + timedelta(hours=16))
+
+        with patch("app.services.task_pause_service.datetime") as clock:
+            clock.now.return_value = self.now
+            candidates = list_switch_candidates(self.db, self.source_slot.id)
+
+        self.assertEqual(1, len(candidates))
+        self.assertEqual(
+            [(future_slot.plan_start, future_slot.plan_end)],
+            [(run["plan_start"], run["plan_end"])
+             for run in candidates[0]["cancelled_night_runs"]],
+        )
+
+    def test_switch_preserves_past_night_records_but_cancels_future_records(self):
+        past_source, source_record = self._add_night_run(1, self.now - timedelta(days=9))
+        past_target, target_record = self._add_night_run(2, self.now - timedelta(days=8))
+        future_slot, future_record = self._add_night_run(1, self.now + timedelta(hours=16))
+        context = build_pause_switch_context(self.db, self.source_slot, self.target_slot, self.now)
+
+        apply_switch_anchors(self.db, context, self.source_slot, self.target_slot)
+        self.db.commit()
+
+        for slot, record in ((past_source, source_record), (past_target, target_record)):
+            self.assertEqual("active", slot.lifecycle_status)
+            self.assertEqual("running", slot.status)
+            self.assertEqual("active", record.lifecycle_status)
+            self.assertIsNone(record.superseded_at)
+            self.assertIsNone(slot.actual_start)
+            self.assertIsNone(slot.actual_end)
+            self.assertEqual(
+                [(slot.plan_start, slot.plan_end)],
+                _night_ranges(self.db, 1, slot.plan_start, slot.plan_end),
+            )
+        self.assertEqual("superseded", future_slot.lifecycle_status)
+        self.assertEqual("superseded", future_record.lifecycle_status)
+
+    def test_night_run_ending_at_switch_time_is_not_cancelled(self):
+        ended_slot, _ = self._add_night_run(1, self.now)
+        overlapping_slot, _ = self._add_night_run(1, self.now + timedelta(hours=1))
+        context = build_pause_switch_context(self.db, self.source_slot, self.target_slot, self.now)
+
+        self.assertNotIn(ended_slot.id, {slot.id for slot in context.replaceable_slots})
+        self.assertIn(overlapping_slot.id, {slot.id for slot in context.replaceable_slots})
 
 if __name__ == "__main__":
     unittest.main()

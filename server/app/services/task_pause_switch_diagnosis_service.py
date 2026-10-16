@@ -1,8 +1,6 @@
 """暂停并切换失败的诊断。
 
-暂停并切换只有一种失败：切换之后某个项目做不完，会超出与客户签的结题日期
-（含不占时间轴、但计入完工测算的那部分后续任务）。所以这里不去猜"受什么约束
-限制"，而是把这次切换原样再交给求解器跑一遍，只临时放开各项目的结题日——放开
+把这次切换原样再交给求解器跑一遍，只临时放开各项目的结题日——放开
 之后排出来的那份计划，就是"如果允许延期，实际会做到哪一天"的答案。逐个项目跟
 结题日一比，超出的就是原因，超出多少天就是要调整的天数，原因与方案一一对应。
 
@@ -22,16 +20,13 @@ from app.models import Project, Task, TimeSlot
 from app.services.project_completion_projection_service import project_task_completions
 from app.services.project_deadline_calendar_service import next_working_deadline
 from app.services.schedule_queue_replan_support import load_working_options
+from app.services.task_pause_horizon_service import solver_horizon_end
 from app.services.task_pause_switch_context_service import (
     PauseSwitchContext, build_pause_switch_context,
 )
 
 
 _logger = logging.getLogger(__name__)
-
-# 复算就多这一次求解，值得给它比正式排程宽的时限。放开结题日等于抽掉了一大批
-# 上界，搜索空间随之变大：实测同一道题 8 秒只能给出 UNKNOWN，60 秒能证到 OPTIMAL。
-RELAXED_SOLVER_TIME_LIMIT = 30.0
 
 FEASIBLE = "feasible"          # 放开结题日就排得下，可以逐项目算超期
 INFEASIBLE = "infeasible"      # 求解器证明了放开也排不下
@@ -73,32 +68,30 @@ def _relaxed_replan(
 ) -> tuple[str, dict[int, dict[int, datetime]] | None]:
     """放开全部结题日期再跑一遍这次切换，返回各项目下每个任务的预计完工时间。
 
-    除了结题日期这一条，其余输入与正式那次一字不差——包括求解视界。放开结题日是
-    纯粹的松弛，同一个视界下只可能把"排不下"变成"排得下"。视界一并放宽反而危险：
-    实测把它往后推 30 天，模型大到 8 秒内证不出结论，求解器返回 UNKNOWN，而
-    UNKNOWN 被当成"排不下"就会得出"改日期解决不了"这种与事实相反的结论。
+    与正式求解共用完整任务范围；放开结题日期后，窗口也须预留外部前置
+    结束后的全部剩余工时。正式求解由真实结题日期限定的窗口不适用于延期诊断。
+    不能把局部仪器队列结束时间当作全部任务的上界，否则放开结题日期后
+    仍会因人工截短的窗口报不可行。
 
     所以只有求解器明确证明 INFEASIBLE 才算"排不下"，超时一律算没结论。
     全程在 savepoint 里，跑完回滚，一个字节都不落库。
     """
     from app.services.task_pause_solver_service import (
-        apply_switch_anchors, run_switch_replan, solver_horizon_end,
+        apply_switch_anchors, run_switch_replan,
     )
 
     project_ids = _closure_project_ids(db, context.task_ids)
-    horizon_end = solver_horizon_end(
-        context.queue_end, context.remaining_duration_minutes,
-    )
     savepoint = db.begin_nested()
     try:
         apply_switch_anchors(db, context, source_slot, target_slot)
+        horizon_end = solver_horizon_end(db, context, relax_project_deadlines=True)
         result = run_switch_replan(
             db,
             context,
             project_end_date_overrides={
                 project_id: horizon_end for project_id in project_ids
             },
-            solver_time_limit=RELAXED_SOLVER_TIME_LIMIT,
+            planning_end_at=horizon_end,
         )
         if result.get("status") != "ok":
             _logger.error(
@@ -201,8 +194,8 @@ def _overrun_failure(context: PauseSwitchContext, parties: dict, overruns: list[
 def _conflict_failure(context: PauseSwitchContext, parties: dict, solver_message: str | None) -> dict:
     """求解器证明了放开结题日期也排不下。
 
-    按业务口径暂停并切换只会因为项目超出结题日期而失败，所以走到这里就是缺陷。
-    这话只在拿到 INFEASIBLE 这个证明时才敢说——说错了就是让人白改一遍日期。
+    只有 INFEASIBLE 才证明存在约束冲突。不能把求解超时说成冲突，
+    也不能在没有证据时让用户修改结题日期。
     """
     message = "暂停并切换失败：放开全部项目结题日期后仍排不下，属于排程约束冲突，改日期解决不了。"
     return _failure(

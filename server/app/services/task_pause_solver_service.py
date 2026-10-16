@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
-from math import ceil
+from datetime import datetime
 
 from app.domain.errors import DomainConflictError
 from app.models import TimeSlot
 from app.services.resource_replan_service import replan_resource_closure
 from app.services.schedule_slot_change_log_service import supersede_slot
+from app.services.task_pause_horizon_service import solver_horizon_end
 from app.services.task_pause_switch_context_service import (
     PauseSwitchContext, build_pause_switch_context,
 )
 
 
 _logger = logging.getLogger(__name__)
+# 完整任务范围包含待签批分支；8 秒可能在首个可行解出现之前结束。
+SWITCH_SOLVER_TIME_LIMIT = 30.0
 
 
 def replan_pause_switch(
@@ -65,7 +67,8 @@ def run_switch_replan(
     context: PauseSwitchContext,
     *,
     project_end_date_overrides: dict[int, datetime] | None = None,
-    solver_time_limit: float = 8.0,
+    solver_time_limit: float = SWITCH_SOLVER_TIME_LIMIT,
+    planning_end_at: datetime | None = None,
 ) -> dict:
     """Solve this switch with the authoritative replan entry."""
     return replan_resource_closure(
@@ -77,10 +80,7 @@ def run_switch_replan(
         advance_notification_reason="暂停切换重排",
         remaining_duration_minutes=context.remaining_duration_minutes,
         planning_start_at=context.switch_time,
-        planning_end_at=solver_horizon_end(
-            context.queue_end,
-            context.remaining_duration_minutes,
-        ),
+        planning_end_at=planning_end_at or solver_horizon_end(db, context),
         replaceable_after=context.switch_time,
         expand_closure=False,
         # 源任务和接替任务都要进保留名单。落地环节会把状态是运行中/已暂停/
@@ -100,20 +100,10 @@ def run_switch_replan(
         },
         solver_time_limit=solver_time_limit,
         project_end_date_overrides=project_end_date_overrides,
-        # 失败诊断另有专门的一条：暂停切换只会因为"切完某个项目就超出结题日期"
-        # 而失败，而通用诊断回答的是"项目排不下"，口径对不上；它还会顺手排一个
-        # 后台方案作业，那个作业拿「保存并开始排程」入口去验证，验的不是这次切换。
+        # 专用诊断复算同一次切换，区分结题日期、约束冲突和求解超时。
+        # 通用诊断的后台方案作业验证项目计划入口，不能用来解释这次切换。
         include_failure_diagnostics=False,
     )
-
-
-def solver_horizon_end(
-    queue_end: datetime,
-    remaining_duration_minutes: dict[int, int],
-) -> datetime:
-    """Cover the queued workload while keeping the closure itself bounded."""
-    workload_days = ceil(sum(remaining_duration_minutes.values()) / (8 * 60))
-    return queue_end + timedelta(days=max(2, workload_days + 2))
 
 
 def _switch_failure(

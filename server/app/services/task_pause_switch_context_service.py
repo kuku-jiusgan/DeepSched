@@ -115,7 +115,9 @@ class PauseSwitchContext:
 
 
 def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot, started_at: datetime) -> PauseSwitchContext:
-    switch_time = started_at.replace(second=0, microsecond=0)
+    # 实际切换时刻不能先向下截断；求解器统一向上对齐到 30 分钟刻度。
+    # 否则整半小时后的几秒内切换，会把新计划排到源任务实际结束之前。
+    switch_time = started_at
     target_slots = task_queue_slots(db, target_slot)
     source_slots = task_queue_slots(db, source_slot)
     target_end = max(slot.plan_end for slot in target_slots)
@@ -132,9 +134,14 @@ def build_pause_switch_context(db, source_slot: TimeSlot, target_slot: TimeSlot,
     replaceable.extend(slot for slot in target_slots if slot.id != target_slot.id)
     replaceable.extend(slot for group in [*intermediate_groups, *target_followups, *source_followups] for slot in group)
     replaceable.extend(slot for groups in intermediate_followups.values() for group in groups for slot in group)
-    # 已经开始或结束的时间槽是既成事实，supersede_slot 会直接拒绝作废它们并
-    # 抛异常，整个暂停切换随之变成 500。这里先滤掉，重排只动尚未发生的部分。
-    replaceable = [slot for slot in replaceable if slot.actual_start is None and slot.actual_end is None]
+    # 夜间运行以 plan_start/plan_end 作为运行区间，不要求填写 actual_*。
+    # 运行区间已结束的记录不能因今天的切换被作废。
+    # 已有实际时间的槽由 supersede_slot 保护，重排仅处理切换后仍有计划的部分。
+    replaceable = [
+        slot for slot in replaceable
+        if slot.actual_start is None and slot.actual_end is None
+        and slot.plan_end > switch_time
+    ]
     queue = [PauseSwitchQueueEntry(target_slot.task, target_slot, remaining_minutes(target_slot.task, target_slots, switch_time, target_slot), target_slot.status, target_slot)]
     queue.extend(_followup_entries(target_followups))
     queue.append(PauseSwitchQueueEntry(source_slot.task, None, remaining_minutes(source_slot.task, source_slots, switch_time, source_slot), "paused", source_slot))

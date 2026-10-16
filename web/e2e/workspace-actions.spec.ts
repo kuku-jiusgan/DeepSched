@@ -26,7 +26,7 @@ async function mockWorkspaceApi(page: Page) {
         group_name: '任务',
         can_view: true,
         can_operate: true,
-        actions: ['start', 'complete', 'night_run', 'delay'].map(actionKey => ({
+        actions: ['start', 'complete', 'pause', 'night_run', 'delay'].map(actionKey => ({
           action_key: actionKey,
           action_name: actionKey,
           allowed: true,
@@ -61,6 +61,12 @@ async function mockWorkspaceApi(page: Page) {
         tier: 'confirmed',
         status: 'running',
       },
+      night_run: {
+        slot_id: 26,
+        start_at: `${planStart.slice(0, 10)}T20:00:00`,
+        is_eligible: true,
+        reason: '',
+      },
       segments: [],
       delay: { status: 'not_delayed', hours: null, reason: null, reported_at: null },
     }],
@@ -85,7 +91,7 @@ async function assertActionButtonDimensions(page: Page) {
   }))
   for (const dimension of dimensions) {
     expect(dimension.width).toBeGreaterThanOrEqual(88)
-    expect(dimension.height).toBe(30)
+    expect(dimension.height).toBe((page.viewportSize()?.width || 0) <= 768 ? 44 : 30)
     expect(dimension.left).toBeGreaterThanOrEqual(0)
     expect(dimension.right).toBeLessThanOrEqual(page.viewportSize()?.width || 0)
   }
@@ -103,4 +109,16 @@ test('workspace action buttons wrap without overlap on mobile', async ({ page })
   await openWorkspace(page)
   await assertActionButtonDimensions(page)
   await page.screenshot({ path: 'test-results/workspace-actions-mobile.png', fullPage: true })
+})
+
+test('night run submits the backend-selected daily slot instead of the original execution slot', async ({ page }) => {
+  await openWorkspace(page)
+  const button = page.getByRole('button', { name: '夜间运行', exact: true })
+  await expect(button).toBeEnabled()
+  await button.click()
+  const submitted = page.waitForRequest(request => request.url().endsWith('/timeslots/26/night-run'))
+  await page.getByRole('dialog').getByRole('button', { name: /提\s*交/ }).click()
+  const request = await submitted
+  expect(request.postDataJSON().earliest_start).toBe('20:00')
+  await expect(page.getByText('方法开发 已记录为夜间运行', { exact: true })).toBeVisible()
 })

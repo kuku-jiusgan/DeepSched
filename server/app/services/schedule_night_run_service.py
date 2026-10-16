@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Optional
+from math import isfinite
 
 from app.models import TaskNightRun, TimeSlot
+from app.domain.night_run import night_run_status
+from app.repositories.task_execution_repository import lock_task
+from app.repositories.workspace_repository import workspace_segments
+from app.services.workspace_night_run_service import night_run_action
 from app.services.instrument_status_service import (
     mark_instrument_running,
 )
 from app.services.instrument_bridge_sync_service import rebuild_instrument_bridge_reservations
 from app.domain.errors import DomainNotFoundError, DomainValidationError
-from app.services.instrument_working_time_service import load_working_time_context
 
 
 class ScheduleNightRunNotFoundError(DomainNotFoundError):
@@ -27,31 +31,14 @@ def record_night_run(
     earliest_start: Optional[str],
     latest_end: Optional[str],
     operator_id: int | None = None,
+    now: datetime | None = None,
 ) -> TimeSlot:
-    slot = db.query(TimeSlot).filter(TimeSlot.id == slot_id).first()
-    if not slot:
-        raise ScheduleNightRunNotFoundError("时间槽不存在")
-    if not slot.instrument_id:
-        raise ScheduleNightRunInvalidError("该任务未绑定仪器，不能记录夜间运行")
-    if slot.status != "running" or slot.task.status != "running":
-        raise ScheduleNightRunInvalidError("只有进行中的任务才能记录夜间运行")
-    context = load_working_time_context(db, slot.plan_start, slot.plan_end + timedelta(days=1))
-    policy = context.policy_for(slot.instrument_id)
-    day_end_minutes = policy.day_end_minutes if policy else 20 * 60
-    work_end = slot.plan_end.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=day_end_minutes)
-    if slot.plan_end < work_end:
-        raise ScheduleNightRunInvalidError(
-            f"当前时间槽须运行至仪器有效工作时段结束时间 {day_end_minutes // 60:02d}:"
-            f"{day_end_minutes % 60:02d} 后才能设置夜间运行"
-        )
-
-    start_time = _resolve_night_start(slot, earliest_start)
-    end_time = start_time + timedelta(hours=duration_hours)
-    latest_end_time = _resolve_latest_end(start_time, latest_end)
-    if latest_end_time and end_time > latest_end_time:
-        raise ScheduleNightRunInvalidError("自动序列预计时长超过最晚结束时间")
+    current_time = now or datetime.now()
+    slot = _night_run_source(db, slot_id, current_time)
+    start_time, end_time = _night_run_window(slot, duration_hours, earliest_start, latest_end, current_time)
 
     night_slot = _merge_or_create_night_slot(db, slot, start_time, end_time)
+    night_slot.status = night_run_status(start_time, end_time, current_time)
     _upsert_night_run(db, night_slot, start_time, end_time, operator_id)
     # Bridge reservations are derived from active task slots. Refresh them in
     # this transaction whenever a night-run slot changes the task timeline.
@@ -61,6 +48,43 @@ def record_night_run(
     db.flush()
     db.refresh(night_slot)
     return night_slot
+
+
+def _night_run_source(db, slot_id: int, current_time: datetime) -> TimeSlot:
+    slot = db.query(TimeSlot).filter(TimeSlot.id == slot_id).first()
+    if not slot:
+        raise ScheduleNightRunNotFoundError("时间槽不存在")
+    if not slot.instrument_id:
+        raise ScheduleNightRunInvalidError("该任务未绑定仪器，不能记录夜间运行")
+    task = lock_task(db, slot.task_id)
+    if task is None:
+        raise ScheduleNightRunNotFoundError("任务不存在")
+    action = night_run_action(db, task, workspace_segments(task), current_time)
+    if not action.is_eligible:
+        raise ScheduleNightRunInvalidError(action.reason)
+    if action.slot_id != slot.id:
+        raise ScheduleNightRunInvalidError("夜间运行必须使用当天的仪器计划时段，请刷新工作台")
+
+    return slot
+
+
+def _night_run_window(
+    slot: TimeSlot, duration_hours: float, earliest_start: str | None,
+    latest_end: str | None, current_time: datetime,
+) -> tuple[datetime, datetime]:
+    if not isfinite(duration_hours) or duration_hours <= 0 or duration_hours * 2 != int(duration_hours * 2):
+        raise ScheduleNightRunInvalidError("夜间运行时长必须为正数且以 0.5 小时为颗粒度")
+    start_time = _resolve_night_start(slot, earliest_start)
+    end_time = start_time + timedelta(hours=duration_hours)
+    if start_time < slot.plan_end:
+        raise ScheduleNightRunInvalidError("夜间运行开始时间不能早于当天计划结束时间")
+    if end_time <= current_time:
+        raise ScheduleNightRunInvalidError("夜间运行结束时间已过，请刷新工作台")
+    latest_end_time = _resolve_latest_end(start_time, latest_end)
+    if latest_end_time and end_time > latest_end_time:
+        raise ScheduleNightRunInvalidError("自动序列预计时长超过最晚结束时间")
+
+    return start_time, end_time
 
 
 def _upsert_night_run(
@@ -79,6 +103,9 @@ def _upsert_night_run(
         record.slot_id = slot.id
         record.ended_at = end_time
         record.operator_id = operator_id or record.operator_id
+        record.lifecycle_status = "active"
+        record.superseded_at = None
+        record.superseded_reason = None
         return
     db.add(TaskNightRun(
         task_id=slot.task_id,
@@ -98,6 +125,7 @@ def _merge_or_create_night_slot(
 ) -> TimeSlot:
     existing_slot = db.query(TimeSlot).filter(
         TimeSlot.id != slot.id,
+        TimeSlot.is_night_run.is_(True),
         TimeSlot.task_id == slot.task_id,
         TimeSlot.instrument_id == slot.instrument_id,
         TimeSlot.plan_start == start_time,
@@ -121,11 +149,8 @@ def _merge_or_create_night_slot(
         plan_end=end_time,
         is_night_run=True,
         tier=slot.tier,
-        # 夜跑往往是给今晚登记的，开始时刻还没到。直接继承源槽的 running，
-        # 会让一个尚未发生的时间槽以「运行中」入库，随后被时间槽推进器填上
-        # 一个未来的实际开始时间，暂停切换再想作废它就会撞上"已发生时间槽
-        # 不可被替代"。到点后由推进器负责翻成运行中。
-        status=slot.status if start_time <= datetime.now() else "scheduled",
+        # 登记后的状态统一按夜跑区间计算，不继承白天时间槽的状态。
+        status="scheduled",
     )
     db.add(night_slot)
     db.flush()
@@ -133,10 +158,12 @@ def _merge_or_create_night_slot(
 
 
 def _resolve_night_start(slot: TimeSlot, value: Optional[str]) -> datetime:
-    fallback = _night_run_fallback_start(slot)
-    parsed = _parse_clock_time_on_date(fallback, value)
+    base_time = slot.plan_end
+    parsed = _parse_clock_time_on_date(base_time, value)
     if parsed is None:
-        return fallback
+        if value:
+            raise ScheduleNightRunInvalidError("夜间运行开始时间必须使用 HH:mm 格式")
+        return base_time
     if parsed > slot.plan_end:
         previous_day = parsed - timedelta(days=1)
         if previous_day >= slot.plan_start:
@@ -146,21 +173,13 @@ def _resolve_night_start(slot: TimeSlot, value: Optional[str]) -> datetime:
     return parsed
 
 
-def _night_run_fallback_start(slot: TimeSlot) -> datetime:
-    if slot.status == "running" and slot.actual_start:
-        return slot.actual_start.replace(
-            hour=slot.plan_end.hour,
-            minute=slot.plan_end.minute,
-            second=0,
-            microsecond=0,
-        )
-    return slot.plan_end
-
-
 def _resolve_latest_end(start_time: datetime, value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
-    return _parse_clock_time(start_time, value)
+    parsed = _parse_clock_time(start_time, value)
+    if parsed is None:
+        raise ScheduleNightRunInvalidError("夜间运行最晚结束时间必须使用 HH:mm 格式")
+    return parsed
 
 
 def _parse_clock_time_on_date(base_time: datetime, value: Optional[str]) -> Optional[datetime]:

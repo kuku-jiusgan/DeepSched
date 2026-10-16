@@ -52,9 +52,17 @@ export interface WorkspaceTask {
   task_window: TaskTimeWindow
   actual_window: TaskTimeWindow
   actionable_slot: WorkspaceSegment | null
+  night_run?: WorkspaceNightRun | null
   segments: WorkspaceSegment[]
   delay: WorkspaceDelay
   resume_priority: WorkspaceResumePriority | null
+}
+
+export interface WorkspaceNightRun {
+  slot_id: number | null
+  start_at: string | null
+  is_eligible: boolean
+  reason: string
 }
 
 type UnknownRecord = Record<string, unknown>
@@ -64,6 +72,7 @@ export function normalizeWorkspaceTask(value: unknown): WorkspaceTask {
   const taskWindow = asRecord(task.task_window)
   const actualWindow = asRecord(task.actual_window)
   const delay = asRecord(task.delay)
+  const nightRun = asRecord(task.night_run)
   const resumePriority = normalizeResumePriority(task.resume_priority)
   const nestedActionableSlot = normalizeWorkspaceSegment(task.actionable_slot)
   const legacyActionableSlot = nestedActionableSlot || normalizeLegacyWorkspaceSegment(task)
@@ -93,6 +102,12 @@ export function normalizeWorkspaceTask(value: unknown): WorkspaceTask {
       end: stringValue(actualWindow.end) || stringValue(task.actual_end),
     },
     actionable_slot: legacyActionableSlot,
+    night_run: {
+      slot_id: numberValue(nightRun.slot_id),
+      start_at: stringValue(nightRun.start_at),
+      is_eligible: nightRun.is_eligible === true,
+      reason: stringValue(nightRun.reason) || '',
+    },
     segments: nestedSegments.length ? nestedSegments : (legacyActionableSlot ? [legacyActionableSlot] : []),
     delay: {
       status: delayStatus(delay.status ?? task.delay_status),

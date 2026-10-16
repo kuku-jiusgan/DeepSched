@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -33,14 +33,17 @@ class ScheduleNightRunTest(unittest.TestCase):
         self.db.add(slot)
         self.db.commit()
 
-        night_slot = record_night_run(self.db, slot.id, 8, "20:00", "次日 08:30")
+        night_slot = record_night_run(self.db, slot.id, 8, "20:00", "次日 08:30", now=slot.plan_end - timedelta(hours=1))
         self.db.refresh(slot)
         self.assertEqual(datetime(2026, 7, 13, 20, 0), slot.plan_end)
         self.assertEqual(datetime(2026, 7, 14, 4, 0), night_slot.plan_end)
         self.assertTrue(night_slot.is_night_run)
+        # 夜间运行的登记区间就是运行区间，无须另填实际起止时间。
+        self.assertIsNone(night_slot.actual_start)
+        self.assertIsNone(night_slot.actual_end)
         self.assertEqual(1, self.db.query(TaskNightRun).count())
 
-        night_slot = record_night_run(self.db, slot.id, 4, "20:00", "次日 08:30")
+        night_slot = record_night_run(self.db, slot.id, 4, "20:00", "次日 08:30", now=slot.plan_end - timedelta(hours=1))
         self.db.refresh(slot)
 
         self.assertEqual(datetime(2026, 7, 13, 20, 0), slot.plan_end)
@@ -67,7 +70,7 @@ class ScheduleNightRunTest(unittest.TestCase):
         self.db.commit()
 
         for slot in slots:
-            record_night_run(self.db, slot.id, 4, "20:00", "次日 08:30")
+            record_night_run(self.db, slot.id, 4, "20:00", "次日 08:30", now=slot.plan_end - timedelta(hours=1))
         self.db.commit()
 
         records = self.db.query(TaskNightRun).order_by(TaskNightRun.started_at).all()
@@ -94,7 +97,7 @@ class ScheduleNightRunTest(unittest.TestCase):
         self.db.add_all([slot, superseded_night_slot])
         self.db.commit()
 
-        night_slot = record_night_run(self.db, slot.id, 4, "20:00", "次日 08:30")
+        night_slot = record_night_run(self.db, slot.id, 4, "20:00", "次日 08:30", now=slot.plan_end - timedelta(hours=1))
 
         self.assertNotEqual(superseded_night_slot.id, night_slot.id)
         self.assertEqual("active", night_slot.lifecycle_status)

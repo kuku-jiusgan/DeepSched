@@ -95,7 +95,7 @@ def pause_and_switch_task(
         switch_time = _insert_target_into_source_schedule(db, source_slot, target_slot, paused_at)
         db.flush()
         # 恢复接替任务必须用切换那一刻，不能让下游再取一次当前时间：中间隔着一次
-        # 重排求解（上限 8 秒），锚点时间槽被压成 plan_start == plan_end == 切换
+        # 重排求解，锚点时间槽被压成 plan_start == plan_end == 切换
         # 时刻，晚几十秒回头看它就已经"过期"，接替一个已暂停的任务会被判成没有
         # 可恢复的未来时间槽。
         start_task_execution(
